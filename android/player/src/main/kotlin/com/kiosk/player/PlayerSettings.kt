@@ -36,5 +36,10 @@ class PlayerSettings(context: Context) {
         get() = prefs.getString("demo_mounting", null)?.let { m -> Mounting.entries.firstOrNull { it.name == m } } ?: Mounting.LANDSCAPE
         set(value) = prefs.edit().putString("demo_mounting", value.name).apply()
 
+    /** Come back to the front when someone leaves the app (needs "Display over other apps"). */
+    var keepInFront: Boolean
+        get() = prefs.getBoolean("keep_in_front", true)
+        set(value) = prefs.edit().putBoolean("keep_in_front", value).apply()
+
     fun clear() = prefs.edit().clear().apply()
 }

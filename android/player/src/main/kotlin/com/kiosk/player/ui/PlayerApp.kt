@@ -1,5 +1,6 @@
 package com.kiosk.player.ui
 
+import android.app.Activity
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -47,18 +48,22 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.kiosk.core.model.Mounting
 import com.kiosk.player.BuildConfig
+import com.kiosk.player.KeepInFront
+import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
 import com.kiosk.player.PlayerViewModel
 
@@ -128,6 +133,7 @@ private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
                 TvButton("Connect to a server", { showServer = true }, Modifier.focusRequester(first), primary = true)
                 TvButton("Try the demo", onDemo)
             }
+            KeepInFrontSection(Modifier.widthIn(max = 900.dp))
         } else {
             Text("Enter your Kiosk server's address", fontSize = 24.sp, color = Muted)
             OutlinedTextField(
@@ -251,6 +257,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
                 fontSize = 24.sp, color = Color(0xFFD5E2DF),
             )
             Text("Kiosk Player ${BuildConfig.VERSION_NAME}", fontSize = 20.sp, color = Muted)
+            KeepInFrontSection()
             if (vm.isDemo) {
                 Text("Demo: how this screen is mounted", fontSize = 22.sp, color = Muted)
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -274,6 +281,65 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
                     fontSize = 20.sp, color = Color(0xFFFDBA74),
                 )
             }
+        }
+    }
+}
+
+/**
+ * "Come back to the front automatically": asks for the "Display over other
+ * apps" permission, and lets staff switch it off or leave for 15 minutes.
+ */
+@Composable
+private fun KeepInFrontSection(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val settings = remember { PlayerSettings(context) }
+    var granted by remember { mutableStateOf(KeepInFront.hasPermission(context)) }
+    var enabled by remember { mutableStateOf(settings.keepInFront) }
+    var paused by remember { mutableStateOf(KeepInFront.pausedUntil > System.currentTimeMillis()) }
+    var showAdb by remember { mutableStateOf(false) }
+    // Check again when coming back from Android's permission screen.
+    LifecycleResumeEffect(Unit) {
+        granted = KeepInFront.hasPermission(context)
+        onPauseOrDispose { }
+    }
+
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Come back to the front automatically", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text(
+            when {
+                !granted -> "Needs the “Display over other apps” permission, so the player can reopen itself after a restart or when someone leaves it."
+                !enabled -> "Off"
+                paused -> "Paused for 15 minutes"
+                else -> "On · returns 30 seconds after someone leaves the app"
+            },
+            fontSize = 20.sp,
+            color = if (!granted) Color(0xFFFDBA74) else Muted,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (!granted) {
+                TvButton("Allow display over other apps", {
+                    KeepInFront.pauseFor(3) // don't jump back while the permission screen is open
+                    val activity = context as? Activity
+                    if (activity == null || !KeepInFront.openPermissionScreen(activity)) showAdb = true
+                }, primary = true)
+            } else {
+                TvButton(if (enabled) "Turn off" else "Turn on", {
+                    enabled = !enabled
+                    settings.keepInFront = enabled
+                })
+                if (enabled) {
+                    TvButton(if (paused) "Resume now" else "Leave for 15 minutes", {
+                        if (paused) KeepInFront.resume() else KeepInFront.pauseFor(15)
+                        paused = !paused
+                    })
+                }
+            }
+        }
+        if (showAdb) {
+            Text(
+                "This TV box hides that setting. From a computer on the same network, run:\n${KeepInFront.ADB_COMMAND}",
+                fontSize = 18.sp, color = Color(0xFFFDBA74),
+            )
         }
     }
 }

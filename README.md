@@ -188,16 +188,23 @@ flowchart TB
    - copy it on a USB stick and open it with a file manager app, or
    - use the **Send Files to TV** app on your phone and the TV, or
    - install it from a computer over ADB (`adb install KioskPlayer-for-TV.apk`).
-2. Open **Kiosk Player**, choose **Connect to a server**, and enter the **home-network address**
+2. **Let it keep itself on screen.** On Kiosk Player's first screen, choose
+   **Allow display over other apps** and switch it on for Kiosk Player. With this, the player starts by
+   itself when the box is switched on, and comes back 30 seconds after someone presses Home or opens another
+   app. Staff can switch this off, or pick **Leave for 15 minutes**, under **Settings** (press **OK** on
+   the remote while it plays).
+   - On Google TV the menu is **Settings → Apps → Special app access → Display over other apps**.
+   - If your TV box hides that menu, run this from a computer instead:
+     `adb shell appops set com.kiosk.player SYSTEM_ALERT_WINDOW allow`
+3. Choose **Connect to a server**, and enter the **home-network address**
    (e.g. `192.168.1.20:3000`). A big **QR code** and a **code** appear.
-3. On your phone, open **Players → Scan QR code**, point the camera at the TV, then set up the player:
+4. On your phone, open **Players → Scan QR code**, point the camera at the TV, then set up the player:
    - its **name** and **location**,
    - **how the screen is mounted** (landscape, or portrait turned left or right),
    - its **playlist**.
 
    Tap **Add player**. No camera? Use **Enter code instead**.
-4. The TV shows **Getting content ready**, downloads its files, and starts playing. It also starts by
-   itself whenever the TV box is switched on.
+5. The TV shows **Getting content ready**, downloads its files, and starts playing.
 
 ### Inviting other people
 
@@ -224,6 +231,7 @@ They install the phone app the same way, connect with Tailscale, and sign in wit
 | Library says "Could not reach Google Drive" | Check the Drive folder ID, and that the service account is a **Content manager** on the shared drive. |
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |
 | TV shows "Can't reach the server" | The TV must use the **home-network** address, not the Tailscale one. |
+| TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
 
 ---
 
