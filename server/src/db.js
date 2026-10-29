@@ -4,36 +4,55 @@
 const Database = require('better-sqlite3');
 const path = require('node:path');
 
+// Bump this when the tables below change shape. Nothing is deployed yet, so
+// an older database is simply wiped and rebuilt instead of being migrated.
+const SCHEMA_VERSION = 2;
+
 function openDatabase(dataDir) {
   const db = new Database(path.join(dataDir, 'kiosk.db'));
   db.pragma('journal_mode = WAL'); // safer and faster when reading and writing at once
   db.pragma('foreign_keys = ON');
 
+  if (db.pragma('user_version', { simple: true }) < SCHEMA_VERSION) {
+    db.exec(`
+      DROP TABLE IF EXISTS sessions;
+      DROP TABLE IF EXISTS users;
+      DROP TABLE IF EXISTS playlist_items;
+      DROP TABLE IF EXISTS media;
+      DROP TABLE IF EXISTS devices;
+      DROP TABLE IF EXISTS settings;
+    `);
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
+
   db.exec(`
-    -- Admin accounts that can log in from the admin app.
+    -- People allowed to use the admin app. They sign in with Google;
+    -- we only store their email and what they're allowed to do.
     CREATE TABLE IF NOT EXISTS users (
-      id            INTEGER PRIMARY KEY,
-      username      TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL
+      id         INTEGER PRIMARY KEY,
+      email      TEXT NOT NULL UNIQUE,   -- always lower case
+      role       TEXT NOT NULL CHECK (role IN ('superadmin', 'system_manager', 'content_uploader')),
+      created_at INTEGER NOT NULL
     );
 
-    -- A logged-in admin gets a random token; the app sends it with every request.
+    -- After signing in, the admin app gets a random token and sends it with every request.
     CREATE TABLE IF NOT EXISTS sessions (
       token      TEXT PRIMARY KEY,
       user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       created_at INTEGER NOT NULL
     );
 
-    -- Every uploaded video or image.
+    -- Our copy of the list of videos and images in the Google Drive folder.
+    -- The files themselves live in Drive; this is just the catalogue.
     CREATE TABLE IF NOT EXISTS media (
-      id          INTEGER PRIMARY KEY,
-      filename    TEXT NOT NULL,       -- original name, shown in the admin app
-      stored_name TEXT NOT NULL,       -- name on disk inside data/uploads
-      type        TEXT NOT NULL CHECK (type IN ('video', 'image')),
-      mime        TEXT NOT NULL,
-      size        INTEGER NOT NULL,    -- bytes
-      sha256      TEXT NOT NULL,       -- fingerprint the player uses to check its download
-      created_at  INTEGER NOT NULL
+      id            INTEGER PRIMARY KEY,
+      drive_file_id TEXT NOT NULL UNIQUE,
+      filename      TEXT NOT NULL,
+      type          TEXT NOT NULL CHECK (type IN ('video', 'image')),
+      mime          TEXT NOT NULL,
+      size          INTEGER NOT NULL,   -- bytes
+      md5           TEXT NOT NULL,      -- fingerprint from Drive; the player checks its download against it
+      created_at    INTEGER NOT NULL
     );
 
     -- The looping playlist, in order of "position".
