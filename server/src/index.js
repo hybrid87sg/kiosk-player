@@ -9,10 +9,13 @@
 //   GOOGLE_SERVICE_ACCOUNT_FILE  path to the service account's JSON key
 //   DRIVE_FOLDER_ID              the Drive folder holding the signage content
 //   MEDIA_CACHE                  "on" to keep a local copy of each file for the TVs
+//   GOOGLE_DEVICE_CLIENT_ID      optional: "TVs and Limited Input devices" client, for
+//   GOOGLE_DEVICE_CLIENT_SECRET    signing in to the web page with a google.com/device code
+//   INGRESS_PORT                 optional: port for Home Assistant's sidebar page
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { createApp } = require('./app');
+const { createApp, createIngressServer } = require('./app');
 const { createGoogle } = require('./google');
 
 function loadSettings() {
@@ -33,6 +36,9 @@ function loadSettings() {
       folderId: o.drive_folder_id,
       serviceAccountFile: o.service_account_file ? path.resolve(configDir, o.service_account_file) : '',
       cache: o.cache_media !== false,
+      deviceClientId: o.google_device_client_id || '',
+      deviceClientSecret: o.google_device_client_secret || '',
+      ingressPort: Number(env.INGRESS_PORT) || 8099,
     };
   }
   return {
@@ -44,6 +50,9 @@ function loadSettings() {
     folderId: env.DRIVE_FOLDER_ID,
     serviceAccountFile: env.GOOGLE_SERVICE_ACCOUNT_FILE,
     cache: env.MEDIA_CACHE === 'on',
+    deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',
+    deviceClientSecret: env.GOOGLE_DEVICE_CLIENT_SECRET || '',
+    ingressPort: Number(env.INGRESS_PORT) || null,
   };
 }
 
@@ -69,9 +78,12 @@ const app = createApp({
   dataDir: settings.dataDir,
   superadminEmail: settings.superadminEmail,
   googleWebClientId: settings.webClientId,
-  mediaCacheDir: settings.cache ? path.join(settings.dataDir, 'media-cache') : null,
+  mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
+  cacheMedia: settings.cache,
   google: createGoogle({
     webClientId: settings.webClientId,
+    deviceClientId: settings.deviceClientId,
+    deviceClientSecret: settings.deviceClientSecret,
     serviceAccountFile: settings.serviceAccountFile,
     folderId: settings.folderId,
   }),
@@ -81,3 +93,10 @@ const app = createApp({
 app.listen(settings.port, '0.0.0.0', () => {
   console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'})`);
 });
+
+// Home Assistant's sidebar page talks to the server on its own private port.
+if (settings.ingressPort) {
+  createIngressServer(app).listen(settings.ingressPort, '0.0.0.0', () => {
+    console.log(`Home Assistant sidebar page on port ${settings.ingressPort}`);
+  });
+}

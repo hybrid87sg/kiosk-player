@@ -62,6 +62,23 @@ class MediaCache {
     };
   }
 
+  // How many copies there are and how much space they use.
+  stats() {
+    let files = 0;
+    let bytes = 0;
+    for (const name of fs.readdirSync(this.dir)) {
+      if (name.includes('.part-')) continue;
+      files++;
+      bytes += fs.statSync(path.join(this.dir, name)).size;
+    }
+    return { files, bytes };
+  }
+
+  // Deletes every copy (they come back from Drive as TVs ask for them).
+  clear() {
+    for (const name of fs.readdirSync(this.dir)) fs.rmSync(path.join(this.dir, name), { force: true });
+  }
+
   // Deletes copies of files that are no longer in the library (or have changed).
   prune(libraryRows) {
     const keep = new Set(libraryRows.map((m) => path.basename(this.pathFor(m))));

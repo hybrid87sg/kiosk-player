@@ -11,6 +11,8 @@ function createFakeGoogle() {
   let nextId = 1;
   let failing = false;
   let downloads = 0;
+  let folderId = 'folder-original';
+  let deviceApproval = null; // email once someone "enters the code at google.com/device"
   let uploadDims = { width: 3840, height: 2160 }; // what Drive "measures" for uploads
 
   // dims: { width, height } in pixels, or null while Drive is still processing.
@@ -72,7 +74,21 @@ function createFakeGoogle() {
       if (!files.delete(fileId)) throw Object.assign(new Error('not found'), { status: 404 });
     },
 
+    getFolderId: () => folderId,
+    setFolderId: (id) => (folderId = id),
+
+    deviceSignInAvailable: true,
+    async startDeviceSignIn() {
+      deviceApproval = null;
+      return { deviceCode: 'device-1', userCode: 'ABCD-EFGH', verificationUrl: 'https://www.google.com/device', interval: 1, expiresIn: 600 };
+    },
+    async pollDeviceSignIn(deviceCode) {
+      if (deviceCode !== 'device-1') return { status: 'expired' };
+      return deviceApproval ? { status: 'done', email: deviceApproval } : { status: 'pending' };
+    },
+
     // Test helpers
+    approveDeviceSignIn: (email) => (deviceApproval = email),
     addFile,
     removeFile: (id) => files.delete(id),
     replaceContent(id, data) {

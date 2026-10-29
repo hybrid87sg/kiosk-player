@@ -10,6 +10,7 @@ RUN apk add --no-cache --virtual .build-tools python3 make g++ \
  && npm ci --omit=dev \
  && apk del .build-tools
 COPY app/src ./src
+COPY app/public ./public
 
 ENV DATA_DIR=/data NODE_ENV=production
 EXPOSE 3000

@@ -9,6 +9,12 @@ arch:
   - amd64
 startup: application
 boot: auto
+# The web interface in Home Assistant's sidebar, for Home Assistant admins.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:television-play
+panel_title: Kiosk Signage
+panel_admin: true
 ports:
   3000/tcp: 3000
 ports_description:
@@ -23,9 +29,13 @@ options:
   drive_folder_id: ""
   service_account_file: service-account.json
   cache_media: true
+  google_device_client_id: ""
+  google_device_client_secret: ""
 schema:
   superadmin_email: str
   google_web_client_id: str
   drive_folder_id: str
   service_account_file: str
   cache_media: bool
+  google_device_client_id: str?
+  google_device_client_secret: password?

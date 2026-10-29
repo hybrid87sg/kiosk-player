@@ -5,6 +5,8 @@ Digital signage you manage from your phone.
 - **Kiosk Player** runs on Android TV boxes and loops 4K videos and pictures, full screen.
 - **Kiosk Admin** runs on your Android phone. You pick what plays on which screen.
 - **Kiosk server** runs as a Home Assistant add-on. It keeps the playlists, screens and users, and passes your files from Google Drive to the TVs.
+- **Web interface**: the same management from a computer, in Home Assistant's sidebar or at `http://<address>:3000`,
+  plus a live overview of every screen and a Settings page.
 
 ```mermaid
 flowchart LR
@@ -47,6 +49,7 @@ Fill this in as you go. You'll need these values in Part 3.
 |---|---|---|
 | Superadmin email | Your Google Workspace account | `you@yourcompany.com` |
 | Web client ID | Part 1, step 5 | `1234…-abc….apps.googleusercontent.com` |
+| Web sign-in client ID + secret (optional) | Part 1, step 9 | `5678…-xyz….apps.googleusercontent.com` |
 | Service account email | Part 1, step 7 | `kiosk-drive@kiosk-signage.iam.gserviceaccount.com` |
 | Service account key file | Part 1, step 8 | `service-account.json` (**secret, never share it**) |
 | Drive folder ID | Part 2, step 4 | `0AbCdEfGhIjKlMnOpQ` |
@@ -90,6 +93,11 @@ Do it while signed in with your **Workspace** account.
 8. **Download its key.** Click the service account, open the **Keys** tab, then **Add key → Create new
    key → JSON → Create**. A `.json` file downloads. Rename it to `service-account.json` and keep it
    somewhere safe: it works like a password to your signage Drive.
+
+9. **Optional: the web sign-in client.** You only need this if people should sign in to the web page at
+   `http://<address>:3000`; the Home Assistant sidebar page doesn't need it. In **Google Auth Platform → Clients →
+   Create client**, choose **TVs and Limited Input devices**, name it `Kiosk web`, and click **Create**.
+   Copy the **Client ID** and the **Client secret** into your settings sheet.
 
 > **If step 8 says key creation is blocked:** your Workspace has a policy that blocks service account keys.
 > A Workspace admin can allow it in Cloud Console under **IAM & Admin → Organization policies →
@@ -137,8 +145,9 @@ Do it while signed in with your **Workspace** account.
 
    ![The add-on's Configuration tab](docs/images/ha-addon-configuration.svg)
 
-9. Go back to the **Info** tab, switch on **Start on boot** and **Watchdog**, and click **Start**. The
-   **Log** tab should end with `Kiosk server running on port 3000`.
+   If you did Part 1, step 9, also fill in **Web sign-in client ID** and **Web sign-in client secret**.
+9. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
+   **Start**. The **Log** tab should end with `Kiosk server running on port 3000`.
 
 ### Part 4: The two addresses (about 5 minutes)
 
@@ -206,6 +215,23 @@ flowchart TB
    Tap **Add player**. No camera? Use **Enter code instead**.
 5. The TV shows **Getting content ready**, downloads its files, and starts playing.
 
+### The web interface
+
+Manage everything from a computer too, in either of two places:
+
+| Where | Who can use it | How to sign in |
+|---|---|---|
+| **Kiosk Signage** in Home Assistant's sidebar | Home Assistant admins (as superadmins) | Already signed in through Home Assistant |
+| `http://<address>:3000` in any browser (home network or Tailscale address) | Anyone you invited, with their role | **Sign in with Google**, then enter the code shown at google.com/device (needs Part 1, step 9) |
+
+It has the same sections as the phone app, plus:
+- **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage),
+  updated every 10 seconds. Add a screen by typing the code shown on the TV.
+- **Library:** drag files from your computer onto the page to upload them.
+- **Playlists:** drag rows to reorder them.
+- **Settings** (superadmins): change the Drive folder and test the connection, switch local copies on or off
+  and clear them, and check which sign-in methods are set up.
+
 ### Inviting other people
 
 In Kiosk Admin, go to **Users → Invite someone**, enter their Workspace email, and pick a role:
@@ -227,6 +253,7 @@ They install the phone app the same way, connect with Tailscale, and sign in wit
 | Phone: "Can't reach the server" | Is the Tailscale app on? Does `…:3000/api/health` open in the phone's browser? |
 | Phone: "isn't set up for Google sign-in yet" | The **Google web client ID** setting is empty. |
 | Phone: Google sign-in fails or shows a developer error | Check the Android client in Part 1, step 6: package `com.kiosk.admin` and the exact SHA-1. |
+| Web page says sign-in "isn't set up" | Fill in the web sign-in client ID and secret (Part 1, step 9), or use the Home Assistant sidebar page. |
 | Phone: "… is not allowed in yet" | Sign in with the superadmin email, or ask a superadmin to invite you. |
 | Library says "Could not reach Google Drive" | Check the Drive folder ID, and that the service account is a **Content manager** on the shared drive. |
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |

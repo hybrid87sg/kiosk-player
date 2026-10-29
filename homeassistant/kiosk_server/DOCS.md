@@ -40,6 +40,13 @@ http://<your Home Assistant's IP address>:3000
 for example `http://192.168.1.20:3000`. Find the IP address under
 Settings → System → Network. The phone and TVs must be on the same network.
 
+## The web interface
+
+- **In Home Assistant:** open **Kiosk Signage** in the sidebar. It's for Home Assistant admins, who get
+  full (superadmin) access.
+- **In any browser:** go to `http://<address>:3000`. People sign in with Google using a code from
+  google.com/device. This needs the two optional **Web sign-in client** settings.
+
 ## Managing screens away from home
 
 Your phone needs a way into your home network. The simplest is the **Tailscale**

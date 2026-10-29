@@ -13,5 +13,6 @@ mkdir -p "$out/app"
 cp -r "$root/homeassistant/kiosk_server/." "$out/"
 cp "$root/server/package.json" "$root/server/package-lock.json" "$out/app/"
 cp -r "$root/server/src" "$out/app/src"
+cp -r "$root/server/public" "$out/app/public"
 (cd "$dist" && zip -qr kiosk_server-addon.zip kiosk_server)
 echo "Add-on ready: $dist/kiosk_server-addon.zip"

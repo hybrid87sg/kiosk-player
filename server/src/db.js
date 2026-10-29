@@ -97,9 +97,36 @@ function openDatabase(dataDir) {
       app_version      TEXT,
       created_at       INTEGER NOT NULL
     );
+
+    -- Settings changed from the web interface (e.g. the Drive folder),
+    -- which take priority over the start-up settings.
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
+  // Columns added after the first release. Adding them keeps existing data,
+  // unlike a SCHEMA_VERSION bump, which starts the database again.
+  addColumnIfMissing(db, 'devices', 'download_done', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'download_total', 'INTEGER');
+
   return db;
+}
+
+function addColumnIfMissing(db, table, column, type) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+function getSetting(db, key) {
+  const row = db.prepare(`SELECT value FROM app_settings WHERE key = ?`).get(key);
+  return row ? JSON.parse(row.value) : undefined;
+}
+
+function setSetting(db, key, value) {
+  if (value === undefined || value === null) db.prepare(`DELETE FROM app_settings WHERE key = ?`).run(key);
+  else db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, JSON.stringify(value));
 }
 
 // Players compare this number with the one they saved. If it changed,
@@ -114,4 +141,4 @@ function playlistsUsingMedia(db, mediaId) {
   return db.prepare(`SELECT DISTINCT playlist_id FROM playlist_items WHERE media_id = ?`).all(mediaId).map((r) => r.playlist_id);
 }
 
-module.exports = { openDatabase, bumpPlaylistVersions, playlistsUsingMedia };
+module.exports = { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting };

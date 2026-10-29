@@ -15,7 +15,8 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
-const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia } = require('./db');
+const http = require('node:http');
+const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting } = require('./db');
 const auth = require('./auth');
 const { MediaCache } = require('./media-cache');
 
@@ -53,16 +54,21 @@ function createApp({
   google,
   googleWebClientId = null,
   superadminEmail,
-  mediaCacheDir = null, // set to keep a local copy of each Drive file (see media-cache.js)
+  mediaCacheDir = null, // where local copies of Drive files can be kept (see media-cache.js)
+  cacheMedia = true, // whether to keep them, until changed on the web Settings page
   maxUploadBytes = 8 * 1024 ** 3,
   syncIntervalMs = 5 * 60 * 1000,
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
-  const cache = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
+  const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
+  const cacheOn = () => Boolean(cacheStore) && (getSetting(db, 'cache_media') ?? cacheMedia);
   const pruneCache = () => {
-    if (cache) cache.prune(db.prepare(`SELECT id, md5, filename FROM media`).all());
+    if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media`).all());
   };
+  // A Drive folder chosen on the web Settings page wins over the start-up setting.
+  const savedFolder = getSetting(db, 'drive_folder_id');
+  if (savedFolder && google.setFolderId) google.setFolderId(savedFolder);
   if (superadminEmail) ensureSuperadmin(db, superadminEmail);
 
   const requireContent = auth.requireRole(db, auth.CAN_MANAGE_CONTENT);
@@ -73,11 +79,20 @@ function createApp({
   const app = express();
   app.use(express.json());
 
+  // The web interface: plain files in server/public, served as they are.
+  app.use(express.static(path.join(__dirname, '..', 'public')));
+
   app.get('/api/health', (req, res) => res.json({ ok: true }));
 
   // Public settings the admin app needs before anyone signs in: the Google
   // client ID that "Sign in with Google" must use for this server.
-  app.get('/api/config', (req, res) => res.json({ google_web_client_id: googleWebClientId }));
+  app.get('/api/config', (req, res) =>
+    res.json({
+      google_web_client_id: googleWebClientId,
+      web_code_sign_in: Boolean(google.deviceSignInAvailable),
+      version: SERVER_VERSION,
+    })
+  );
 
   // ---------- Sign in (admin app) ----------
 
@@ -105,7 +120,57 @@ function createApp({
   });
 
   app.get('/api/me', requireAnyUser, (req, res) => {
-    res.json({ email: req.user.email, role: req.user.role });
+    res.json({ email: req.user.email, role: req.user.role, via_home_assistant: Boolean(req.user.viaHomeAssistant) });
+  });
+
+  // Web page sign-in with a code: the page shows the code, the person enters
+  // it at google.com/device, and the page asks /poll until Google says done.
+  const deviceSignIns = new Map(); // poll id -> { deviceCode, expiresAt }
+
+  app.post('/api/auth/device/start', async (req, res) => {
+    if (!google.deviceSignInAvailable) {
+      return res.status(501).json({ error: 'Web sign-in with Google isn\'t set up on this server yet.' });
+    }
+    let started;
+    try {
+      started = await google.startDeviceSignIn();
+    } catch (err) {
+      log(err);
+      return res.status(502).json({ error: 'Could not reach Google to start signing in' });
+    }
+    const pollId = auth.newToken();
+    deviceSignIns.set(pollId, { deviceCode: started.deviceCode, expiresAt: Date.now() + started.expiresIn * 1000 });
+    for (const [id, s] of deviceSignIns) if (s.expiresAt < Date.now()) deviceSignIns.delete(id);
+    res.json({
+      poll_id: pollId,
+      user_code: started.userCode,
+      verification_url: started.verificationUrl,
+      interval: started.interval,
+      expires_in: started.expiresIn,
+    });
+  });
+
+  app.post('/api/auth/device/poll', async (req, res) => {
+    const pending = deviceSignIns.get(req.body && req.body.poll_id);
+    if (!pending || pending.expiresAt < Date.now()) return res.status(410).json({ error: 'This code has expired. Start again.' });
+    let result;
+    try {
+      result = await google.pollDeviceSignIn(pending.deviceCode);
+    } catch (err) {
+      log(err);
+      return res.status(502).json({ error: 'Google sign-in could not be checked' });
+    }
+    if (result.status !== 'done') {
+      if (result.status === 'denied' || result.status === 'expired') deviceSignIns.delete(req.body.poll_id);
+      return res.json({ status: result.status });
+    }
+    deviceSignIns.delete(req.body.poll_id);
+    const email = result.email.toLowerCase();
+    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email);
+    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask a superadmin to add you.` });
+    const token = auth.newToken();
+    db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, Date.now());
+    res.json({ status: 'done', token, email: user.email, role: user.role });
   });
 
   // ---------- Users and roles (superadmin) ----------
@@ -296,6 +361,7 @@ function createApp({
   app.get('/media/:id', auth.requireUserOrDevice(db), async (req, res) => {
     const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
+    const cache = cacheOn() ? cacheStore : null;
     if (cache && cache.has(media)) {
       return res.sendFile(cache.pathFor(media), { headers: { 'Content-Type': media.mime } });
     }
@@ -447,6 +513,8 @@ function createApp({
       current_filename: current ? current.filename : null,
       free_bytes: d.free_bytes,
       app_version: d.app_version,
+      // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
+      download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
   }
 
@@ -517,6 +585,55 @@ function createApp({
     res.json({ ok: true });
   });
 
+  // ---------- Server settings (superadmin, web interface) ----------
+
+  function settingsView() {
+    return {
+      version: SERVER_VERSION,
+      drive_folder_id: google.getFolderId ? google.getFolderId() : null,
+      drive_folder_changed_on_web: getSetting(db, 'drive_folder_id') !== undefined,
+      cache: cacheStore
+        ? { available: true, enabled: cacheOn(), ...cacheStore.stats() }
+        : { available: false, enabled: false, files: 0, bytes: 0 },
+      sign_in: { phone_app: Boolean(googleWebClientId), web_code: Boolean(google.deviceSignInAvailable) },
+      library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media`).get(),
+    };
+  }
+
+  app.get('/api/settings', requireUsers, (req, res) => res.json(settingsView()));
+
+  app.patch('/api/settings', requireUsers, (req, res) => {
+    const body = req.body || {};
+    if (body.drive_folder_id !== undefined) {
+      const id = String(body.drive_folder_id || '').trim();
+      if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) return res.status(400).json({ error: 'That doesn\'t look like a Drive folder ID' });
+      setSetting(db, 'drive_folder_id', id);
+      google.setFolderId(id);
+      lastSyncAt = 0; // read the new folder next time the library is opened
+    }
+    if (body.cache_media !== undefined) {
+      if (typeof body.cache_media !== 'boolean') return res.status(400).json({ error: 'cache_media must be true or false' });
+      setSetting(db, 'cache_media', body.cache_media);
+    }
+    res.json(settingsView());
+  });
+
+  // "Test connection": can the server read the Drive folder right now?
+  app.post('/api/settings/test-drive', requireUsers, async (req, res) => {
+    try {
+      const files = await google.listFolder();
+      res.json({ ok: true, files: files.length });
+    } catch (err) {
+      log(err);
+      res.status(502).json({ ok: false, error: 'Could not read the Drive folder. Check the folder ID and that the service account is a member of the shared drive.' });
+    }
+  });
+
+  app.post('/api/settings/clear-cache', requireUsers, (req, res) => {
+    if (cacheStore) cacheStore.clear();
+    res.json(settingsView());
+  });
+
   // ---------- Player (TV) ----------
 
   // First launch: the player gets a secret token (kept on the TV) and a short
@@ -579,12 +696,15 @@ function createApp({
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
     const body = req.body || {};
     db.prepare(
-      `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ? WHERE id = ?`
+      `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ?,
+       download_done = ?, download_total = ? WHERE id = ?`
     ).run(
       Date.now(),
       Number.isInteger(body.current_media_id) ? body.current_media_id : null,
       Number.isInteger(body.free_bytes) ? body.free_bytes : null,
       typeof body.app_version === 'string' ? body.app_version : req.device.app_version,
+      Number.isInteger(body.download_done) ? body.download_done : null,
+      Number.isInteger(body.download_total) ? body.download_total : null,
       req.device.id
     );
     res.json({ ok: true, version: playerPlaylist(req.device).version });
@@ -607,6 +727,23 @@ function createApp({
   return app;
 }
 
+const SERVER_VERSION = require('../package.json').version;
+
+// Home Assistant's sidebar page ("ingress") reaches the server on its own
+// private port. Requests there are marked so auth.js can trust the Home
+// Assistant user headers, but only when they really come from Home Assistant.
+function createIngressServer(app, trustedAddress = '172.30.32.2') {
+  return http.createServer((req, res) => {
+    const from = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    if (from !== trustedAddress) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Only Home Assistant may use this port' }));
+    }
+    req.viaIngress = true;
+    app(req, res);
+  });
+}
+
 function randomPairingCode() {
   let code = '';
   for (let i = 0; i < 6; i++) code += PAIRING_ALPHABET[crypto.randomInt(PAIRING_ALPHABET.length)];
@@ -621,4 +758,4 @@ function ensureSuperadmin(db, email) {
   ).run(email.trim().toLowerCase(), Date.now());
 }
 
-module.exports = { createApp };
+module.exports = { createApp, createIngressServer };
