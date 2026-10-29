@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="470" viewBox="0 0 760 470" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>Google Cloud: create the Android OAuth client</title>
+  <rect width="760" height="470" rx="14" fill="#F4F8F7"/>
+  <rect x="20" y="20" width="720" height="430" rx="10" fill="#FFFFFF" stroke="#D3DEDB"/>
+  <rect x="20" y="20" width="720" height="46" rx="10" fill="#1A73E8"/>
+  <rect x="20" y="50" width="720" height="16" fill="#1A73E8"/>
+  <text x="40" y="49" font-size="17" fill="#FFFFFF" font-weight="600">Google Auth Platform  ›  Clients  ›  Create OAuth client ID</text>
+
+  <text x="44" y="100" font-size="13" fill="#4A5C59">Application type</text>
+  <rect x="44" y="108" width="420" height="40" rx="6" fill="#FFFFFF" stroke="#7A8C88"/>
+  <text x="58" y="133" font-size="15" fill="#10201E">Android</text>
+  <text x="440" y="133" font-size="13" fill="#4A5C59">▾</text>
+
+  <text x="44" y="176" font-size="13" fill="#4A5C59">Name</text>
+  <rect x="44" y="184" width="420" height="40" rx="6" fill="#FFFFFF" stroke="#7A8C88"/>
+  <text x="58" y="209" font-size="15" fill="#10201E">Kiosk Admin app</text>
+
+  <text x="44" y="252" font-size="13" fill="#4A5C59">Package name</text>
+  <rect x="44" y="260" width="420" height="40" rx="6" fill="#FFFFFF" stroke="#0F766E" stroke-width="2"/>
+  <text x="58" y="285" font-size="15" fill="#10201E" font-family="Consolas, Menlo, monospace">com.kiosk.admin</text>
+
+  <text x="44" y="328" font-size="13" fill="#4A5C59">SHA-1 certificate fingerprint</text>
+  <rect x="44" y="336" width="420" height="40" rx="6" fill="#FFFFFF" stroke="#0F766E" stroke-width="2"/>
+  <text x="58" y="361" font-size="12.5" fill="#10201E" font-family="Consolas, Menlo, monospace">C6:6E:87:04:EF:4A:7E:5C:34:5C:2A:74:CE:66:54:92:40:4E:37:26</text>
+
+  <rect x="44" y="396" width="96" height="36" rx="18" fill="#1A73E8"/>
+  <text x="92" y="419" font-size="14" fill="#FFFFFF" text-anchor="middle" font-weight="600">Create</text>
+
+  <circle cx="500" cy="280" r="15" fill="#C2410C"/>
+  <text x="500" y="285" font-size="14" fill="#FFFFFF" text-anchor="middle" font-weight="700">1</text>
+  <text x="524" y="276" font-size="13.5" fill="#10201E" font-weight="600">Type exactly this</text>
+  <text x="524" y="294" font-size="13" fill="#4A5C59">It's the admin app's ID.</text>
+
+  <circle cx="500" cy="356" r="15" fill="#C2410C"/>
+  <text x="500" y="361" font-size="14" fill="#FFFFFF" text-anchor="middle" font-weight="700">2</text>
+  <text x="524" y="352" font-size="13.5" fill="#10201E" font-weight="600">Paste this fingerprint</text>
+  <text x="524" y="370" font-size="13" fill="#4A5C59">From android/keystore/README.md.</text>
+  <text x="524" y="387" font-size="13" fill="#4A5C59">Google uses it to recognise the app.</text>
+</svg>

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" viewBox="0 0 760 460" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>Connecting the apps: phone uses the Tailscale address, TV uses the home network address</title>
+  <rect width="760" height="460" rx="14" fill="#F4F8F7"/>
+
+  <!-- Phone -->
+  <rect x="40" y="24" width="220" height="412" rx="30" fill="#0B1211"/>
+  <rect x="50" y="34" width="200" height="392" rx="22" fill="#FFFFFF"/>
+  <rect x="122" y="64" width="56" height="56" rx="16" fill="#0F766E"/>
+  <rect x="134" y="80" width="32" height="20" rx="3" fill="none" stroke="#FFFFFF" stroke-width="3"/>
+  <text x="150" y="146" font-size="17" fill="#10201E" text-anchor="middle" font-weight="700">Kiosk Admin</text>
+  <text x="64" y="186" font-size="11" fill="#4A5C59">Server address</text>
+  <rect x="64" y="192" width="172" height="34" rx="6" fill="#FFFFFF" stroke="#0F766E" stroke-width="2"/>
+  <text x="72" y="214" font-size="9.6" fill="#10201E" font-family="Consolas, Menlo, monospace">homeassistant.tail1234.ts.net:3000</text>
+  <rect x="64" y="238" width="172" height="34" rx="17" fill="#0F766E"/>
+  <text x="150" y="260" font-size="12" fill="#FFFFFF" text-anchor="middle" font-weight="600">Sign in with Google</text>
+  <text x="150" y="300" font-size="11" fill="#4A5C59" text-anchor="middle">Phone: Tailscale address.</text>
+  <text x="150" y="316" font-size="11" fill="#4A5C59" text-anchor="middle">Works at home and away</text>
+  <text x="150" y="332" font-size="11" fill="#4A5C59" text-anchor="middle">(Tailscale app switched on).</text>
+
+  <!-- TV -->
+  <rect x="320" y="60" width="420" height="250" rx="10" fill="#0B1211"/>
+  <rect x="332" y="72" width="396" height="226" fill="#0E1716"/>
+  <text x="530" y="112" font-size="20" fill="#FFFFFF" text-anchor="middle" font-weight="700">Kiosk Player</text>
+  <text x="530" y="140" font-size="13" fill="#B8C9C5" text-anchor="middle">Enter your Kiosk server's address</text>
+  <rect x="380" y="156" width="300" height="40" rx="8" fill="#0E1716" stroke="#5EEAD4" stroke-width="2"/>
+  <text x="396" y="182" font-size="15" fill="#FFFFFF" font-family="Consolas, Menlo, monospace">192.168.1.20:3000</text>
+  <rect x="424" y="216" width="100" height="36" rx="18" fill="#5EEAD4"/>
+  <text x="474" y="239" font-size="13" fill="#042F2C" text-anchor="middle" font-weight="700">Connect</text>
+  <rect x="536" y="216" width="80" height="36" rx="18" fill="#1E2928"/>
+  <text x="576" y="239" font-size="13" fill="#FFFFFF" text-anchor="middle">Back</text>
+  <rect x="490" y="310" width="80" height="16" fill="#26302F"/>
+  <rect x="440" y="326" width="180" height="8" rx="4" fill="#26302F"/>
+
+  <text x="530" y="370" font-size="13" fill="#10201E" text-anchor="middle" font-weight="600">TV: home-network address of Home Assistant</text>
+  <text x="530" y="390" font-size="12.5" fill="#4A5C59" text-anchor="middle">Settings › System › Network › IPv4 address, plus :3000.</text>
+  <text x="530" y="408" font-size="12.5" fill="#4A5C59" text-anchor="middle">TVs don't need Tailscale.</text>
+</svg>
