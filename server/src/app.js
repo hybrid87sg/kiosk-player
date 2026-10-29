@@ -1,26 +1,29 @@
 // The API. Each `app.get/post/put/patch/delete(...)` line is a "route":
 // a URL the admin app or the player app can call.
 //
-//   /api/auth/...    admin app: sign in with Google, sign out
-//   /api/me          admin app: who am I and what's my role
-//   /api/users...    superadmin: who may use the admin app, and their roles
-//   /api/media...    library of files in the Google Drive folder; upload, delete
-//   /api/playlist    read and save the looping playlist
-//   /api/devices...  pair (QR code or PIN), rename, remove TV players
-//   /api/player/...  TV players: register, check pairing, get playlist, heartbeat
-//   /media/:id       download a file (streamed from Drive)
+//   /api/auth/...      admin app: sign in with Google, sign out
+//   /api/me            admin app: who am I and what's my role
+//   /api/users...      superadmin: who may use the admin app, and their roles
+//   /api/media...      library of files in the Google Drive folder; upload, delete
+//   /api/playlists...  named playlists (landscape or portrait) and their items
+//   /api/devices...    pair (QR code or PIN), set up, remove TV players
+//   /api/player/...    TV players: register, check pairing, get playlist, heartbeat
+//   /media/:id         download a file (streamed from Drive)
 
 const express = require('express');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
-const { openDatabase, bumpPlaylistVersion, getPlaylistVersion } = require('./db');
+const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia } = require('./db');
 const auth = require('./auth');
 
 // File types the player can show, by MIME type and by file extension.
 const TYPE_BY_MIME = { 'video/mp4': 'video', 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image' };
 const MIME_BY_EXT = { '.mp4': 'video/mp4', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+
+const PLAYLIST_ORIENTATIONS = ['landscape', 'portrait'];
+const DEVICE_ORIENTATIONS = ['landscape', 'portrait_right', 'portrait_left'];
 
 // A player counts as "online" if it sent a heartbeat in the last 2 minutes.
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
@@ -35,6 +38,13 @@ const PAIRING_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 function mediaKind(name, mimeType) {
   const mime = TYPE_BY_MIME[mimeType] ? mimeType : MIME_BY_EXT[path.extname(name).toLowerCase()];
   return mime ? { mime, type: TYPE_BY_MIME[mime] } : null;
+}
+
+// Wider than tall is landscape, taller than wide is portrait. Unknown size
+// (Drive hasn't finished processing a new video) means "still checking".
+function orientationOf(width, height) {
+  if (!width || !height) return null;
+  return width >= height ? 'landscape' : 'portrait';
 }
 
 function createApp({
@@ -124,33 +134,35 @@ function createApp({
 
   // ---------- Media library (Google Drive folder) ----------
 
-  const mediaColumns = `id, filename, type, mime, size, md5, created_at`;
+  const mediaColumns = `id, filename, type, mime, size, md5, width, height, orientation, created_at`;
 
   // Saves (or refreshes) one Drive file in our catalogue. Returns the row,
   // or null if it's not a file type the player can show.
   function upsertMedia(file) {
     const kind = mediaKind(file.name, file.mimeType);
     if (!kind || !file.md5Checksum) return null;
+    const orientation = orientationOf(file.width, file.height);
     const existing = db.prepare(`SELECT * FROM media WHERE drive_file_id = ?`).get(file.id);
     if (!existing) {
       db.prepare(
-        `INSERT INTO media (drive_file_id, filename, type, mime, size, md5, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(file.id, file.name, kind.type, kind.mime, file.size, file.md5Checksum, Date.now());
-    } else if (existing.md5 !== file.md5Checksum || existing.filename !== file.name) {
-      db.prepare(`UPDATE media SET filename = ?, type = ?, mime = ?, size = ?, md5 = ? WHERE id = ?`)
-        .run(file.name, kind.type, kind.mime, file.size, file.md5Checksum, existing.id);
+        `INSERT INTO media (drive_file_id, filename, type, mime, size, md5, width, height, orientation, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(file.id, file.name, kind.type, kind.mime, file.size, file.md5Checksum, file.width, file.height, orientation, Date.now());
+    } else if (
+      existing.md5 !== file.md5Checksum || existing.filename !== file.name ||
+      existing.width !== file.width || existing.height !== file.height
+    ) {
+      db.prepare(
+        `UPDATE media SET filename = ?, type = ?, mime = ?, size = ?, md5 = ?, width = ?, height = ?, orientation = ? WHERE id = ?`
+      ).run(file.name, kind.type, kind.mime, file.size, file.md5Checksum, file.width, file.height, orientation, existing.id);
       // The content changed, so players showing it must download it again.
-      if (existing.md5 !== file.md5Checksum && isInPlaylist(existing.id)) bumpPlaylistVersion(db);
+      if (existing.md5 !== file.md5Checksum) bumpPlaylistVersions(db, playlistsUsingMedia(db, existing.id));
     }
     return db.prepare(`SELECT ${mediaColumns} FROM media WHERE drive_file_id = ?`).get(file.id);
   }
 
-  function isInPlaylist(mediaId) {
-    return !!db.prepare(`SELECT 1 FROM playlist_items WHERE media_id = ?`).get(mediaId);
-  }
-
   // Makes our catalogue match the Drive folder: new files are added to the
-  // library (NOT to the playlist), missing files are removed everywhere.
+  // library (NOT to any playlist), missing files are removed everywhere.
   let lastSyncAt = 0;
   let syncInFlight = null;
   function syncDriveFolder() {
@@ -160,13 +172,11 @@ function createApp({
         const seen = new Set();
         db.transaction(() => {
           for (const file of files) if (upsertMedia(file)) seen.add(file.id);
-          let removedFromPlaylist = false;
           for (const row of db.prepare(`SELECT id, drive_file_id FROM media`).all()) {
             if (seen.has(row.drive_file_id)) continue;
-            if (isInPlaylist(row.id)) removedFromPlaylist = true;
+            bumpPlaylistVersions(db, playlistsUsingMedia(db, row.id));
             db.prepare(`DELETE FROM media WHERE id = ?`).run(row.id);
           }
-          if (removedFromPlaylist) bumpPlaylistVersion(db);
         })();
         lastSyncAt = Date.now();
       })().finally(() => (syncInFlight = null));
@@ -174,11 +184,18 @@ function createApp({
     return syncInFlight;
   }
 
-  // Lists the library. Re-reads Drive first if it's been more than a minute.
+  function libraryResponse(syncError) {
+    const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
+    return { items, synced_at: lastSyncAt || null, sync_error: syncError };
+  }
+
+  // Lists the library. Re-reads Drive first if it's been more than a minute,
+  // or if a file's shape is still being checked.
   // If Drive can't be reached, the last known list is returned with sync_error.
   app.get('/api/media', requireContent, async (req, res) => {
     let syncError = null;
-    if (Date.now() - lastSyncAt > SYNC_THROTTLE_MS) {
+    const checking = db.prepare(`SELECT 1 FROM media WHERE orientation IS NULL LIMIT 1`).get();
+    if (Date.now() - lastSyncAt > SYNC_THROTTLE_MS || checking) {
       try {
         await syncDriveFolder();
       } catch (err) {
@@ -186,8 +203,7 @@ function createApp({
         syncError = 'Could not reach Google Drive; showing the last known list';
       }
     }
-    const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
-    res.json({ items, synced_at: lastSyncAt || null, sync_error: syncError });
+    res.json(libraryResponse(syncError));
   });
 
   // The "pull to refresh" in the admin app: re-read Drive right now.
@@ -198,8 +214,7 @@ function createApp({
       log(err);
       return res.status(502).json({ error: 'Could not reach Google Drive' });
     }
-    const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
-    res.json({ items, synced_at: lastSyncAt, sync_error: null });
+    res.json(libraryResponse(null));
   });
 
   // File picker upload: the request body IS the file (not a form), and it is
@@ -255,9 +270,10 @@ function createApp({
         return res.status(502).json({ error: 'Could not delete the file in Google Drive' });
       }
     }
-    const wasInPlaylist = isInPlaylist(media.id);
-    db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from the playlist
-    if (wasInPlaylist) bumpPlaylistVersion(db);
+    db.transaction(() => {
+      bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
+      db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from every playlist
+    })();
     res.json({ ok: true });
   });
 
@@ -286,21 +302,76 @@ function createApp({
     }
   });
 
-  // ---------- Playlist ----------
+  // ---------- Playlists ----------
 
-  function playlistRows() {
+  function playlistItems(playlistId) {
     return db.prepare(
-      `SELECT p.media_id, p.image_seconds, m.filename, m.type, m.mime, m.size, m.md5
-       FROM playlist_items p JOIN media m ON m.id = p.media_id ORDER BY p.position`
-    ).all();
+      `SELECT p.media_id, p.image_seconds, m.filename, m.type, m.mime, m.size, m.md5, m.orientation
+       FROM playlist_items p JOIN media m ON m.id = p.media_id
+       WHERE p.playlist_id = ? ORDER BY p.position`
+    ).all(playlistId);
   }
 
-  app.get('/api/playlist', requireContent, (req, res) => {
-    res.json({ version: getPlaylistVersion(db), items: playlistRows() });
+  function playlistSummary(p) {
+    const devices = db.prepare(`SELECT id, name FROM devices WHERE playlist_id = ? AND claimed = 1 ORDER BY name`).all(p.id);
+    const count = db.prepare(`SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ?`).get(p.id).n;
+    return { id: p.id, name: p.name, orientation: p.orientation, version: p.version, item_count: count, devices };
+  }
+
+  function playlistDetail(p) {
+    return { ...playlistSummary(p), items: playlistItems(p.id) };
+  }
+
+  function findPlaylist(id) {
+    return db.prepare(`SELECT * FROM playlists WHERE id = ?`).get(id);
+  }
+
+  function checkPlaylistFields(body, { partial }) {
+    const out = {};
+    if (body.name !== undefined || !partial) {
+      const name = String(body.name || '').trim();
+      if (!name) return { error: 'Give the playlist a name' };
+      out.name = name;
+    }
+    if (body.orientation !== undefined || !partial) {
+      if (!PLAYLIST_ORIENTATIONS.includes(body.orientation)) return { error: 'orientation must be landscape or portrait' };
+      out.orientation = body.orientation;
+    }
+    return { fields: out };
+  }
+
+  app.get('/api/playlists', requireContent, (req, res) => {
+    res.json(db.prepare(`SELECT * FROM playlists ORDER BY name`).all().map(playlistSummary));
+  });
+
+  app.post('/api/playlists', requireContent, (req, res) => {
+    const { error, fields } = checkPlaylistFields(req.body || {}, { partial: false });
+    if (error) return res.status(400).json({ error });
+    const result = db.prepare(`INSERT INTO playlists (name, orientation, created_at) VALUES (?, ?, ?)`)
+      .run(fields.name, fields.orientation, Date.now());
+    res.status(201).json(playlistDetail(findPlaylist(result.lastInsertRowid)));
+  });
+
+  app.get('/api/playlists/:id', requireContent, (req, res) => {
+    const p = findPlaylist(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    res.json(playlistDetail(p));
+  });
+
+  app.patch('/api/playlists/:id', requireContent, (req, res) => {
+    const p = findPlaylist(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    const { error, fields } = checkPlaylistFields(req.body || {}, { partial: true });
+    if (error) return res.status(400).json({ error });
+    db.prepare(`UPDATE playlists SET name = ?, orientation = ?, version = version + 1 WHERE id = ?`)
+      .run(fields.name ?? p.name, fields.orientation ?? p.orientation, p.id);
+    res.json(playlistDetail(findPlaylist(p.id)));
   });
 
   // The admin app sends the whole list in the new order; we replace the old one.
-  app.put('/api/playlist', requireContent, (req, res) => {
+  app.put('/api/playlists/:id/items', requireContent, (req, res) => {
+    const p = findPlaylist(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
     const items = req.body && req.body.items;
     if (!Array.isArray(items)) return res.status(400).json({ error: 'Body must be { items: [...] }' });
     const mediaExists = db.prepare(`SELECT 1 FROM media WHERE id = ?`);
@@ -314,12 +385,24 @@ function createApp({
     }
     // A transaction means "all of these changes or none of them".
     db.transaction(() => {
-      db.prepare(`DELETE FROM playlist_items`).run();
-      const insert = db.prepare(`INSERT INTO playlist_items (media_id, position, image_seconds) VALUES (?, ?, ?)`);
-      items.forEach((item, i) => insert.run(item.media_id, i, item.image_seconds ?? 10));
-      bumpPlaylistVersion(db);
+      db.prepare(`DELETE FROM playlist_items WHERE playlist_id = ?`).run(p.id);
+      const insert = db.prepare(`INSERT INTO playlist_items (playlist_id, media_id, position, image_seconds) VALUES (?, ?, ?, ?)`);
+      items.forEach((item, i) => insert.run(p.id, item.media_id, i, item.image_seconds ?? 10));
+      bumpPlaylistVersions(db, [p.id]);
     })();
-    res.json({ version: getPlaylistVersion(db), items: playlistRows() });
+    res.json(playlistDetail(findPlaylist(p.id)));
+  });
+
+  // A playlist that players still use can't be deleted: move them first.
+  app.delete('/api/playlists/:id', requireContent, (req, res) => {
+    const p = findPlaylist(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    const users = db.prepare(`SELECT name FROM devices WHERE playlist_id = ? AND claimed = 1`).all(p.id);
+    if (users.length) {
+      return res.status(409).json({ error: `Still playing on ${users.map((d) => d.name).join(', ')}. Move those players to another playlist first.` });
+    }
+    db.prepare(`DELETE FROM playlists WHERE id = ?`).run(p.id);
+    res.json({ ok: true });
   });
 
   // ---------- Devices (superadmin, system manager) ----------
@@ -328,9 +411,14 @@ function createApp({
     const current = d.current_media_id
       ? db.prepare(`SELECT filename FROM media WHERE id = ?`).get(d.current_media_id)
       : null;
+    const playlist = d.playlist_id ? findPlaylist(d.playlist_id) : null;
     return {
       id: d.id,
       name: d.name,
+      location: d.location,
+      orientation: d.orientation,
+      playlist_id: d.playlist_id,
+      playlist_name: playlist ? playlist.name : null,
       online: d.last_seen != null && Date.now() - d.last_seen < ONLINE_WINDOW_MS,
       last_seen: d.last_seen,
       current_media_id: d.current_media_id,
@@ -340,32 +428,64 @@ function createApp({
     };
   }
 
+  // Checks name / location / orientation / playlist_id from the admin app.
+  function checkDeviceFields(body, { partial }) {
+    const out = {};
+    if (body.name !== undefined || !partial) {
+      const name = String(body.name || '').trim();
+      if (!name) return { error: 'Give the player a name' };
+      out.name = name;
+    }
+    if (body.location !== undefined) out.location = String(body.location || '').trim() || null;
+    if (body.orientation !== undefined) {
+      if (!DEVICE_ORIENTATIONS.includes(body.orientation)) {
+        return { error: `orientation must be one of: ${DEVICE_ORIENTATIONS.join(', ')}` };
+      }
+      out.orientation = body.orientation;
+    }
+    if (body.playlist_id !== undefined) {
+      if (body.playlist_id !== null && !findPlaylist(body.playlist_id)) return { error: 'Unknown playlist' };
+      out.playlist_id = body.playlist_id;
+    }
+    return { fields: out };
+  }
+
+  function applyDeviceFields(id, fields) {
+    const sets = Object.keys(fields).map((k) => `${k} = @${k}`);
+    if (!sets.length) return;
+    db.prepare(`UPDATE devices SET ${sets.join(', ')}, config_version = config_version + 1 WHERE id = @id`).run({ ...fields, id });
+  }
+
   app.get('/api/devices', requireDevices, (req, res) => {
-    const rows = db.prepare(`SELECT * FROM devices WHERE claimed = 1 ORDER BY name`).all();
+    const rows = db.prepare(`SELECT * FROM devices WHERE claimed = 1 ORDER BY location, name`).all();
     res.json(rows.map(deviceView));
   });
 
   // Pairing. "code" is either what the admin app read from the TV's QR code
   // ("kiosk-pair:K7P29Q") or what someone typed in ("k7p-29q"). Both work.
+  // The rest of the body sets the player up: name, location, orientation, playlist.
   app.post('/api/devices/claim', requireDevices, (req, res) => {
-    const code = String((req.body && req.body.code) || '')
-      .replace(/^kiosk-pair:/i, '')
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
-    const name = String((req.body && req.body.name) || '').trim();
-    if (!name) return res.status(400).json({ error: 'Give the player a name' });
+    const body = req.body || {};
+    const code = String(body.code || '').replace(/^kiosk-pair:/i, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const { error, fields } = checkDeviceFields(body, { partial: false });
+    if (error) return res.status(400).json({ error });
     const device = db.prepare(`SELECT * FROM devices WHERE pairing_code = ? AND claimed = 0`).get(code);
     if (!device) return res.status(404).json({ error: 'No player is showing that code' });
-    db.prepare(`UPDATE devices SET claimed = 1, pairing_code = NULL, name = ? WHERE id = ?`).run(name, device.id);
+    db.transaction(() => {
+      db.prepare(`UPDATE devices SET claimed = 1, pairing_code = NULL WHERE id = ?`).run(device.id);
+      applyDeviceFields(device.id, fields);
+    })();
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
 
+  // Edit a player: any of name, location, orientation, playlist_id.
   app.patch('/api/devices/:id', requireDevices, (req, res) => {
-    const name = String((req.body && req.body.name) || '').trim();
-    if (!name) return res.status(400).json({ error: 'Name cannot be empty' });
-    const result = db.prepare(`UPDATE devices SET name = ? WHERE id = ? AND claimed = 1`).run(name, req.params.id);
-    if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
-    res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.params.id)));
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Not found' });
+    const { error, fields } = checkDeviceFields(req.body || {}, { partial: true });
+    if (error) return res.status(400).json({ error });
+    applyDeviceFields(device.id, fields);
+    res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
 
   // Removing a device makes its token useless; the TV will show a new code.
@@ -407,17 +527,31 @@ function createApp({
     });
   });
 
+  // What this TV should play, and how to turn the picture for its screen.
+  // "version" changes whenever the playlist, its files or this TV's settings change.
+  function playerPlaylist(device) {
+    const playlist = device.playlist_id ? findPlaylist(device.playlist_id) : null;
+    const items = playlist ? playlistItems(playlist.id) : [];
+    return {
+      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}`,
+      name: device.name,
+      orientation: device.orientation,
+      playlist_name: playlist ? playlist.name : null,
+      items: items.map((r) => ({
+        id: r.media_id,
+        type: r.type,
+        filename: r.filename,
+        url: `/media/${r.media_id}`,
+        md5: r.md5,
+        size: r.size,
+        orientation: r.orientation,
+        duration_seconds: r.type === 'image' ? r.image_seconds : null,
+      })),
+    };
+  }
+
   app.get('/api/player/playlist', auth.requireDevice(db), (req, res) => {
-    const items = playlistRows().map((r) => ({
-      id: r.media_id,
-      type: r.type,
-      filename: r.filename,
-      url: `/media/${r.media_id}`,
-      md5: r.md5,
-      size: r.size,
-      duration_seconds: r.type === 'image' ? r.image_seconds : null,
-    }));
-    res.json({ version: getPlaylistVersion(db), items });
+    res.json(playerPlaylist(req.device));
   });
 
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
@@ -431,7 +565,7 @@ function createApp({
       typeof body.app_version === 'string' ? body.app_version : req.device.app_version,
       req.device.id
     );
-    res.json({ ok: true, playlist_version: getPlaylistVersion(db) });
+    res.json({ ok: true, version: playerPlaylist(req.device).version });
   });
 
   // Anything that throws ends up here, so the apps always get JSON back.

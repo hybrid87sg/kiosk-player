@@ -84,7 +84,7 @@ test('roles: what each role may and may not do', async (t) => {
 
   // Everyone can work on content.
   for (const token of [boss, manager, uploader]) {
-    assert.equal((await call('GET', '/api/playlist', { token })).status, 200);
+    assert.equal((await call('GET', '/api/playlists', { token })).status, 200);
   }
   // Only superadmin and system manager can manage TVs.
   assert.equal((await call('GET', '/api/devices', { token: manager })).status, 200);
@@ -106,22 +106,33 @@ test('roles: what each role may and may not do', async (t) => {
 
   // Removing a user signs them out.
   assert.equal((await call('DELETE', `/api/users/${uploaderRow.id}`, { token: boss })).status, 200);
-  assert.equal((await call('GET', '/api/playlist', { token: uploader })).status, 401);
+  assert.equal((await call('GET', '/api/playlists', { token: uploader })).status, 401);
 });
 
-test('library: Drive folder sync and file picker upload into Drive', async (t) => {
+test('library: Drive folder sync, shapes, and file picker upload into Drive', async (t) => {
   const { call, signIn, upload, google } = await startServer(t);
   const boss = await signIn(BOSS);
 
-  // Someone drops files into the Drive folder; only playable types appear.
-  const dropped = google.addFile('Lobby promo.mp4', 'video/mp4', crypto.randomBytes(5000));
+  // Someone drops files into the Drive folder; only playable types appear,
+  // and each one is sorted into landscape or portrait from its size.
+  const dropped = google.addFile('Lobby promo.mp4', 'video/mp4', crypto.randomBytes(5000), { width: 3840, height: 2160 });
+  google.addFile('Menu board.jpg', 'image/jpeg', crypto.randomBytes(800), { width: 1080, height: 1920 });
   google.addFile('notes.txt', 'text/plain', Buffer.from('hello'));
   let library = await (await call('GET', '/api/media', { token: boss })).json();
-  assert.deepEqual(library.items.map((m) => [m.filename, m.type]), [['Lobby promo.mp4', 'video']]);
+  assert.deepEqual(
+    library.items.map((m) => [m.filename, m.type, m.orientation]).sort(),
+    [['Lobby promo.mp4', 'video', 'landscape'], ['Menu board.jpg', 'image', 'portrait']]
+  );
   assert.equal(library.sync_error, null);
 
-  // New files show up in the library but are NOT added to the playlist by themselves.
-  assert.equal((await (await call('GET', '/api/playlist', { token: boss })).json()).items.length, 0);
+  // A brand-new video Drive hasn't measured yet shows as "still checking"
+  // (orientation null) until a later sync fills it in.
+  const fresh = google.addFile('Fresh upload.mp4', 'video/mp4', crypto.randomBytes(900), null);
+  library = await (await call('POST', '/api/media/sync', { token: boss })).json();
+  assert.equal(library.items.find((m) => m.filename === 'Fresh upload.mp4').orientation, null);
+  google.setDims(fresh.id, 1080, 1920);
+  library = await (await call('GET', '/api/media', { token: boss })).json(); // re-syncs because one was checking
+  assert.equal(library.items.find((m) => m.filename === 'Fresh upload.mp4').orientation, 'portrait');
 
   // The file picker upload goes into Drive and into the library.
   const imageBytes = crypto.randomBytes(2000);
@@ -129,6 +140,7 @@ test('library: Drive folder sync and file picker upload into Drive', async (t) =
   assert.equal(up.status, 201);
   const image = await up.json();
   assert.equal(image.type, 'image');
+  assert.equal(image.orientation, 'landscape');
   assert.equal(image.md5, crypto.createHash('md5').update(imageBytes).digest('hex'));
 
   // Bad types and oversized files are refused.
@@ -136,7 +148,7 @@ test('library: Drive folder sync and file picker upload into Drive', async (t) =
   assert.equal((await upload(boss, 'big.mp4', crypto.randomBytes(2 * 1024 * 1024))).status, 413);
 
   // Deleting from the app sends the file to Drive's trash.
-  const video = library.items[0];
+  const video = library.items.find((m) => m.filename === 'Lobby promo.mp4');
   assert.equal((await call('DELETE', `/api/media/${video.id}`, { token: boss })).status, 200);
   assert.equal(google.has(dropped.id), false);
 
@@ -146,7 +158,7 @@ test('library: Drive folder sync and file picker upload into Drive', async (t) =
   // An upload Drive refuses gets a clear error instead of hanging.
   assert.equal((await upload(boss, 'later.mp4', crypto.randomBytes(200_000), 'video/mp4')).status, 502);
   library = await (await call('GET', '/api/media', { token: boss })).json();
-  assert.deepEqual(library.items.map((m) => m.filename), ['menu.JPG']);
+  assert.ok(library.items.some((m) => m.filename === 'menu.JPG'));
 });
 
 test('library: the app is told when Google Drive is unreachable', async (t) => {
@@ -158,18 +170,60 @@ test('library: the app is told when Google Drive is unreachable', async (t) => {
   assert.match(library.sync_error, /Google Drive/);
 });
 
-test('pairing a TV by QR code or PIN, then playing the playlist', async (t) => {
+test('playlists: several named playlists, each landscape or portrait', async (t) => {
+  const { call, signIn, upload } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const a = await (await upload(boss, 'a.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const b = await (await upload(boss, 'b.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+
+  assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: '', orientation: 'landscape' } })).status, 400);
+  assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: 'X', orientation: 'square' } })).status, 400);
+  const lobby = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby screens', orientation: 'landscape' } })).json();
+  const recep = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Reception portrait', orientation: 'portrait' } })).json();
+  assert.equal(lobby.item_count, 0);
+
+  // Save items, in order; the version goes up each time.
+  const saved = await (await call('PUT', `/api/playlists/${lobby.id}/items`, {
+    token: boss, json: { items: [{ media_id: b.id, image_seconds: 5 }, { media_id: a.id }] },
+  })).json();
+  assert.deepEqual(saved.items.map((i) => [i.media_id, i.image_seconds]), [[b.id, 5], [a.id, 10]]);
+  assert.ok(saved.version > lobby.version);
+  assert.equal((await call('PUT', `/api/playlists/${lobby.id}/items`, { token: boss, json: { items: [{ media_id: 999 }] } })).status, 400);
+
+  // The same file can be in several playlists.
+  await call('PUT', `/api/playlists/${recep.id}/items`, { token: boss, json: { items: [{ media_id: a.id }] } });
+  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(list.map((p) => [p.name, p.orientation, p.item_count]), [['Lobby screens', 'landscape', 2], ['Reception portrait', 'portrait', 1]]);
+
+  // Rename and change shape.
+  const renamed = await (await call('PATCH', `/api/playlists/${recep.id}`, { token: boss, json: { name: 'Reception' } })).json();
+  assert.equal(renamed.name, 'Reception');
+  assert.equal(renamed.orientation, 'portrait');
+
+  // Deleting a file takes it out of every playlist.
+  await call('DELETE', `/api/media/${a.id}`, { token: boss });
+  const after = await (await call('GET', `/api/playlists/${lobby.id}`, { token: boss })).json();
+  assert.deepEqual(after.items.map((i) => i.media_id), [b.id]);
+  assert.equal((await (await call('GET', `/api/playlists/${recep.id}`, { token: boss })).json()).item_count, 0);
+
+  // An unused playlist can be deleted.
+  assert.equal((await call('DELETE', `/api/playlists/${recep.id}`, { token: boss })).status, 200);
+  assert.equal((await call('GET', `/api/playlists/${recep.id}`, { token: boss })).status, 404);
+});
+
+test('pairing a TV by QR code or PIN, setting it up, then playing its playlist', async (t) => {
   const { call, signIn, upload, google } = await startServer(t);
   const boss = await signIn(BOSS);
 
   const videoBytes = crypto.randomBytes(50_000);
   const video = await (await upload(boss, 'Lobby promo.mp4', videoBytes, 'video/mp4')).json();
   const image = await (await upload(boss, 'menu.png', crypto.randomBytes(1000), 'image/png')).json();
-  const saved = await (await call('PUT', '/api/playlist', {
+  const lobby = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby screens', orientation: 'landscape' } })).json();
+  const recep = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Reception', orientation: 'portrait' } })).json();
+  await call('PUT', `/api/playlists/${lobby.id}/items`, {
     token: boss, json: { items: [{ media_id: image.id, image_seconds: 5 }, { media_id: video.id }] },
-  })).json();
-  assert.deepEqual(saved.items.map((i) => i.media_id), [image.id, video.id]);
-  assert.equal((await call('PUT', '/api/playlist', { token: boss, json: { items: [{ media_id: 999 }] } })).status, 400);
+  });
+  await call('PUT', `/api/playlists/${recep.id}/items`, { token: boss, json: { items: [{ media_id: image.id }] } });
 
   // Two TVs register. Each gets a code and a QR payload; neither can play yet.
   const tvA = await (await call('POST', '/api/player/register', { json: { app_version: '0.1.0' } })).json();
@@ -178,57 +232,82 @@ test('pairing a TV by QR code or PIN, then playing the playlist', async (t) => {
   assert.equal(tvA.qr_payload, `kiosk-pair:${tvA.pairing_code}`);
   assert.equal((await call('GET', '/api/player/playlist', { token: tvA.token })).status, 403);
 
-  // TV A is paired by scanning its QR code...
+  // TV A is paired by scanning its QR code and set up as a landscape lobby screen...
   assert.equal((await call('POST', '/api/devices/claim', { token: boss, json: { code: 'kiosk-pair:ZZZZZZ', name: 'x' } })).status, 404);
-  const claimA = await call('POST', '/api/devices/claim', { token: boss, json: { code: tvA.qr_payload, name: 'Front window' } });
+  assert.equal((await call('POST', '/api/devices/claim', { token: boss, json: { code: tvA.qr_payload, name: 'Front', orientation: 'upside' } })).status, 400);
+  const claimA = await call('POST', '/api/devices/claim', {
+    token: boss, json: { code: tvA.qr_payload, name: 'Front window', location: 'Main lobby', orientation: 'landscape', playlist_id: lobby.id },
+  });
   assert.equal(claimA.status, 200);
-  // ...and TV B by typing the PIN, in lower case with a dash.
+  const front = await claimA.json();
+  assert.deepEqual([front.location, front.orientation, front.playlist_name], ['Main lobby', 'landscape', 'Lobby screens']);
+  // ...and TV B by typing the PIN, in lower case with a dash, as a portrait reception screen.
   const typed = (tvB.pairing_code.slice(0, 3) + '-' + tvB.pairing_code.slice(3)).toLowerCase();
-  assert.equal((await call('POST', '/api/devices/claim', { token: boss, json: { code: typed, name: 'Back wall' } })).status, 200);
+  const claimB = await call('POST', '/api/devices/claim', {
+    token: boss, json: { code: typed, name: 'Reception', location: 'Branch office', orientation: 'portrait_right', playlist_id: recep.id },
+  });
+  assert.equal(claimB.status, 200);
   assert.deepEqual(await (await call('GET', '/api/player/status', { token: tvA.token })).json(), {
     claimed: true, name: 'Front window', pairing_code: null, qr_payload: null,
   });
 
-  // The TV gets the playlist in order, with md5 fingerprints to check downloads.
-  const pl = await (await call('GET', '/api/player/playlist', { token: tvA.token })).json();
-  assert.equal(pl.version, saved.version);
-  assert.deepEqual(pl.items.map((i) => [i.id, i.type, i.duration_seconds]), [[image.id, 'image', 5], [video.id, 'video', null]]);
-  assert.equal(pl.items[1].md5, crypto.createHash('md5').update(videoBytes).digest('hex'));
+  // Each TV gets its own playlist and how to turn the picture.
+  const plA = await (await call('GET', '/api/player/playlist', { token: tvA.token })).json();
+  assert.equal(plA.orientation, 'landscape');
+  assert.equal(plA.playlist_name, 'Lobby screens');
+  assert.deepEqual(plA.items.map((i) => [i.id, i.type, i.duration_seconds]), [[image.id, 'image', 5], [video.id, 'video', null]]);
+  assert.equal(plA.items[1].md5, crypto.createHash('md5').update(videoBytes).digest('hex'));
+  const plB = await (await call('GET', '/api/player/playlist', { token: tvB.token })).json();
+  assert.equal(plB.orientation, 'portrait_right');
+  assert.deepEqual(plB.items.map((i) => i.id), [image.id]);
 
-  // It downloads the video through the server, and can resume part-way.
-  const full = await call('GET', pl.items[1].url, { token: tvA.token });
+  // A playlist in use can't be deleted.
+  const blocked = await call('DELETE', `/api/playlists/${recep.id}`, { token: boss });
+  assert.equal(blocked.status, 409);
+  assert.match((await blocked.json()).error, /Reception/);
+
+  // The TV downloads the video through the server, and can resume part-way.
+  const full = await call('GET', plA.items[1].url, { token: tvA.token });
   assert.equal(full.headers.get('content-type'), 'video/mp4');
   assert.ok(Buffer.from(await full.arrayBuffer()).equals(videoBytes));
-  const partial = await call('GET', pl.items[1].url, { token: tvA.token, headers: { range: 'bytes=1000-' } });
+  const partial = await call('GET', plA.items[1].url, { token: tvA.token, headers: { range: 'bytes=1000-' } });
   assert.equal(partial.status, 206);
   assert.equal(partial.headers.get('content-range'), `bytes 1000-${videoBytes.length - 1}/${videoBytes.length}`);
   assert.ok(Buffer.from(await partial.arrayBuffer()).equals(videoBytes.subarray(1000)));
-  assert.equal((await call('GET', pl.items[1].url)).status, 401);
+  assert.equal((await call('GET', plA.items[1].url)).status, 401);
 
-  // Heartbeat makes it show as online and playing the video.
-  await call('POST', '/api/player/heartbeat', { token: tvA.token, json: { current_media_id: video.id, free_bytes: 123456 } });
+  // Heartbeat makes it show as online and playing the video; the reply carries the version.
+  const beat = await (await call('POST', '/api/player/heartbeat', { token: tvA.token, json: { current_media_id: video.id, free_bytes: 123456 } })).json();
+  assert.equal(beat.version, plA.version);
   const devices = await (await call('GET', '/api/devices', { token: boss })).json();
-  const front = devices.find((d) => d.name === 'Front window');
-  assert.equal(front.online, true);
-  assert.equal(front.current_filename, 'Lobby promo.mp4');
+  const frontRow = devices.find((d) => d.name === 'Front window');
+  assert.equal(frontRow.online, true);
+  assert.equal(frontRow.current_filename, 'Lobby promo.mp4');
 
-  // Someone replaces the video's content in Drive: after a sync the version
-  // goes up and the md5 changes, so TVs know to download it again.
-  const newBytes = crypto.randomBytes(40_000);
-  google.replaceContent(google.findByName('Lobby promo.mp4').id, newBytes);
+  // Moving TV A to the other playlist (and turning it portrait) changes its version.
+  await call('PATCH', `/api/devices/${frontRow.id}`, { token: boss, json: { playlist_id: recep.id, orientation: 'portrait_left' } });
+  const moved = await (await call('GET', '/api/player/playlist', { token: tvA.token })).json();
+  assert.notEqual(moved.version, plA.version);
+  assert.equal(moved.orientation, 'portrait_left');
+  assert.deepEqual(moved.items.map((i) => i.id), [image.id]);
+  assert.equal((await call('PATCH', `/api/devices/${frontRow.id}`, { token: boss, json: { playlist_id: 999 } })).status, 400);
+
+  // Someone replaces the image's content in Drive: after a sync the version
+  // changes and the md5 changes, so TVs know to download it again.
+  const newBytes = crypto.randomBytes(1200);
+  google.replaceContent(google.findByName('menu.png').id, newBytes);
   await call('POST', '/api/media/sync', { token: boss });
   const changed = await (await call('GET', '/api/player/playlist', { token: tvA.token })).json();
-  assert.ok(changed.version > pl.version);
-  assert.equal(changed.items[1].md5, crypto.createHash('md5').update(newBytes).digest('hex'));
+  assert.notEqual(changed.version, moved.version);
+  assert.equal(changed.items[0].md5, crypto.createHash('md5').update(newBytes).digest('hex'));
 
   // Someone deletes the image straight from Drive: it leaves the playlist too.
   google.removeFile(google.findByName('menu.png').id);
   await call('POST', '/api/media/sync', { token: boss });
-  const shrunk = await (await call('GET', '/api/player/playlist', { token: tvA.token })).json();
-  assert.ok(shrunk.version > changed.version);
-  assert.deepEqual(shrunk.items.map((i) => i.id), [video.id]);
+  const empty = await (await call('GET', '/api/player/playlist', { token: tvA.token })).json();
+  assert.deepEqual(empty.items, []);
 
   // Removing a TV locks it out; it would register again and show a new code.
-  assert.equal((await call('DELETE', `/api/devices/${front.id}`, { token: boss })).status, 200);
+  assert.equal((await call('DELETE', `/api/devices/${frontRow.id}`, { token: boss })).status, 200);
   assert.equal((await call('GET', '/api/player/playlist', { token: tvA.token })).status, 401);
 });

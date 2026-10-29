@@ -8,14 +8,15 @@
 //   downloadStream(fileId, range)   -> { status, headers, stream }
 //   deleteFile(fileId)                             moves a file to Drive's trash
 //
-// A "file" is { id, name, mimeType, size, md5Checksum }.
+// A "file" is { id, name, mimeType, size, md5Checksum, width, height }.
+// width/height are null while Drive is still processing a new video.
 
 const fs = require('node:fs');
 const { Readable } = require('node:stream');
 const { drive: makeDrive, auth: googleAuth } = require('@googleapis/drive');
 const { OAuth2Client } = require('google-auth-library');
 
-const FILE_FIELDS = 'id, name, mimeType, size, md5Checksum';
+const FILE_FIELDS = 'id, name, mimeType, size, md5Checksum, imageMediaMetadata(width, height, rotation), videoMediaMetadata(width, height)';
 
 function createGoogle({ webClientId, serviceAccountFile, folderId }) {
   // The server acts as the "service account" (a robot Google user) that has
@@ -87,9 +88,23 @@ function createGoogle({ webClientId, serviceAccountFile, folderId }) {
   return { verifyIdToken, listFolder, uploadFile, downloadStream, deleteFile };
 }
 
-// Drive sends size as a string; make it a number.
+// Drive sends size as a string and keeps width/height in separate image and
+// video sections; flatten that into plain numbers. A picture stored sideways
+// (rotation 90 or 270) has its width and height swapped.
 function normalise(file) {
-  return { ...file, size: Number(file.size) };
+  const image = file.imageMediaMetadata;
+  const video = file.videoMediaMetadata;
+  let width = null;
+  let height = null;
+  if (image && image.width && image.height) {
+    const sideways = image.rotation === 1 || image.rotation === 3 || image.rotation === 90 || image.rotation === 270;
+    width = sideways ? image.height : image.width;
+    height = sideways ? image.width : image.height;
+  } else if (video && video.width && video.height) {
+    width = video.width;
+    height = video.height;
+  }
+  return { id: file.id, name: file.name, mimeType: file.mimeType, size: Number(file.size), md5Checksum: file.md5Checksum, width, height };
 }
 
 module.exports = { createGoogle };

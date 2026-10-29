@@ -10,14 +10,18 @@ function createFakeGoogle() {
   const files = new Map(); // id -> { id, name, mimeType, size, md5Checksum, data }
   let nextId = 1;
   let failing = false;
+  let uploadDims = { width: 3840, height: 2160 }; // what Drive "measures" for uploads
 
-  function addFile(name, mimeType, data) {
+  // dims: { width, height } in pixels, or null while Drive is still processing.
+  function addFile(name, mimeType, data, dims = { width: 3840, height: 2160 }) {
     const file = {
       id: `drive-${nextId++}`,
       name,
       mimeType,
       size: data.length,
       md5Checksum: crypto.createHash('md5').update(data).digest('hex'),
+      width: dims ? dims.width : null,
+      height: dims ? dims.height : null,
       data,
     };
     files.set(file.id, file);
@@ -42,7 +46,7 @@ function createFakeGoogle() {
       if (failing) throw offline();
       const chunks = [];
       for await (const chunk of stream) chunks.push(chunk);
-      return meta(addFile(name, mimeType, Buffer.concat(chunks)));
+      return meta(addFile(name, mimeType, Buffer.concat(chunks), uploadDims));
     },
 
     async downloadStream(fileId, range) {
@@ -75,6 +79,10 @@ function createFakeGoogle() {
       file.size = data.length;
       file.md5Checksum = crypto.createHash('md5').update(data).digest('hex');
     },
+    setDims(id, width, height) {
+      Object.assign(files.get(id), { width, height });
+    },
+    setUploadDims: (dims) => (uploadDims = dims),
     has: (id) => files.has(id),
     findByName: (name) => [...files.values()].find((f) => f.name === name),
     setFailing: (value) => (failing = value),
