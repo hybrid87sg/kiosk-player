@@ -1,0 +1,59 @@
+# Publishes a GitHub release with everything you need:
+#   KioskAdmin-for-phone.apk, KioskPlayer-for-TV.apk and kiosk_server-addon.zip
+#
+# How: Actions tab -> "Release" -> "Run workflow", type a version (e.g. 0.2.0).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 0.2.0"
+        required: true
+      prerelease:
+        description: "Mark it as a test version (pre-release)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # needed to create the release
+
+jobs:
+  android:
+    uses: ./.github/workflows/android.yml
+  addon:
+    uses: ./.github/workflows/addon.yml
+
+  publish:
+    needs: [android, addon]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Kiosk Signage v${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            files/KioskAdmin-for-phone.apk
+            files/KioskPlayer-for-TV.apk
+            files/kiosk_server-addon.zip
+          body: |
+            ## Which file goes where
+            | File | Goes on | What it is |
+            |---|---|---|
+            | `KioskAdmin-for-phone.apk` | Your Android phone | Kiosk Admin app |
+            | `KioskPlayer-for-TV.apk` | Each Android TV box | Kiosk Player app |
+            | `kiosk_server-addon.zip` | Home Assistant | The server, as an add-on (unzip into the **addons** share; see DOCS.md inside) |
+
+            Both apps have a **Demo mode** with sample data, so they can be tried
+            without a server. Connecting to the real server needs the add-on running
+            and the one-time Google setup.
+
+            The apps are test builds signed with the shared test key in `android/keystore`.

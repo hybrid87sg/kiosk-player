@@ -10,6 +10,7 @@ function createFakeGoogle() {
   const files = new Map(); // id -> { id, name, mimeType, size, md5Checksum, data }
   let nextId = 1;
   let failing = false;
+  let downloads = 0;
   let uploadDims = { width: 3840, height: 2160 }; // what Drive "measures" for uploads
 
   // dims: { width, height } in pixels, or null while Drive is still processing.
@@ -50,6 +51,7 @@ function createFakeGoogle() {
     },
 
     async downloadStream(fileId, range) {
+      downloads++;
       const file = files.get(fileId);
       if (!file) throw Object.assign(new Error('not found'), { status: 404 });
       const match = range && /^bytes=(\d+)-(\d*)$/.exec(range);
@@ -86,6 +88,7 @@ function createFakeGoogle() {
     has: (id) => files.has(id),
     findByName: (name) => [...files.values()].find((f) => f.name === name),
     setFailing: (value) => (failing = value),
+    downloadCount: () => downloads,
   };
 }
 

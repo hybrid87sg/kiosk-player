@@ -134,7 +134,7 @@ private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
                 value = address,
                 onValueChange = { address = it },
                 singleLine = true,
-                placeholder = { Text("signage.yourcompany.com", fontSize = 22.sp) },
+                placeholder = { Text("e.g. 192.168.1.20:3000", fontSize = 22.sp) },
                 textStyle = MaterialTheme.typography.headlineSmall.copy(color = Color.White),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { if (address.isNotBlank()) onServer(address) }),

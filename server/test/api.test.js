@@ -14,11 +14,11 @@ const { createFakeGoogle } = require('./fake-google');
 
 const BOSS = 'boss@example.com';
 
-async function startServer(t) {
+async function startServer(t, extra = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-test-'));
   const google = createFakeGoogle();
   const app = createApp({
-    dataDir, google, googleWebClientId: 'web-client-123', superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {},
+    dataDir, google, googleWebClientId: 'web-client-123', superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {}, ...extra,
   });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
@@ -313,4 +313,32 @@ test('pairing a TV by QR code or PIN, setting it up, then playing its playlist',
   // Removing a TV locks it out; it would register again and show a new code.
   assert.equal((await call('DELETE', `/api/devices/${frontRow.id}`, { token: boss })).status, 200);
   assert.equal((await call('GET', '/api/player/playlist', { token: tvA.token })).status, 401);
+});
+
+test('media cache: the first download comes from Drive, later ones from the local copy', async (t) => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-cache-'));
+  t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
+  const { call, signIn, upload, google } = await startServer(t, { mediaCacheDir: cacheDir });
+  const boss = await signIn(BOSS);
+  const bytes = crypto.randomBytes(80_000);
+  const video = await (await upload(boss, 'promo.mp4', bytes, 'video/mp4')).json();
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'TV' } });
+
+  const first = await call('GET', `/media/${video.id}`, { token: tv.token });
+  assert.ok(Buffer.from(await first.arrayBuffer()).equals(bytes));
+  assert.equal(google.downloadCount(), 1);
+
+  // Second TV download, and a resumed (Range) one: both from the local copy.
+  const second = await call('GET', `/media/${video.id}`, { token: tv.token });
+  assert.ok(Buffer.from(await second.arrayBuffer()).equals(bytes));
+  const part = await call('GET', `/media/${video.id}`, { token: tv.token, headers: { range: 'bytes=5000-' } });
+  assert.equal(part.status, 206);
+  assert.ok(Buffer.from(await part.arrayBuffer()).equals(bytes.subarray(5000)));
+  assert.equal(google.downloadCount(), 1);
+
+  // Deleting the file removes its local copy too.
+  assert.equal(fs.readdirSync(cacheDir).length, 1);
+  await call('DELETE', `/api/media/${video.id}`, { token: boss });
+  assert.equal(fs.readdirSync(cacheDir).length, 0);
 });

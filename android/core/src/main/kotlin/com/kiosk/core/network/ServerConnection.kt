@@ -47,10 +47,27 @@ internal class ServerConnection(baseUrl: String, private val token: () -> String
     inline fun <reified T> create(): T = retrofit.create(T::class.java)
 }
 
-/** "signage.example.com" -> "https://signage.example.com/" */
+/**
+ * Turns what someone typed into a full server address.
+ *
+ *   "signage.example.com"       -> "https://signage.example.com/"
+ *   "192.168.1.20:3000"         -> "http://192.168.1.20:3000/"
+ *   "homeassistant.local:3000"  -> "http://homeassistant.local:3000/"
+ *
+ * Servers on the home network (an IP address, a ".local" name, or an address
+ * with a port number, like a Home Assistant add-on) don't have HTTPS
+ * certificates, so they get plain http://. Typing http:// or https:// yourself
+ * always wins.
+ */
 fun normaliseBaseUrl(input: String): String {
     var url = input.trim()
-    if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
+    if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+        val host = url.substringBefore('/').substringBefore(':')
+        val hasPort = url.substringBefore('/').contains(':')
+        val local = hasPort || host.endsWith(".local", ignoreCase = true) || host == "localhost" ||
+            Regex("""^\d{1,3}(\.\d{1,3}){3}$""").matches(host)
+        url = (if (local) "http://" else "https://") + url
+    }
     if (!url.endsWith("/")) url += "/"
     return url
 }

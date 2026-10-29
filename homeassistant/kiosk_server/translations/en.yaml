@@ -1,0 +1,18 @@
+configuration:
+  superadmin_email:
+    name: Superadmin email
+    description: Your Google account. It can always sign in to Kiosk Admin as a superadmin.
+  google_web_client_id:
+    name: Google web client ID
+    description: The "Web application" OAuth client ID from Google Cloud Console (ends in .apps.googleusercontent.com).
+  drive_folder_id:
+    name: Google Drive folder ID
+    description: The ID of the Signage folder, from its web address (drive.google.com/drive/folders/THIS-PART).
+  service_account_file:
+    name: Service account key file
+    description: The name of the key file you copied into this add-on's config folder (addon_configs/local_kiosk_server).
+  cache_media:
+    name: Keep a local copy of each file
+    description: Each file is downloaded from Google Drive once, then sent to every TV from this machine. Uses disk space here.
+network:
+  3000/tcp: Kiosk server port

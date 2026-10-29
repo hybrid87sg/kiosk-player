@@ -17,6 +17,7 @@ const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia } = require('./db');
 const auth = require('./auth');
+const { MediaCache } = require('./media-cache');
 
 // File types the player can show, by MIME type and by file extension.
 const TYPE_BY_MIME = { 'video/mp4': 'video', 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image' };
@@ -52,11 +53,16 @@ function createApp({
   google,
   googleWebClientId = null,
   superadminEmail,
+  mediaCacheDir = null, // set to keep a local copy of each Drive file (see media-cache.js)
   maxUploadBytes = 8 * 1024 ** 3,
   syncIntervalMs = 5 * 60 * 1000,
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
+  const cache = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
+  const pruneCache = () => {
+    if (cache) cache.prune(db.prepare(`SELECT id, md5, filename FROM media`).all());
+  };
   if (superadminEmail) ensureSuperadmin(db, superadminEmail);
 
   const requireContent = auth.requireRole(db, auth.CAN_MANAGE_CONTENT);
@@ -184,6 +190,7 @@ function createApp({
           }
         })();
         lastSyncAt = Date.now();
+        pruneCache();
       })().finally(() => (syncInFlight = null));
     }
     return syncInFlight;
@@ -279,14 +286,19 @@ function createApp({
       bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
       db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from every playlist
     })();
+    pruneCache();
     res.json({ ok: true });
   });
 
-  // Download, streamed from Drive. The "Range" header is passed through so an
-  // interrupted download on the TV can continue where it stopped.
+  // Download. Served from the local cache when there is a copy; otherwise
+  // streamed from Drive (and, with the cache on, saved while it passes).
+  // The "Range" header lets an interrupted download on the TV continue where it stopped.
   app.get('/media/:id', auth.requireUserOrDevice(db), async (req, res) => {
     const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
+    if (cache && cache.has(media)) {
+      return res.sendFile(cache.pathFor(media), { headers: { 'Content-Type': media.mime } });
+    }
     let download;
     try {
       download = await google.downloadStream(media.drive_file_id, req.get('range'));
@@ -300,10 +312,15 @@ function createApp({
     res.status(download.status);
     res.set({ 'Content-Type': media.mime, 'Accept-Ranges': 'bytes' });
     for (const [name, value] of Object.entries(download.headers)) if (value) res.set(name, value);
+    // Only a whole-file download can become the cached copy.
+    const recorder = cache && download.status === 200 ? cache.startRecording(media) : null;
+    if (recorder) download.stream.on('data', (chunk) => recorder.write(chunk));
     try {
       await pipeline(download.stream, res);
+      if (recorder) await recorder.finish();
     } catch (err) {
       // Usually the TV disconnected mid-download; it will resume later.
+      if (recorder) recorder.abort();
     }
   });
 

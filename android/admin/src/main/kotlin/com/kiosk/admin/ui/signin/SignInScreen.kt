@@ -138,7 +138,7 @@ fun SignInScreen(app: KioskAdminApplication) {
                         value = serverUrl,
                         onValueChange = { serverUrl = it; error = null },
                         label = { Text("Server address") },
-                        placeholder = { Text("signage.yourcompany.com") },
+                        placeholder = { Text("e.g. 192.168.1.20:3000") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         modifier = Modifier.fillMaxWidth(),
