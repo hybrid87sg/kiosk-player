@@ -24,20 +24,35 @@ function bearerToken(req) {
   return header.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
+// Finds who is calling: a Home Assistant user (through the sidebar page), or
+// a signed-in session (phone app or web page, by token).
 function sessionLookup(db) {
   const stmt = db.prepare(
     `SELECT users.id, users.email, users.role FROM sessions
      JOIN users ON users.id = sessions.user_id
      WHERE sessions.token = ? AND sessions.created_at > ?`
   );
-  return (token) => stmt.get(token, Date.now() - SESSION_MAX_AGE_MS);
+  return (req) => homeAssistantUser(req) || stmt.get(bearerToken(req), Date.now() - SESSION_MAX_AGE_MS);
+}
+
+// Requests through Home Assistant's sidebar ("ingress") are already signed in
+// to Home Assistant, which says who it is in these headers. They are only
+// trusted when the request arrived on the private ingress port from Home
+// Assistant itself (req.viaIngress, set in app.js). The sidebar page is for
+// Home Assistant admins only, so these people are superadmins.
+function homeAssistantUser(req) {
+  if (!req.viaIngress) return null;
+  const id = req.get('x-remote-user-id');
+  if (!id) return null;
+  const name = req.get('x-remote-user-display-name') || req.get('x-remote-user-name') || 'Home Assistant user';
+  return { id: null, haUserId: id, email: name, role: 'superadmin', viaHomeAssistant: true };
 }
 
 // Usage: app.get('/x', requireRole(db, CAN_MANAGE_DEVICES), handler)
 function requireRole(db, allowedRoles) {
   const findUser = sessionLookup(db);
   return (req, res, next) => {
-    const user = findUser(bearerToken(req));
+    const user = findUser(req);
     if (!user) return res.status(401).json({ error: 'Not signed in' });
     if (!allowedRoles.includes(user.role)) return res.status(403).json({ error: 'Your role is not allowed to do this' });
     req.user = user;
@@ -62,8 +77,7 @@ function requireUserOrDevice(db) {
   const findUser = sessionLookup(db);
   const findDevice = db.prepare(`SELECT id FROM devices WHERE token = ? AND claimed = 1`);
   return (req, res, next) => {
-    const token = bearerToken(req);
-    if (findUser(token) || findDevice.get(token)) return next();
+    if (findUser(req) || findDevice.get(bearerToken(req))) return next();
     res.status(401).json({ error: 'Not allowed' });
   };
 }

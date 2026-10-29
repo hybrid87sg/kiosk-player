@@ -120,7 +120,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val playlist = repo.playlist()
                 if (playlist.version != version || playlist.items.any { !sync.isReady(it) }) {
-                    download(playlist, sync)
+                    download(playlist, sync, repo)
                     settings.cachedPlaylist = playlist
                     version = playlist.version
                 }
@@ -182,8 +182,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun download(playlist: PlayerPlaylist, sync: ContentSync) {
+    private suspend fun download(playlist: PlayerPlaylist, sync: ContentSync, repo: RemotePlayerRepository) {
         sync.sync(playlist) { done, total ->
+            // Tell the server how far we are, so Kiosk Admin can show "Downloading 2 of 3".
+            if (done < total) {
+                viewModelScope.launch {
+                    runCatching { repo.heartbeat(currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME, done to total) }
+                }
+            }
             val text = "Downloading ${minOf(done + 1, total)} of $total new files"
             val current = _ui.value
             if (current is PlayerUi.Playing) {

@@ -24,4 +24,15 @@ class MainActivity : ComponentActivity() {
         }
         setContent { PlayerApp(vm) }
     }
+
+    override fun onStart() {
+        super.onStart()
+        KeepInFront.cancel() // we're on screen again
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Someone pressed Home or opened another app: come back in a moment.
+        if (!isChangingConfigurations) KeepInFront.scheduleReturn(this)
+    }
 }

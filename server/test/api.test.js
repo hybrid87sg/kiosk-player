@@ -9,16 +9,17 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createApp } = require('../src/app');
+const http = require('node:http');
+const { createApp, createIngressServer } = require('../src/app');
 const { createFakeGoogle } = require('./fake-google');
 
 const BOSS = 'boss@example.com';
 
-async function startServer(t) {
+async function startServer(t, extra = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-test-'));
   const google = createFakeGoogle();
   const app = createApp({
-    dataDir, google, googleWebClientId: 'web-client-123', superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {},
+    dataDir, google, googleWebClientId: 'web-client-123', superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {}, ...extra,
   });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
@@ -50,14 +51,16 @@ async function startServer(t) {
     });
   }
 
-  return { call, signIn, upload, google };
+  return { call, signIn, upload, google, app, base };
 }
 
 test('Google sign-in: only invited emails get in, with their role', async (t) => {
   const { call, signIn } = await startServer(t);
 
   // The admin app learns which Google client to sign in with.
-  assert.deepEqual(await (await call('GET', '/api/config')).json(), { google_web_client_id: 'web-client-123' });
+  assert.deepEqual(await (await call('GET', '/api/config')).json(), {
+    google_web_client_id: 'web-client-123', web_code_sign_in: true, version: require('../package.json').version,
+  });
 
   assert.equal((await call('POST', '/api/auth/google', { json: { id_token: 'forged' } })).status, 401);
   const stranger = await call('POST', '/api/auth/google', { json: { id_token: 'valid:stranger@example.com' } });
@@ -65,7 +68,7 @@ test('Google sign-in: only invited emails get in, with their role', async (t) =>
 
   // SUPERADMIN_EMAIL is let in automatically, in any letter case.
   const boss = await signIn('Boss@Example.com');
-  assert.deepEqual(await (await call('GET', '/api/me', { token: boss })).json(), { email: BOSS, role: 'superadmin' });
+  assert.deepEqual(await (await call('GET', '/api/me', { token: boss })).json(), { email: BOSS, role: 'superadmin', via_home_assistant: false });
 
   // Signing out kills the token.
   await call('POST', '/api/auth/logout', { token: boss });
@@ -313,4 +316,135 @@ test('pairing a TV by QR code or PIN, setting it up, then playing its playlist',
   // Removing a TV locks it out; it would register again and show a new code.
   assert.equal((await call('DELETE', `/api/devices/${frontRow.id}`, { token: boss })).status, 200);
   assert.equal((await call('GET', '/api/player/playlist', { token: tvA.token })).status, 401);
+});
+
+test('media cache: the first download comes from Drive, later ones from the local copy', async (t) => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-cache-'));
+  t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
+  const { call, signIn, upload, google } = await startServer(t, { mediaCacheDir: cacheDir });
+  const boss = await signIn(BOSS);
+  const bytes = crypto.randomBytes(80_000);
+  const video = await (await upload(boss, 'promo.mp4', bytes, 'video/mp4')).json();
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'TV' } });
+
+  const first = await call('GET', `/media/${video.id}`, { token: tv.token });
+  assert.ok(Buffer.from(await first.arrayBuffer()).equals(bytes));
+  assert.equal(google.downloadCount(), 1);
+
+  // Second TV download, and a resumed (Range) one: both from the local copy.
+  const second = await call('GET', `/media/${video.id}`, { token: tv.token });
+  assert.ok(Buffer.from(await second.arrayBuffer()).equals(bytes));
+  const part = await call('GET', `/media/${video.id}`, { token: tv.token, headers: { range: 'bytes=5000-' } });
+  assert.equal(part.status, 206);
+  assert.ok(Buffer.from(await part.arrayBuffer()).equals(bytes.subarray(5000)));
+  assert.equal(google.downloadCount(), 1);
+
+  // Deleting the file removes its local copy too.
+  assert.equal(fs.readdirSync(cacheDir).length, 1);
+  await call('DELETE', `/api/media/${video.id}`, { token: boss });
+  assert.equal(fs.readdirSync(cacheDir).length, 0);
+});
+
+test('web page sign-in with a code from google.com/device', async (t) => {
+  const { call, google } = await startServer(t);
+  const start = await (await call('POST', '/api/auth/device/start')).json();
+  assert.equal(start.user_code, 'ABCD-EFGH');
+  assert.equal(start.verification_url, 'https://www.google.com/device');
+
+  // Until the person enters the code, the page keeps waiting.
+  assert.deepEqual(await (await call('POST', '/api/auth/device/poll', { json: { poll_id: start.poll_id } })).json(), { status: 'pending' });
+
+  // Someone who isn't invited is turned away.
+  google.approveDeviceSignIn('stranger@example.com');
+  assert.equal((await call('POST', '/api/auth/device/poll', { json: { poll_id: start.poll_id } })).status, 403);
+
+  // An invited person gets a session, and the code can't be reused.
+  const again = await (await call('POST', '/api/auth/device/start')).json();
+  google.approveDeviceSignIn(BOSS);
+  const done = await (await call('POST', '/api/auth/device/poll', { json: { poll_id: again.poll_id } })).json();
+  assert.equal(done.status, 'done');
+  assert.equal(done.role, 'superadmin');
+  assert.equal((await call('GET', '/api/me', { token: done.token })).status, 200);
+  assert.equal((await call('POST', '/api/auth/device/poll', { json: { poll_id: again.poll_id } })).status, 410);
+});
+
+test('Home Assistant sidebar: trusted only on the ingress port, from Home Assistant', async (t) => {
+  const { app, base, call } = await startServer(t);
+  const ingress = createIngressServer(app, '127.0.0.1');
+  await new Promise((resolve) => ingress.listen(0, '127.0.0.1', resolve));
+  t.after(() => ingress.close());
+  const ingressBase = `http://127.0.0.1:${ingress.address().port}`;
+  const haHeaders = { 'x-remote-user-id': 'abc123', 'x-remote-user-name': 'hairil', 'x-remote-user-display-name': 'Hairil' };
+
+  // Through the ingress port, the Home Assistant user is a superadmin.
+  const me = await (await fetch(`${ingressBase}/api/me`, { headers: haHeaders })).json();
+  assert.deepEqual(me, { email: 'Hairil', role: 'superadmin', via_home_assistant: true });
+  assert.equal((await fetch(`${ingressBase}/api/users`, { headers: haHeaders })).status, 200);
+  // The same page is served there too.
+  assert.match(await (await fetch(`${ingressBase}/`)).text(), /Kiosk Signage/);
+
+  // On the normal port, the same headers mean nothing.
+  assert.equal((await fetch(`${base}/api/me`, { headers: haHeaders })).status, 401);
+
+  // From anywhere other than Home Assistant, the ingress port says no.
+  const outsider = createIngressServer(app, '10.9.9.9');
+  await new Promise((resolve) => outsider.listen(0, '127.0.0.1', resolve));
+  t.after(() => outsider.close());
+  assert.equal((await fetch(`http://127.0.0.1:${outsider.address().port}/api/me`, { headers: haHeaders })).status, 403);
+  void call;
+});
+
+test('settings page: Drive folder, cache switch, connection test, download progress', async (t) => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-cache-'));
+  t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
+  const { call, signIn, upload, google } = await startServer(t, { mediaCacheDir: cacheDir });
+  const boss = await signIn(BOSS);
+
+  // Only superadmins see settings.
+  await call('POST', '/api/users', { token: boss, json: { email: 'manager@example.com', role: 'system_manager' } });
+  const manager = await signIn('manager@example.com');
+  assert.equal((await call('GET', '/api/settings', { token: manager })).status, 403);
+
+  let settings = await (await call('GET', '/api/settings', { token: boss })).json();
+  assert.equal(settings.drive_folder_id, 'folder-original');
+  assert.deepEqual(settings.cache, { available: true, enabled: true, files: 0, bytes: 0 });
+  assert.deepEqual(settings.sign_in, { phone_app: true, web_code: true });
+
+  // Change the Drive folder from the web page.
+  assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { drive_folder_id: 'x' } })).status, 400);
+  settings = await (await call('PATCH', '/api/settings', { token: boss, json: { drive_folder_id: '0AbCdEfGhIjKlMnOpQ' } })).json();
+  assert.equal(settings.drive_folder_id, '0AbCdEfGhIjKlMnOpQ');
+  assert.equal(google.getFolderId(), '0AbCdEfGhIjKlMnOpQ');
+  assert.equal(settings.drive_folder_changed_on_web, true);
+
+  // Test the connection.
+  google.addFile('a.jpg', 'image/jpeg', crypto.randomBytes(10));
+  assert.deepEqual(await (await call('POST', '/api/settings/test-drive', { token: boss })).json(), { ok: true, files: 1 });
+  google.setFailing(true);
+  assert.equal((await call('POST', '/api/settings/test-drive', { token: boss })).status, 502);
+  google.setFailing(false);
+
+  // Cache: a download fills it; switching it off stops using it; clearing empties it.
+  const bytes = crypto.randomBytes(5000);
+  const video = await (await upload(boss, 'v.mp4', bytes, 'video/mp4')).json();
+  await (await call('GET', `/media/${video.id}`, { token: boss })).arrayBuffer();
+  settings = await (await call('GET', '/api/settings', { token: boss })).json();
+  assert.equal(settings.cache.files, 1);
+  await call('PATCH', '/api/settings', { token: boss, json: { cache_media: false } });
+  const before = google.downloadCount();
+  await (await call('GET', `/media/${video.id}`, { token: boss })).arrayBuffer();
+  assert.equal(google.downloadCount(), before + 1); // fetched from Drive again
+  settings = await (await call('POST', '/api/settings/clear-cache', { token: boss })).json();
+  assert.equal(settings.cache.files, 0);
+
+  // A TV reports download progress in its heartbeat; the screen overview shows it.
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'TV' } });
+  await call('POST', '/api/player/heartbeat', { token: tv.token, json: { download_done: 1, download_total: 3 } });
+  let [device] = await (await call('GET', '/api/devices', { token: boss })).json();
+  assert.deepEqual(device.download, { done: 1, total: 3 });
+  await call('POST', '/api/player/heartbeat', { token: tv.token, json: {} });
+  [device] = await (await call('GET', '/api/devices', { token: boss })).json();
+  assert.equal(device.download, null);
 });

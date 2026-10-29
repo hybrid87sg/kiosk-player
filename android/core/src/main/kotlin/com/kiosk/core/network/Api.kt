@@ -88,6 +88,9 @@ internal data class HeartbeatBody(
     @SerialName("current_media_id") val currentMediaId: Long?,
     @SerialName("free_bytes") val freeBytes: Long?,
     @SerialName("app_version") val appVersion: String,
+    /** While new files download: how many are done, out of how many. */
+    @SerialName("download_done") val downloadDone: Int? = null,
+    @SerialName("download_total") val downloadTotal: Int? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

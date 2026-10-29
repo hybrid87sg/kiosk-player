@@ -15,8 +15,11 @@ interface PlayerRepository {
     suspend fun register(appVersion: String): Registration
     suspend fun status(): PlayerStatus
     suspend fun playlist(): PlayerPlaylist
-    /** Reports "I'm alive"; returns the server's current playlist version. */
-    suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String): String?
+    /**
+     * Reports "I'm alive"; returns the server's current playlist version.
+     * [download] is (files done, total) while new files are downloading.
+     */
+    suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String, download: Pair<Int, Int>? = null): String?
 }
 
 /** The real server. [token] is the TV's saved secret, null before registering. */
@@ -34,6 +37,6 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     override suspend fun status(): PlayerStatus = apiCall { api.status() }
     override suspend fun playlist(): PlayerPlaylist = apiCall { api.playlist() }
 
-    override suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String): String? =
-        apiCall { api.heartbeat(HeartbeatBody(currentMediaId, freeBytes, appVersion)) }.version
+    override suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String, download: Pair<Int, Int>?): String? =
+        apiCall { api.heartbeat(HeartbeatBody(currentMediaId, freeBytes, appVersion, download?.first, download?.second)) }.version
 }

@@ -1,0 +1,53 @@
+# Checks that the Home Assistant add-on builds, the same way Home Assistant
+# builds it on your machine: for normal PCs (amd64) and Raspberry Pi (arm64).
+# The ready-to-copy add-on zip appears as a download on the run's page.
+# The "Release" workflow also uses this to attach the add-on to a release.
+name: Home Assistant add-on
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - "homeassistant/**"
+      - ".github/workflows/addon.yml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Put the add-on together
+        run: bash homeassistant/package-addon.sh
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build it like Home Assistant does (PC and Raspberry Pi)
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 homeassistant/dist/kiosk_server
+
+      - name: Check the server starts and reads the add-on settings
+        run: |
+          docker buildx build --platform linux/amd64 --load -t kiosk-addon homeassistant/dist/kiosk_server
+          mkdir -p ha-data ha-config
+          echo '{"superadmin_email":"you@example.com","google_web_client_id":"test.apps.googleusercontent.com","drive_folder_id":"folder","service_account_file":"service-account.json","cache_media":true}' > ha-data/options.json
+          openssl genrsa -out key.pem 2048 2>/dev/null
+          node -e "const fs=require('fs');fs.writeFileSync('ha-config/service-account.json',JSON.stringify({type:'service_account',client_email:'robot@test.iam.gserviceaccount.com',private_key:fs.readFileSync('key.pem','utf8')}))"
+          docker run -d --name kiosk -p 3000:3000 -v "$PWD/ha-data:/data" -v "$PWD/ha-config:/config" kiosk-addon
+          for i in $(seq 1 30); do curl -sf localhost:3000/api/health && break; sleep 1; done
+          curl -sf localhost:3000/api/config | grep test.apps.googleusercontent.com
+          curl -sf localhost:3000/ | grep "Kiosk Signage"
+          docker logs kiosk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiosk_server-addon
+          path: homeassistant/dist/kiosk_server-addon.zip
+          retention-days: 30
