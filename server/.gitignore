@@ -1,0 +1,5 @@
+node_modules/
+data/
+# Google service account keys are secrets; never commit them.
+secrets/
+service-account*.json

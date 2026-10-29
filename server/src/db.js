@@ -1,0 +1,117 @@
+// Database setup. SQLite keeps everything in a single file (data/kiosk.db).
+// Each CREATE TABLE below is like a spreadsheet tab with fixed columns.
+
+const Database = require('better-sqlite3');
+const path = require('node:path');
+
+// Bump this when the tables below change shape. Nothing is deployed yet, so
+// an older database is simply wiped and rebuilt instead of being migrated.
+const SCHEMA_VERSION = 3;
+
+function openDatabase(dataDir) {
+  const db = new Database(path.join(dataDir, 'kiosk.db'));
+  db.pragma('journal_mode = WAL'); // safer and faster when reading and writing at once
+  db.pragma('foreign_keys = ON');
+
+  if (db.pragma('user_version', { simple: true }) < SCHEMA_VERSION) {
+    db.exec(`
+      DROP TABLE IF EXISTS sessions;
+      DROP TABLE IF EXISTS users;
+      DROP TABLE IF EXISTS playlist_items;
+      DROP TABLE IF EXISTS devices;
+      DROP TABLE IF EXISTS playlists;
+      DROP TABLE IF EXISTS media;
+      DROP TABLE IF EXISTS settings;
+    `);
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
+
+  db.exec(`
+    -- People allowed to use the admin app. They sign in with Google;
+    -- we only store their email and what they're allowed to do.
+    CREATE TABLE IF NOT EXISTS users (
+      id         INTEGER PRIMARY KEY,
+      email      TEXT NOT NULL UNIQUE,   -- always lower case
+      role       TEXT NOT NULL CHECK (role IN ('superadmin', 'system_manager', 'content_uploader')),
+      created_at INTEGER NOT NULL
+    );
+
+    -- After signing in, the admin app gets a random token and sends it with every request.
+    CREATE TABLE IF NOT EXISTS sessions (
+      token      TEXT PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL
+    );
+
+    -- Our copy of the list of videos and images in the Google Drive folder.
+    -- The files themselves live in Drive; this is just the catalogue.
+    CREATE TABLE IF NOT EXISTS media (
+      id            INTEGER PRIMARY KEY,
+      drive_file_id TEXT NOT NULL UNIQUE,
+      filename      TEXT NOT NULL,
+      type          TEXT NOT NULL CHECK (type IN ('video', 'image')),
+      mime          TEXT NOT NULL,
+      size          INTEGER NOT NULL,   -- bytes
+      md5           TEXT NOT NULL,      -- fingerprint from Drive; the player checks its download against it
+      width         INTEGER,            -- pixels; empty while Drive is still processing a new video
+      height        INTEGER,
+      orientation   TEXT CHECK (orientation IN ('landscape', 'portrait')),  -- empty = still checking
+      created_at    INTEGER NOT NULL
+    );
+
+    -- Named playlists. Each one is made for landscape or portrait screens.
+    -- "version" goes up on every change so players know when to re-sync.
+    CREATE TABLE IF NOT EXISTS playlists (
+      id          INTEGER PRIMARY KEY,
+      name        TEXT NOT NULL,
+      orientation TEXT NOT NULL CHECK (orientation IN ('landscape', 'portrait')),
+      version     INTEGER NOT NULL DEFAULT 1,
+      created_at  INTEGER NOT NULL
+    );
+
+    -- What is in each playlist, in order of "position".
+    CREATE TABLE IF NOT EXISTS playlist_items (
+      id            INTEGER PRIMARY KEY,
+      playlist_id   INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+      media_id      INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+      position      INTEGER NOT NULL,
+      image_seconds INTEGER NOT NULL DEFAULT 10  -- ignored for videos (they play to the end)
+    );
+
+    -- TV players. A player gets its token when it registers, but can only
+    -- fetch content once an admin has claimed it with the pairing code.
+    CREATE TABLE IF NOT EXISTS devices (
+      id               INTEGER PRIMARY KEY,
+      token            TEXT NOT NULL UNIQUE,
+      pairing_code     TEXT UNIQUE,      -- cleared once claimed
+      name             TEXT,
+      location         TEXT,             -- free text, e.g. "Main lobby"
+      orientation      TEXT NOT NULL DEFAULT 'landscape'
+                       CHECK (orientation IN ('landscape', 'portrait_right', 'portrait_left')),
+      playlist_id      INTEGER REFERENCES playlists(id) ON DELETE SET NULL,
+      config_version   INTEGER NOT NULL DEFAULT 1,  -- goes up when an admin changes this player's settings
+      claimed          INTEGER NOT NULL DEFAULT 0,
+      last_seen        INTEGER,          -- unix ms of last heartbeat
+      current_media_id INTEGER,
+      free_bytes       INTEGER,
+      app_version      TEXT,
+      created_at       INTEGER NOT NULL
+    );
+  `);
+
+  return db;
+}
+
+// Players compare this number with the one they saved. If it changed,
+// they know the playlist (or its files) changed and they need to sync.
+function bumpPlaylistVersions(db, playlistIds) {
+  const bump = db.prepare(`UPDATE playlists SET version = version + 1 WHERE id = ?`);
+  for (const id of new Set(playlistIds)) bump.run(id);
+}
+
+// The playlists that contain a given file.
+function playlistsUsingMedia(db, mediaId) {
+  return db.prepare(`SELECT DISTINCT playlist_id FROM playlist_items WHERE media_id = ?`).all(mediaId).map((r) => r.playlist_id);
+}
+
+module.exports = { openDatabase, bumpPlaylistVersions, playlistsUsingMedia };

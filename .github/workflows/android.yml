@@ -1,0 +1,90 @@
+# Builds the two Android apps on GitHub's computers (which have the Android
+# tools) every time Android code is pushed. Each APK appears as its own
+# download ("artifact") on the run's page under the repository's Actions tab.
+#
+# To publish a release: Actions tab -> "Android apps" -> "Run workflow", type a
+# version such as 0.1.0, and the APKs are attached to a new GitHub release.
+name: Android apps
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Publish a GitHub release with this version (e.g. 0.1.0). Leave empty to only build."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark it as a test version (pre-release)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # needed to create the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test the shared code
+        working-directory: android
+        run: ./gradlew :core:test
+
+      - name: Build the APKs
+        working-directory: android
+        run: ./gradlew :admin:assembleDebug :player:assembleDebug
+
+      - name: Give the APKs names that say which device they're for
+        run: |
+          mkdir -p apks
+          cp android/admin/build/outputs/apk/debug/admin-debug.apk apks/KioskAdmin-for-phone.apk
+          cp android/player/build/outputs/apk/debug/player-debug.apk apks/KioskPlayer-for-TV.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kiosk-Admin-for-phone
+          path: apks/KioskAdmin-for-phone.apk
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kiosk-Player-for-TV
+          path: apks/KioskPlayer-for-TV.apk
+          retention-days: 30
+
+      - name: Publish the GitHub release
+        if: github.event_name == 'workflow_dispatch' && inputs.release_version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.release_version }}
+          name: Kiosk Signage v${{ inputs.release_version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            apks/KioskAdmin-for-phone.apk
+            apks/KioskPlayer-for-TV.apk
+          body: |
+            ## Which file goes where
+            | File | Install on | App name |
+            |---|---|---|
+            | `KioskAdmin-for-phone.apk` | Your Android phone | Kiosk Admin |
+            | `KioskPlayer-for-TV.apk` | The Android TV box | Kiosk Player |
+
+            Both apps have a **Demo mode** with sample data, so they can be tried
+            without a server. Connecting to a real server needs the server running
+            and the one-time Google setup.
+
+            These are test builds signed with the shared test key in `android/keystore`.
