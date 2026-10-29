@@ -26,6 +26,7 @@ fs.mkdirSync(dataDir, { recursive: true });
 const app = createApp({
   dataDir,
   superadminEmail: process.env.SUPERADMIN_EMAIL,
+  googleWebClientId: process.env.GOOGLE_WEB_CLIENT_ID,
   google: createGoogle({
     webClientId: process.env.GOOGLE_WEB_CLIENT_ID,
     serviceAccountFile: process.env.GOOGLE_SERVICE_ACCOUNT_FILE,

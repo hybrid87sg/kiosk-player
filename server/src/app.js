@@ -50,6 +50,7 @@ function orientationOf(width, height) {
 function createApp({
   dataDir,
   google,
+  googleWebClientId = null,
   superadminEmail,
   maxUploadBytes = 8 * 1024 ** 3,
   syncIntervalMs = 5 * 60 * 1000,
@@ -67,6 +68,10 @@ function createApp({
   app.use(express.json());
 
   app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+  // Public settings the admin app needs before anyone signs in: the Google
+  // client ID that "Sign in with Google" must use for this server.
+  app.get('/api/config', (req, res) => res.json({ google_web_client_id: googleWebClientId }));
 
   // ---------- Sign in (admin app) ----------
 

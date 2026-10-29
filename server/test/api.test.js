@@ -18,7 +18,7 @@ async function startServer(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-test-'));
   const google = createFakeGoogle();
   const app = createApp({
-    dataDir, google, superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {},
+    dataDir, google, googleWebClientId: 'web-client-123', superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {},
   });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
@@ -55,6 +55,9 @@ async function startServer(t) {
 
 test('Google sign-in: only invited emails get in, with their role', async (t) => {
   const { call, signIn } = await startServer(t);
+
+  // The admin app learns which Google client to sign in with.
+  assert.deepEqual(await (await call('GET', '/api/config')).json(), { google_web_client_id: 'web-client-123' });
 
   assert.equal((await call('POST', '/api/auth/google', { json: { id_token: 'forged' } })).status, 401);
   const stranger = await call('POST', '/api/auth/google', { json: { id_token: 'valid:stranger@example.com' } });
