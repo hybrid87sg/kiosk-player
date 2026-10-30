@@ -1,7 +1,7 @@
 # Publishes a GitHub release with everything you need:
 #   KioskAdmin-for-phone.apk, KioskPlayer-for-TV.apk and kiosk_server-addon.zip
 #
-# How: Actions tab -> "Release" -> "Run workflow", type a version (e.g. 0.2.0).
+# How: Actions tab -> "Release" -> "Run workflow", type a version (e.g. 0.3.0).
 name: Release
 
 on:
