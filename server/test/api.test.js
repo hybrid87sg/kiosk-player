@@ -24,8 +24,9 @@ async function startServer(t, extra = {}) {
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });
-  t.after(() => {
-    server.close();
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    app.locals.db.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -190,11 +191,17 @@ test('playlists: several named playlists, each landscape or portrait', async (t)
 
   // Save items, in order; the version goes up each time.
   const saved = await (await call('PUT', `/api/playlists/${lobby.id}/items`, {
-    token: boss, json: { items: [{ media_id: b.id, image_seconds: 5 }, { media_id: a.id }] },
+    token: boss, json: { items: [{ media_id: b.id, image_seconds: 5 }, { media_id: a.id, start_at: null, end_at: null }] },
   })).json();
   assert.deepEqual(saved.items.map((i) => [i.media_id, i.image_seconds]), [[b.id, 5], [a.id, 10]]);
   assert.ok(saved.version > lobby.version);
   assert.equal((await call('PUT', `/api/playlists/${lobby.id}/items`, { token: boss, json: { items: [{ media_id: 999 }] } })).status, 400);
+  assert.equal((await call('PUT', `/api/playlists/${lobby.id}/items`, {
+    token: boss, json: { items: [{ media_id: a.id, start_at: 20, end_at: 10 }] },
+  })).status, 400);
+  assert.equal((await call('PUT', `/api/playlists/${lobby.id}/items`, {
+    token: boss, json: { items: [{ media_id: a.id, start_at: 20 }] },
+  })).status, 400);
 
   // The same file can be in several playlists.
   await call('PUT', `/api/playlists/${recep.id}/items`, { token: boss, json: { items: [{ media_id: a.id }] } });
@@ -215,6 +222,40 @@ test('playlists: several named playlists, each landscape or portrait', async (t)
   // An unused playlist can be deleted.
   assert.equal((await call('DELETE', `/api/playlists/${recep.id}`, { token: boss })).status, 200);
   assert.equal((await call('GET', `/api/playlists/${recep.id}`, { token: boss })).status, 404);
+});
+
+test('playlist item play dates are saved and only active files are sent to players', async (t) => {
+  const { call, signIn, upload } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const file = await (await upload(boss, 'scheduled.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const playlist = await (await call('POST', '/api/playlists', {
+    token: boss, json: { name: 'Scheduled', orientation: 'landscape' },
+  })).json();
+  const now = Date.now();
+  const dates = {
+    upcoming: { start_at: now + 60 * 60 * 1000, end_at: now + 2 * 60 * 60 * 1000 },
+    active: { start_at: now - 60 * 60 * 1000, end_at: now + 60 * 60 * 1000 },
+    expired: { start_at: now - 2 * 60 * 60 * 1000, end_at: now - 60 * 60 * 1000 },
+  };
+  const saved = await call('PUT', `/api/playlists/${playlist.id}/items`, {
+    token: boss,
+    json: { items: Object.values(dates).map((range) => ({ media_id: file.id, ...range })) },
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json()).items.map(({ start_at, end_at }) => [start_at, end_at]), [
+    [dates.upcoming.start_at, dates.upcoming.end_at],
+    [dates.active.start_at, dates.active.end_at],
+    [dates.expired.start_at, dates.expired.end_at],
+  ]);
+
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', {
+    token: boss, json: { code: tv.pairing_code, name: 'Scheduled TV', playlist_id: playlist.id },
+  });
+  const playerPlaylist = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.equal(playerPlaylist.items.length, 1);
+  assert.equal(playerPlaylist.items[0].id, file.id);
+  assert.ok(playerPlaylist.version.endsWith('.1'));
 });
 
 test('pairing a TV by QR code or PIN, setting it up, then playing its playlist', async (t) => {

@@ -36,6 +36,8 @@ data class EditItem(
     val type: MediaType,
     val orientation: ScreenShape?,
     val seconds: Int,
+    val startAt: Long?,
+    val endAt: Long?,
 )
 
 data class PlaylistDetailUiState(
@@ -46,7 +48,8 @@ data class PlaylistDetailUiState(
     val deleteProblem: String? = null,
 ) {
     val dirty: Boolean
-        get() = saved != null && saved.items.map { it.mediaId to it.imageSeconds } != items.map { it.mediaId to it.seconds }
+        get() = saved != null && saved.items.map { listOf(it.mediaId, it.imageSeconds, it.startAt, it.endAt) } !=
+            items.map { listOf(it.mediaId, it.seconds, it.startAt, it.endAt) }
 }
 
 /** One playlist: reorder, change picture times, add/remove, then save. */
@@ -68,7 +71,9 @@ class PlaylistDetailViewModel(
         _state.update {
             it.copy(
                 saved = detail,
-                items = detail.items.map { i -> EditItem(nextKey++, i.mediaId, i.filename, i.type, i.orientation, i.imageSeconds) },
+                items = detail.items.map { i ->
+                    EditItem(nextKey++, i.mediaId, i.filename, i.type, i.orientation, i.imageSeconds, i.startAt, i.endAt)
+                },
             )
         }
     }
@@ -88,7 +93,7 @@ class PlaylistDetailViewModel(
 
     fun add(mediaId: Long) = _state.update { s ->
         val m = s.library?.items?.firstOrNull { it.id == mediaId } ?: return@update s
-        s.copy(items = s.items + EditItem(nextKey++, m.id, m.filename, m.type, m.orientation, 10))
+        s.copy(items = s.items + EditItem(nextKey++, m.id, m.filename, m.type, m.orientation, 10, null, null))
     }
 
     fun undo() { _state.value.saved?.let(::show) }
@@ -96,7 +101,7 @@ class PlaylistDetailViewModel(
     fun save() {
         _state.update { it.copy(saving = true) }
         launchSafely(onError = { _state.update { s -> s.copy(saving = false) } }) {
-            val detail = repo.savePlaylistItems(id, _state.value.items.map { PlaylistEntry(it.mediaId, it.seconds) })
+            val detail = repo.savePlaylistItems(id, _state.value.items.map { PlaylistEntry(it.mediaId, it.seconds, it.startAt, it.endAt) })
             show(detail)
             _state.update { it.copy(saving = false) }
             val n = detail.devices.size

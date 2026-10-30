@@ -1,7 +1,7 @@
 configuration:
   superadmin_email:
-    name: Superadmin email
-    description: Your Google account. It can always sign in to Kiosk Admin as a superadmin.
+    name: Spongebob account email
+    description: Your Google account. It always has Spongebob access in Kiosk Admin.
   google_web_client_id:
     name: Google web client ID
     description: The "Web application" OAuth client ID from Google Cloud Console (ends in .apps.googleusercontent.com).

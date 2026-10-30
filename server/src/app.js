@@ -108,7 +108,7 @@ function createApp({
       return res.status(401).json({ error: 'Google sign-in could not be verified' });
     }
     const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email);
-    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask a superadmin to add you.` });
+    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask Spongebob to add you.` });
     const token = auth.newToken();
     db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, Date.now());
     res.json({ token, email: user.email, role: user.role });
@@ -167,7 +167,7 @@ function createApp({
     deviceSignIns.delete(req.body.poll_id);
     const email = result.email.toLowerCase();
     const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email);
-    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask a superadmin to add you.` });
+    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask Spongebob to add you.` });
     const token = auth.newToken();
     db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, Date.now());
     res.json({ status: 'done', token, email: user.email, role: user.role });
@@ -394,7 +394,7 @@ function createApp({
 
   function playlistItems(playlistId) {
     return db.prepare(
-      `SELECT p.media_id, p.image_seconds, m.filename, m.type, m.mime, m.size, m.md5, m.orientation
+      `SELECT p.media_id, p.image_seconds, p.start_at, p.end_at, m.filename, m.type, m.mime, m.size, m.md5, m.orientation
        FROM playlist_items p JOIN media m ON m.id = p.media_id
        WHERE p.playlist_id = ? ORDER BY p.position`
     ).all(playlistId);
@@ -470,12 +470,23 @@ function createApp({
       if (item.image_seconds !== undefined && !(Number.isInteger(item.image_seconds) && item.image_seconds >= 1)) {
         return res.status(400).json({ error: 'image_seconds must be a whole number of at least 1' });
       }
+      for (const field of ['start_at', 'end_at']) {
+        if (item[field] !== undefined && item[field] !== null && (!Number.isSafeInteger(item[field]) || item[field] < 0)) {
+          return res.status(400).json({ error: `${field} must be a non-negative Unix timestamp in milliseconds or null` });
+        }
+      }
+      if ((item.start_at == null) !== (item.end_at == null)) {
+        return res.status(400).json({ error: 'Set both start_at and end_at, or leave both empty' });
+      }
+      if (item.start_at != null && item.end_at != null && item.start_at >= item.end_at) {
+        return res.status(400).json({ error: 'start_at must be before end_at' });
+      }
     }
     // A transaction means "all of these changes or none of them".
     db.transaction(() => {
       db.prepare(`DELETE FROM playlist_items WHERE playlist_id = ?`).run(p.id);
-      const insert = db.prepare(`INSERT INTO playlist_items (playlist_id, media_id, position, image_seconds) VALUES (?, ?, ?, ?)`);
-      items.forEach((item, i) => insert.run(p.id, item.media_id, i, item.image_seconds ?? 10));
+      const insert = db.prepare(`INSERT INTO playlist_items (playlist_id, media_id, position, image_seconds, start_at, end_at) VALUES (?, ?, ?, ?, ?, ?)`);
+      items.forEach((item, i) => insert.run(p.id, item.media_id, i, item.image_seconds ?? 10, item.start_at ?? null, item.end_at ?? null));
       bumpPlaylistVersions(db, [p.id]);
     })();
     res.json(playlistDetail(findPlaylist(p.id)));
@@ -670,9 +681,12 @@ function createApp({
   // "version" changes whenever the playlist, its files or this TV's settings change.
   function playerPlaylist(device) {
     const playlist = device.playlist_id ? findPlaylist(device.playlist_id) : null;
-    const items = playlist ? playlistItems(playlist.id) : [];
+    const now = Date.now();
+    const items = playlist ? playlistItems(playlist.id).filter((item) =>
+      (item.start_at == null || item.start_at <= now) && (item.end_at == null || now < item.end_at)
+    ) : [];
     return {
-      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}`,
+      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${items.map((item) => item.media_id).join(',')}`,
       name: device.name,
       orientation: device.orientation,
       playlist_name: playlist ? playlist.name : null,

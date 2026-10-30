@@ -68,7 +68,13 @@ internal interface PlayerApi {
 @Serializable internal data class OkReply(val ok: Boolean = true)
 @Serializable internal data class GoogleSignInBody(@SerialName("id_token") val idToken: String)
 @Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape)
-@Serializable internal data class ItemBody(@SerialName("media_id") val mediaId: Long, @SerialName("image_seconds") val imageSeconds: Int)
+@Serializable
+internal data class ItemBody(
+    @SerialName("media_id") val mediaId: Long,
+    @SerialName("image_seconds") val imageSeconds: Int,
+    @SerialName("start_at") val startAt: Long? = null,
+    @SerialName("end_at") val endAt: Long? = null,
+)
 @Serializable internal data class ItemsBody(val items: List<ItemBody>)
 @Serializable internal data class UserBody(val email: String, val role: Role)
 @Serializable internal data class RoleBody(val role: Role)

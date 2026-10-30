@@ -8,7 +8,7 @@ from Google Drive to the TVs.
 
 You need the one-time Google setup, which gives you:
 
-- **Superadmin email**: your Google account.
+- **Spongebob account email**: your Google account.
 - **Google web client ID**: from Google Cloud Console, ending in `.apps.googleusercontent.com`.
 - **Google Drive folder ID**: the last part of the Signage folder's web address.
 - **The service account key file** (a `.json` file).
@@ -43,7 +43,7 @@ Settings → System → Network. The phone and TVs must be on the same network.
 ## The web interface
 
 - **In Home Assistant:** open **Kiosk Signage** in the sidebar. It's for Home Assistant admins, who get
-  full (superadmin) access.
+  full (Spongebob) access.
 - **In any browser:** go to `http://<address>:3000`. People sign in with Google using a code from
   google.com/device. This needs the two optional **Web sign-in client** settings.
 

@@ -47,7 +47,7 @@ Fill this in as you go. You'll need these values in Part 3.
 
 | Setting | Where it comes from | Example |
 |---|---|---|
-| Superadmin email | Your Google Workspace account | `you@yourcompany.com` |
+| Spongebob account email | Your Google Workspace account | `you@yourcompany.com` |
 | Web client ID | Part 1, step 5 | `1234…-abc….apps.googleusercontent.com` |
 | Web sign-in client ID + secret (optional) | Part 1, step 9 | `5678…-xyz….apps.googleusercontent.com` |
 | Service account email | Part 1, step 7 | `kiosk-drive@kiosk-signage.iam.gserviceaccount.com` |
@@ -183,7 +183,7 @@ flowchart TB
    `KioskAdmin-for-phone.apk` **on your phone** and open it. Allow **Install unknown apps** when Android
    asks.
 2. Open **Kiosk Admin**, enter the **Tailscale address** (e.g. `homeassistant.tail1234.ts.net:3000`),
-   and tap **Sign in with Google**. Choose your superadmin account.
+   and tap **Sign in with Google**. Choose the Spongebob account.
 
    ![Connecting the apps](docs/images/apps-connect.svg)
 
@@ -221,15 +221,16 @@ Manage everything from a computer too, in either of two places:
 
 | Where | Who can use it | How to sign in |
 |---|---|---|
-| **Kiosk Signage** in Home Assistant's sidebar | Home Assistant admins (as superadmins) | Already signed in through Home Assistant |
+| **Kiosk Signage** in Home Assistant's sidebar | Home Assistant admins (as Spongebob) | Already signed in through Home Assistant |
 | `http://<address>:3000` in any browser (home network or Tailscale address) | Anyone you invited, with their role | **Sign in with Google**, then enter the code shown at google.com/device (needs Part 1, step 9) |
 
 It has the same sections as the phone app, plus:
 - **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage),
   updated every 10 seconds. Add a screen by typing the code shown on the TV.
 - **Library:** drag files from your computer onto the page to upload them.
-- **Playlists:** drag rows to reorder them.
-- **Settings** (superadmins): change the Drive folder and test the connection, switch local copies on or off
+- **Playlists:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
+  Dates use the browser's local timezone; players include files only during that window.
+- **Settings** (Spongebob): change the Drive folder and test the connection, switch local copies on or off
   and clear them, and check which sign-in methods are set up.
 
 ### Inviting other people
@@ -238,9 +239,9 @@ In Kiosk Admin, go to **Users → Invite someone**, enter their Workspace email,
 
 | Role | Can do |
 |---|---|
-| **Superadmin** | Everything, including people and roles |
-| **System manager** | Players and content |
-| **Content uploader** | Files and playlists |
+| **Spongebob** | Everything, including people and roles |
+| **Patrick** | Players and content |
+| **Squidward** | Files and playlists |
 
 They install the phone app the same way, connect with Tailscale, and sign in with Google.
 
@@ -254,7 +255,7 @@ They install the phone app the same way, connect with Tailscale, and sign in wit
 | Phone: "isn't set up for Google sign-in yet" | The **Google web client ID** setting is empty. |
 | Phone: Google sign-in fails or shows a developer error | Check the Android client in Part 1, step 6: package `com.kiosk.admin` and the exact SHA-1. |
 | Web page says sign-in "isn't set up" | Fill in the web sign-in client ID and secret (Part 1, step 9), or use the Home Assistant sidebar page. |
-| Phone: "… is not allowed in yet" | Sign in with the superadmin email, or ask a superadmin to invite you. |
+| Phone: "… is not allowed in yet" | Sign in with the Spongebob account, or ask Spongebob to invite you. |
 | Library says "Could not reach Google Drive" | Check the Drive folder ID, and that the service account is a **Content manager** on the shared drive. |
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |
 | TV shows "Can't reach the server" | The TV must use the **home-network** address, not the Tailscale one. |
