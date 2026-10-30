@@ -1,6 +1,7 @@
 package com.kiosk.core.data
 
 import com.kiosk.core.model.Mounting
+import com.kiosk.core.model.PlaylistEntry
 import com.kiosk.core.model.PlayerSetup
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.network.ApiException
@@ -51,6 +52,24 @@ class RemoteAdminRepositoryTest {
         assertTrue(body, body.contains("\"code\":\"kiosk-pair:K7P29Q\""))
         assertTrue(body, body.contains("\"orientation\":\"portrait_right\""))
         assertTrue(body, body.contains("\"playlist_id\":2"))
+    }
+
+    @Test fun readsAndPreservesPlaylistItemPlayDates() = runTest {
+        val startAt = 1_800_000_000_000L
+        val endAt = startAt + 86_400_000L
+        server.enqueue(MockResponse().setBody(
+            """{"id":1,"name":"Lobby","orientation":"landscape","version":3,"item_count":1,"items":[{"media_id":7,"image_seconds":10,"filename":"promo.jpg","type":"image","start_at":$startAt,"end_at":$endAt}]}"""
+        ))
+        val playlist = repo.playlist(1)
+        assertEquals(startAt, playlist.items.single().startAt)
+        assertEquals(endAt, playlist.items.single().endAt)
+        server.takeRequest()
+
+        server.enqueue(MockResponse().setBody("""{"id":1,"name":"Lobby","orientation":"landscape","version":4,"item_count":1}"""))
+        repo.savePlaylistItems(1, listOf(PlaylistEntry(7, 10, startAt, endAt)))
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue(body, body.contains("\"start_at\":$startAt"))
+        assertTrue(body, body.contains("\"end_at\":$endAt"))
     }
 
     @Test fun uploadsTheFileWithItsName() = runTest {

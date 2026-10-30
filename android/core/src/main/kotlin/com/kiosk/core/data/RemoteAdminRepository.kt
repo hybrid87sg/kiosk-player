@@ -78,7 +78,7 @@ class RemoteAdminRepository(
         apiCall { api.updatePlaylist(id, PlaylistBody(name, orientation)) }
 
     override suspend fun savePlaylistItems(id: Long, items: List<PlaylistEntry>): PlaylistDetail =
-        apiCall { api.saveItems(id, ItemsBody(items.map { ItemBody(it.mediaId, it.imageSeconds) })) }
+        apiCall { api.saveItems(id, ItemsBody(items.map { ItemBody(it.mediaId, it.imageSeconds, it.startAt, it.endAt) })) }
 
     override suspend fun deletePlaylist(id: Long) { apiCall { api.deletePlaylist(id) } }
 

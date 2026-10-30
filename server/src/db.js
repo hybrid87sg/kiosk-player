@@ -75,7 +75,9 @@ function openDatabase(dataDir) {
       playlist_id   INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
       media_id      INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
       position      INTEGER NOT NULL,
-      image_seconds INTEGER NOT NULL DEFAULT 10  -- ignored for videos (they play to the end)
+      image_seconds INTEGER NOT NULL DEFAULT 10, -- ignored for videos (they play to the end)
+      start_at      INTEGER, -- optional inclusive Unix milliseconds
+      end_at        INTEGER  -- optional exclusive Unix milliseconds
     );
 
     -- TV players. A player gets its token when it registers, but can only
@@ -110,6 +112,8 @@ function openDatabase(dataDir) {
   // unlike a SCHEMA_VERSION bump, which starts the database again.
   addColumnIfMissing(db, 'devices', 'download_done', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'download_total', 'INTEGER');
+  addColumnIfMissing(db, 'playlist_items', 'start_at', 'INTEGER');
+  addColumnIfMissing(db, 'playlist_items', 'end_at', 'INTEGER');
 
   return db;
 }

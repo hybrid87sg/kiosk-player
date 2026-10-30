@@ -8,9 +8,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 enum class Role(val label: String) {
-    @SerialName("superadmin") SUPERADMIN("Superadmin"),
-    @SerialName("system_manager") SYSTEM_MANAGER("System manager"),
-    @SerialName("content_uploader") CONTENT_UPLOADER("Content uploader");
+    @SerialName("superadmin") SUPERADMIN("Spongebob"),
+    @SerialName("system_manager") SYSTEM_MANAGER("Patrick"),
+    @SerialName("content_uploader") CONTENT_UPLOADER("Squidward");
 
     val canManagePlayers: Boolean get() = this != CONTENT_UPLOADER
     val canManageUsers: Boolean get() = this == SUPERADMIN
@@ -91,6 +91,8 @@ data class PlaylistItem(
     val size: Long = 0,
     val md5: String = "",
     val orientation: ScreenShape? = null,
+    @SerialName("start_at") val startAt: Long? = null,
+    @SerialName("end_at") val endAt: Long? = null,
 )
 
 @Serializable
@@ -136,7 +138,12 @@ data class PlayerSetup(
 )
 
 /** One item when saving a playlist. */
-data class PlaylistEntry(val mediaId: Long, val imageSeconds: Int)
+data class PlaylistEntry(
+    val mediaId: Long,
+    val imageSeconds: Int,
+    val startAt: Long? = null,
+    val endAt: Long? = null,
+)
 
 // ---------- Player app ----------
 

@@ -131,9 +131,9 @@ const MOUNTINGS = {
   portrait_left: { label: 'Portrait, turned left', shape: 'portrait' },
 };
 const ROLES = {
-  superadmin: { label: 'Superadmin', desc: 'Everything, including people and settings' },
-  system_manager: { label: 'System manager', desc: 'Screens and content' },
-  content_uploader: { label: 'Content uploader', desc: 'Files and playlists only' },
+  superadmin: { label: 'Spongebob', desc: 'Everything, including people and settings' },
+  system_manager: { label: 'Patrick', desc: 'Screens and content' },
+  content_uploader: { label: 'Squidward', desc: 'Files and playlists only' },
 };
 
 /** A small outlined rectangle in landscape or portrait shape. */
@@ -598,8 +598,23 @@ async function pagePlaylist(page, id) {
   let items = [];
   let dragFrom = null;
 
-  const sameAsSaved = () => JSON.stringify(items.map((i) => [i.media_id, i.image_seconds])) ===
-    JSON.stringify(detail.items.map((i) => [i.media_id, i.image_seconds]));
+  const sameAsSaved = () => JSON.stringify(items.map((i) => [i.media_id, i.image_seconds, i.start_at, i.end_at, i.schedule_enabled])) ===
+    JSON.stringify(detail.items.map((i) => [i.media_id, i.image_seconds, i.start_at, i.end_at, i.start_at != null || i.end_at != null]));
+  const validSchedules = () => items.every((i) =>
+    !i.schedule_enabled || (i.start_at != null && i.end_at != null && i.start_at < i.end_at)
+  );
+  const dateValue = (timestamp) => {
+    if (timestamp == null) return '';
+    const date = new Date(timestamp);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const startTimestamp = (value) => value ? new Date(`${value}T00:00:00`).getTime() : null;
+  const endTimestamp = (value) => {
+    if (!value) return null;
+    const date = new Date(`${value}T00:00:00`);
+    date.setDate(date.getDate() + 1);
+    return date.getTime();
+  };
 
   function move(from, to) {
     if (to < 0 || to >= items.length || from === to) return;
@@ -645,28 +660,58 @@ async function pagePlaylist(page, id) {
                 el('input', {
                   class: 'secs', type: 'number', min: 1, max: 120, value: it.image_seconds,
                   onchange: (e) => { it.image_seconds = Math.max(1, Math.min(120, Number(e.target.value) || 10)); draw(); },
-                }), 'seconds')),
+                }), 'seconds'),
+            el('label', { class: 'meta row' },
+              el('input', {
+                type: 'checkbox',
+                checked: it.schedule_enabled,
+                onchange: (e) => {
+                  it.schedule_enabled = e.target.checked;
+                  if (!it.schedule_enabled) { it.start_at = null; it.end_at = null; }
+                  draw();
+                },
+              }),
+              ' Schedule play dates'),
+            it.schedule_enabled
+              ? el('div', { class: 'meta row' },
+                'From ',
+                el('input', {
+                  class: 'date-input', type: 'date', value: dateValue(it.start_at),
+                  onchange: (e) => { it.start_at = startTimestamp(e.target.value); draw(); },
+                }),
+                ' through ',
+                el('input', {
+                  class: 'date-input', type: 'date', value: dateValue(it.end_at == null ? null : it.end_at - 1),
+                  onchange: (e) => { it.end_at = endTimestamp(e.target.value); draw(); },
+                }),
+                ' · Dates use this device’s local timezone; the end date is included.')
+              : null),
           el('button', { class: 'btn icon', 'aria-label': `Move ${it.filename} up`, disabled: i === 0, onclick: () => move(i, i - 1) }, icon('up')),
           el('button', { class: 'btn icon', 'aria-label': `Move ${it.filename} down`, disabled: i === items.length - 1, onclick: () => move(i, i + 1) }, icon('down')),
           el('button', { class: 'btn icon', 'aria-label': `Remove ${it.filename} from the playlist`, onclick: () => { items.splice(i, 1); draw(); } }, icon('trash')));
           return row;
         })),
       items.length > 1 ? el('p', { class: 'meta' }, 'Drag rows to reorder them, or use the arrow buttons.') : null,
+      items.some((i) => i.schedule_enabled && (i.start_at == null || i.end_at == null))
+        ? el('p', { class: 'warn' }, 'Choose both a start date and an end date for each scheduled file.')
+        : items.some((i) => i.start_at != null && i.end_at != null && i.start_at >= i.end_at)
+          ? el('p', { class: 'warn' }, 'A scheduled file’s end date must be on or after its start date.')
+          : null,
       sameAsSaved() ? null : el('div', { class: 'save-bar' },
         el('span', { class: 'warn' }, '● Unsaved changes'),
         el('div', { class: 'row' },
-          el('button', { class: 'btn text', onclick: () => { items = detail.items.map((x) => ({ ...x })); draw(); } }, 'Undo'),
-          el('button', { class: 'btn primary', onclick: save }, 'Save playlist'))),
+          el('button', { class: 'btn text', onclick: () => { items = detail.items.map((x) => ({ ...x, schedule_enabled: x.start_at != null || x.end_at != null })); draw(); } }, 'Undo'),
+          el('button', { class: 'btn primary', disabled: !validSchedules(), onclick: save }, 'Save playlist'))),
     );
   }
 
   async function save() {
     const saved = await attempt(() => api('PUT', `api/playlists/${id}/items`, {
-      items: items.map((i) => ({ media_id: i.media_id, image_seconds: i.image_seconds })),
+      items: items.map((i) => ({ media_id: i.media_id, image_seconds: i.image_seconds, start_at: i.start_at, end_at: i.end_at })),
     }));
     if (!saved) return;
     detail = saved;
-    items = detail.items.map((x) => ({ ...x }));
+    items = detail.items.map((x) => ({ ...x, schedule_enabled: x.start_at != null || x.end_at != null }));
     draw();
     const n = detail.devices.length;
     toast(n ? `Saved. ${n} screen${n === 1 ? '' : 's'} update within a minute.` : 'Saved. No screens use this playlist yet.');
@@ -687,7 +732,7 @@ async function pagePlaylist(page, id) {
         el('button', {
           class: 'btn tonal small',
           onclick: (e) => {
-            items.push({ media_id: m.id, filename: m.filename, type: m.type, orientation: m.orientation, image_seconds: 10 });
+            items.push({ media_id: m.id, filename: m.filename, type: m.type, orientation: m.orientation, image_seconds: 10, start_at: null, end_at: null, schedule_enabled: false });
             e.target.closest('.list-row').remove();
             draw();
           },
@@ -697,7 +742,7 @@ async function pagePlaylist(page, id) {
 
   async function load() {
     [detail, library] = await Promise.all([api('GET', `api/playlists/${id}`), api('GET', 'api/media')]);
-    items = detail.items.map((x) => ({ ...x }));
+    items = detail.items.map((x) => ({ ...x, schedule_enabled: x.start_at != null || x.end_at != null }));
     draw();
   }
   await attempt(load);

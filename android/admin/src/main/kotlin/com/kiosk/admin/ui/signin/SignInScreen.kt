@@ -148,7 +148,7 @@ fun SignInScreen(app: KioskAdminApplication) {
                         else Text("Sign in with Google")
                     }
                     Text(
-                        "Only accounts a superadmin has invited can sign in.",
+                        "Only accounts Spongebob has invited can sign in.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
