@@ -12,11 +12,16 @@
 //   GOOGLE_DEVICE_CLIENT_ID      optional: "TVs and Limited Input devices" client, for
 //   GOOGLE_DEVICE_CLIENT_SECRET    signing in to the web page with a google.com/device code
 //   INGRESS_PORT                 optional: port for Home Assistant's sidebar page
+//   SITE_NAME                    optional: this site's name, e.g. "Head office"
+//   MODE                         "main" (default) or "relay", for a Home Assistant at
+//   MAIN_SERVER_URL                another site: its TVs then reach the main server
+//                                  at MAIN_SERVER_URL through this one (see relay.js)
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { createApp, createIngressServer } = require('./app');
 const { createGoogle } = require('./google');
+const { createRelay } = require('./relay');
 
 function loadSettings() {
   const env = process.env;
@@ -39,6 +44,9 @@ function loadSettings() {
       deviceClientId: o.google_device_client_id || '',
       deviceClientSecret: o.google_device_client_secret || '',
       ingressPort: Number(env.INGRESS_PORT) || 8099,
+      mode: o.mode === 'relay' ? 'relay' : 'main',
+      siteName: (o.site_name || '').trim() || null,
+      mainServerUrl: (o.main_server_url || '').trim(),
     };
   }
   return {
@@ -53,10 +61,42 @@ function loadSettings() {
     deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',
     deviceClientSecret: env.GOOGLE_DEVICE_CLIENT_SECRET || '',
     ingressPort: Number(env.INGRESS_PORT) || null,
+    mode: env.MODE === 'relay' ? 'relay' : 'main',
+    siteName: (env.SITE_NAME || '').trim() || null,
+    mainServerUrl: (env.MAIN_SERVER_URL || '').trim(),
   };
 }
 
 const settings = loadSettings();
+
+// Home Assistant's sidebar page talks to the server on its own private port.
+function startIngress(app) {
+  if (!settings.ingressPort) return;
+  createIngressServer(app).listen(settings.ingressPort, '0.0.0.0', () => {
+    console.log(`Home Assistant sidebar page on port ${settings.ingressPort}`);
+  });
+}
+
+if (settings.mode === 'relay') {
+  // A relay only needs its site name and where the main server is.
+  const missingRelay = [
+    ['site name', settings.siteName],
+    ['main server address', settings.mainServerUrl],
+  ].filter(([, value]) => !value).map(([name]) => name);
+  if (missingRelay.length) {
+    console.error(`Relay mode needs: ${missingRelay.join(', ')}. Fill them in using ${settings.source}.`);
+    process.exit(1);
+  }
+  let mainUrl = settings.mainServerUrl;
+  if (!/^https?:\/\//i.test(mainUrl)) mainUrl = `http://${mainUrl}`;
+  const relay = createRelay({ mainUrl, siteName: settings.siteName, dataDir: settings.dataDir });
+  relay.listen(settings.port, '0.0.0.0', () => {
+    console.log(`Kiosk relay for site "${settings.siteName}" running on port ${settings.port}, main server ${mainUrl}`);
+  });
+  startIngress(relay);
+  return;
+}
+
 const missing = [
   ['superadmin email', settings.superadminEmail],
   ['Google web client ID', settings.webClientId],
@@ -80,6 +120,7 @@ const app = createApp({
   googleWebClientId: settings.webClientId,
   mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
   cacheMedia: settings.cache,
+  siteName: settings.siteName,
   google: createGoogle({
     webClientId: settings.webClientId,
     deviceClientId: settings.deviceClientId,
@@ -94,9 +135,4 @@ app.listen(settings.port, '0.0.0.0', () => {
   console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'})`);
 });
 
-// Home Assistant's sidebar page talks to the server on its own private port.
-if (settings.ingressPort) {
-  createIngressServer(app).listen(settings.ingressPort, '0.0.0.0', () => {
-    console.log(`Home Assistant sidebar page on port ${settings.ingressPort}`);
-  });
-}
+startIngress(app);

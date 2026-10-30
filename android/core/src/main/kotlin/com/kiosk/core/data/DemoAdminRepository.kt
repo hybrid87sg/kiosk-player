@@ -15,6 +15,7 @@ import com.kiosk.core.model.Role
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.ApiException
 import kotlinx.coroutines.delay
 
@@ -53,6 +54,8 @@ class DemoAdminRepository(
         Device(1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4", freeBytes = 21_400_000_000),
         Device(2, "Reception", "Branch office", Mounting.PORTRAIT_RIGHT, 2, online = false, lastSeen = start - 3 * 3_600_000, currentFilename = "Menu board portrait.jpg", freeBytes = 9_800_000_000),
     )
+    // A TV that found the server by itself and is waiting to be added.
+    private val waiting = mutableListOf(WaitingDevice(99, "Xiaomi MIBOX4", null, "DEMO42", start))
     private val users = mutableListOf(
         User(1, myEmail, Role.SUPERADMIN),
         User(2, "maria@yourcompany.com", Role.SYSTEM_MANAGER),
@@ -181,11 +184,17 @@ class DemoAdminRepository(
         return devices.sortedWith(compareBy({ it.location ?: "￿" }, { it.name })).map { it.withPlaylistName() }
     }
 
+    override suspend fun waitingDevices(): List<WaitingDevice> {
+        pause()
+        return waiting.toList()
+    }
+
     override suspend fun claimDevice(code: String, setup: PlayerSetup): Device {
         pause()
         val clean = code.removePrefix("kiosk-pair:").uppercase().filter { it.isLetterOrDigit() }
         if (clean.length != 6) throw ApiException("No player is showing that code", 404)
         if (setup.name.isBlank()) throw ApiException("Give the player a name", 400)
+        waiting.removeAll { it.pairingCode == clean }
         val d = Device(
             nextId++, setup.name.trim(), setup.location?.trim()?.ifBlank { null }, setup.orientation, setup.playlistId,
             online = true, lastSeen = now(), freeBytes = 28_100_000_000,

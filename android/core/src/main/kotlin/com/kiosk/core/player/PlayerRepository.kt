@@ -3,6 +3,7 @@ package com.kiosk.core.player
 import com.kiosk.core.model.PlayerPlaylist
 import com.kiosk.core.model.PlayerStatus
 import com.kiosk.core.model.Registration
+import com.kiosk.core.model.ServerConfig
 import com.kiosk.core.network.AppVersionBody
 import com.kiosk.core.network.HeartbeatBody
 import com.kiosk.core.network.PlayerApi
@@ -12,7 +13,8 @@ import okhttp3.OkHttpClient
 
 /** What the TV player asks the server. */
 interface PlayerRepository {
-    suspend fun register(appVersion: String): Registration
+    /** [model] is the TV box's make and model, shown while it waits to be added. */
+    suspend fun register(appVersion: String, model: String? = null): Registration
     suspend fun status(): PlayerStatus
     suspend fun playlist(): PlayerPlaylist
     /**
@@ -31,8 +33,11 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     val httpClient: OkHttpClient get() = connection.client
     val baseUrl: String get() = connection.baseUrl
 
-    override suspend fun register(appVersion: String): Registration =
-        apiCall { api.register(AppVersionBody(appVersion)) }.also { token = it.token }
+    override suspend fun register(appVersion: String, model: String?): Registration =
+        apiCall { api.register(AppVersionBody(appVersion, model)) }.also { token = it.token }
+
+    /** Which server this is (its ID lets the TV find it again if its address changes). */
+    suspend fun config(): ServerConfig = apiCall { api.config() }
 
     override suspend fun status(): PlayerStatus = apiCall { api.status() }
     override suspend fun playlist(): PlayerPlaylist = apiCall { api.playlist() }

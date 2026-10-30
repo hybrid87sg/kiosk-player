@@ -12,6 +12,7 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.ServerConfig
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.AdminApi
 import com.kiosk.core.network.DeviceBody
 import com.kiosk.core.network.GoogleSignInBody
@@ -83,6 +84,7 @@ class RemoteAdminRepository(
     override suspend fun deletePlaylist(id: Long) { apiCall { api.deletePlaylist(id) } }
 
     override suspend fun devices(): List<Device> = apiCall { api.devices() }
+    override suspend fun waitingDevices(): List<WaitingDevice> = apiCall { api.waitingDevices() }
 
     override suspend fun claimDevice(code: String, setup: PlayerSetup): Device =
         apiCall { api.claim(setup.toBody(code)) }

@@ -114,6 +114,8 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'download_total', 'INTEGER');
   addColumnIfMissing(db, 'playlist_items', 'start_at', 'INTEGER');
   addColumnIfMissing(db, 'playlist_items', 'end_at', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'model', 'TEXT'); // e.g. "Xiaomi MIBOX4", shown while waiting to be added
+  addColumnIfMissing(db, 'devices', 'site', 'TEXT'); // which site (Home Assistant) the TV is at
 
   return db;
 }

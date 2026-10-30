@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kiosk Signage relay</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Shown by a relay (a Home Assistant at another site). Everything is
+       managed on the main server; this page only says how the relay is doing. -->
+  <main class="relay">
+    <div class="page-head">
+      <div>
+        <h1 id="site">Kiosk Signage relay</h1>
+        <p class="sub">This Home Assistant passes this site's TVs through to the main Kiosk server.</p>
+      </div>
+    </div>
+    <div class="list" id="status"><p class="loading">Checking…</p></div>
+    <p class="meta">Manage screens, files and playlists on the main server's web page:
+      <a id="main-link" href="#" target="_blank" rel="noopener"></a></p>
+  </main>
+  <script>
+    // Plain text only (textContent), so nothing from the server can run as code here.
+    function row(label, value, warn) {
+      const r = document.createElement('div');
+      r.className = 'list-row';
+      const name = document.createElement('div');
+      name.className = 'grow name';
+      name.textContent = label;
+      const v = document.createElement('div');
+      v.className = warn ? 'warn' : 'meta';
+      v.textContent = value;
+      r.append(name, v);
+      return r;
+    }
+    function size(bytes) {
+      return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+    }
+    async function refresh() {
+      const box = document.getElementById('status');
+      try {
+        const s = await (await fetch('api/relay/status')).json();
+        document.getElementById('site').textContent = `${s.site_name} · relay`;
+        const link = document.getElementById('main-link');
+        link.textContent = s.main_url;
+        link.href = s.main_url;
+        box.replaceChildren(
+          row('Main Kiosk server', s.main.reachable ? `Connected (version ${s.main.version})` : "Can't reach it. Check Tailscale and the main server address.", !s.main.reachable),
+          row('TVs at this site', `${s.tvs_seen} active in the last 10 minutes`),
+          row('Copies of files kept here', `${s.cache.files} files, ${size(s.cache.bytes)}`),
+          row('Relay version', s.version),
+        );
+      } catch (err) {
+        box.replaceChildren(row('Relay', `Not answering: ${err.message}`, true));
+      }
+    }
+    refresh();
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>

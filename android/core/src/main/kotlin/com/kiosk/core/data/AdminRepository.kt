@@ -14,6 +14,7 @@ import com.kiosk.core.model.Role
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import java.io.InputStream
 
 interface AdminRepository {
@@ -35,6 +36,8 @@ interface AdminRepository {
     suspend fun deletePlaylist(id: Long)
 
     suspend fun devices(): List<Device>
+    /** TVs showing a pairing code right now, so they can be added without scanning or typing. */
+    suspend fun waitingDevices(): List<WaitingDevice>
     /** [code] is what the QR code says ("kiosk-pair:K7P29Q") or what was typed ("k7p-29q"). */
     suspend fun claimDevice(code: String, setup: PlayerSetup): Device
     suspend fun updateDevice(id: Long, setup: PlayerSetup): Device

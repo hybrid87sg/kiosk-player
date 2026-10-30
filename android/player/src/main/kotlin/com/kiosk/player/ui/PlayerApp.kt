@@ -61,6 +61,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.kiosk.core.model.Mounting
+import com.kiosk.core.player.FoundServer
 import com.kiosk.player.BuildConfig
 import com.kiosk.player.KeepInFront
 import com.kiosk.player.PlayerSettings
@@ -81,7 +82,8 @@ fun PlayerApp(vm: PlayerViewModel) {
         Box(Modifier.fillMaxSize().background(Ink)) {
             when (val state = ui) {
                 PlayerUi.Loading -> CenterMessage(title = "Kiosk Player", detail = "Starting…")
-                PlayerUi.Setup -> SetupScreen(onDemo = vm::chooseDemo, onServer = vm::chooseServer)
+                is PlayerUi.Setup -> SetupScreen(state.typeAddress, onFind = vm::findServer, onDemo = vm::chooseDemo, onServer = vm::chooseServer)
+                is PlayerUi.Finding -> FindingScreen(state, onChoose = vm::chooseFound, onAgain = vm::findServer, onType = vm::typeAddress, onBack = vm::backToSetup)
                 is PlayerUi.Pairing -> PairingScreen(state, onSettings = { settingsOpen = true }, onStartDemo = vm::startDemoPlayback)
                 is PlayerUi.Waiting -> CenterMessage(state.name?.uppercase(), state.title, state.detail, state.progress, onSettings = { settingsOpen = true })
                 is PlayerUi.Playing -> PlaybackScreen(state, onNowPlaying = { vm.currentMediaId = it }, onOpenSettings = { settingsOpen = true })
@@ -115,9 +117,9 @@ fun TvButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, p
 }
 
 @Composable
-private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
+private fun SetupScreen(typeAddress: Boolean, onFind: () -> Unit, onDemo: () -> Unit, onServer: (String) -> Unit) {
     var address by rememberSaveable { mutableStateOf("") }
-    var showServer by rememberSaveable { mutableStateOf(false) }
+    var showServer by rememberSaveable(typeAddress) { mutableStateOf(typeAddress) }
     val first = remember { FocusRequester() }
     LaunchedEffect(showServer) { runCatching { first.requestFocus() } }
 
@@ -130,7 +132,8 @@ private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
         if (!showServer) {
             Text("How should this screen get its content?", fontSize = 24.sp, color = Muted)
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                TvButton("Connect to a server", { showServer = true }, Modifier.focusRequester(first), primary = true)
+                TvButton("Find my server automatically", onFind, Modifier.focusRequester(first), primary = true)
+                TvButton("Type the address", { showServer = true })
                 TvButton("Try the demo", onDemo)
             }
             KeepInFrontSection(Modifier.widthIn(max = 900.dp))
@@ -155,6 +158,58 @@ private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
     }
 }
 
+/** Looking for the Kiosk server on this network, then (if there are several) choosing one. */
+@Composable
+private fun FindingScreen(
+    state: PlayerUi.Finding,
+    onChoose: (FoundServer) -> Unit,
+    onAgain: () -> Unit,
+    onType: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val first = remember { FocusRequester() }
+    LaunchedEffect(state.found) { runCatching { first.requestFocus() } }
+    Column(
+        Modifier.fillMaxSize().padding(64.dp),
+        verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        val found = state.found
+        when {
+            found == null -> {
+                Text("Looking for your Kiosk server…", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Checking every device on this network. This takes a few seconds.", fontSize = 24.sp, color = Muted)
+                LinearProgressIndicator(Modifier.widthIn(max = 600.dp).fillMaxWidth(), color = Teal)
+                TvButton("Cancel", onBack, Modifier.focusRequester(first))
+            }
+            found.isEmpty() -> {
+                Text("No server found", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(state.problem.orEmpty(), fontSize = 24.sp, color = Muted, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 900.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    TvButton("Search again", onAgain, Modifier.focusRequester(first), primary = true)
+                    TvButton("Type the address", onType)
+                    TvButton("Back", onBack)
+                }
+            }
+            else -> {
+                Text("Which server is this screen for?", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("More than one Kiosk server answered on this network.", fontSize = 24.sp, color = Muted)
+                found.forEachIndexed { i, server ->
+                    val name = server.siteName ?: "Kiosk server"
+                    val kind = if (server.role == "relay") "site relay" else "main server"
+                    TvButton(
+                        "$name · $kind · ${server.url.removePrefix("http://").trimEnd('/')}",
+                        { onChoose(server) },
+                        if (i == 0) Modifier.focusRequester(first) else Modifier,
+                        primary = i == 0,
+                    )
+                }
+                TvButton("Back", onBack)
+            }
+        }
+    }
+}
+
 @Composable
 private fun PairingScreen(state: PlayerUi.Pairing, onSettings: () -> Unit, onStartDemo: () -> Unit) {
     val focus = remember { FocusRequester() }
@@ -170,8 +225,8 @@ private fun PairingScreen(state: PlayerUi.Pairing, onSettings: () -> Unit, onSta
         Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
             Text("Add this screen", fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Open Kiosk Admin on your phone", fontSize = 28.sp, color = Color(0xFFD5E2DF))
-                Text("Players → Scan QR code", fontSize = 28.sp, color = Color(0xFFD5E2DF))
+                Text("It's waiting in Kiosk Signage under New screens:", fontSize = 28.sp, color = Color(0xFFD5E2DF))
+                Text("click Add there, or scan this QR code in Kiosk Admin", fontSize = 28.sp, color = Color(0xFFD5E2DF))
             }
             Column {
                 Text("Or type this code", fontSize = 24.sp, color = Muted)

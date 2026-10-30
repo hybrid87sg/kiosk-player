@@ -41,7 +41,15 @@ enum class MediaType {
 
 /** Public settings from the server, read before signing in. */
 @Serializable
-data class ServerConfig(@SerialName("google_web_client_id") val googleWebClientId: String? = null)
+data class ServerConfig(
+    @SerialName("google_web_client_id") val googleWebClientId: String? = null,
+    /** "kiosk-signage" for a Kiosk server; used when a TV searches the network. */
+    val kind: String? = null,
+    /** "main" (manages everything) or "relay" (passes one site's TVs to the main server). */
+    val role: String? = null,
+    @SerialName("server_id") val serverId: String? = null,
+    @SerialName("site_name") val siteName: String? = null,
+)
 
 @Serializable
 data class Session(val token: String, val email: String, val role: Role)
@@ -119,6 +127,20 @@ data class Device(
     @SerialName("current_filename") val currentFilename: String? = null,
     @SerialName("free_bytes") val freeBytes: Long? = null,
     @SerialName("app_version") val appVersion: String? = null,
+    /** The TV box, e.g. "Xiaomi MIBOX4". */
+    val model: String? = null,
+    /** Which site (Home Assistant) the TV is at, when there are several. */
+    val site: String? = null,
+)
+
+/** A TV showing its pairing code right now, waiting to be added. */
+@Serializable
+data class WaitingDevice(
+    val id: Long,
+    val model: String? = null,
+    val site: String? = null,
+    @SerialName("pairing_code") val pairingCode: String,
+    @SerialName("last_seen") val lastSeen: Long? = null,
 )
 
 @Serializable

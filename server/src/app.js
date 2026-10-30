@@ -30,6 +30,11 @@ const DEVICE_ORIENTATIONS = ['landscape', 'portrait_right', 'portrait_left'];
 // A player counts as "online" if it sent a heartbeat in the last 2 minutes.
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
 
+// A TV is "waiting to be added" while it asked for its code in the last 10
+// minutes. One that never gets added is forgotten after a day.
+const WAITING_WINDOW_MS = 10 * 60 * 1000;
+const WAITING_FORGET_MS = 24 * 60 * 60 * 1000;
+
 // Opening the library re-reads the Drive folder at most this often.
 const SYNC_THROTTLE_MS = 60 * 1000;
 
@@ -58,9 +63,16 @@ function createApp({
   cacheMedia = true, // whether to keep them, until changed on the web Settings page
   maxUploadBytes = 8 * 1024 ** 3,
   syncIntervalMs = 5 * 60 * 1000,
+  siteName = null, // this server's own site, e.g. "Head office"; TVs at other sites come through relays
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
+  // A random ID made once, so a TV can recognise "its" server if the address changes.
+  let serverId = getSetting(db, 'server_id');
+  if (!serverId) setSetting(db, 'server_id', (serverId = crypto.randomUUID()));
+  // Which site a TV is at: relays add the "X-Kiosk-Site" header; TVs talking
+  // to this server directly are at this server's own site.
+  const siteOf = (req) => String(req.get('x-kiosk-site') || '').trim().slice(0, 80) || siteName || null;
   const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
   const cacheOn = () => Boolean(cacheStore) && (getSetting(db, 'cache_media') ?? cacheMedia);
   const pruneCache = () => {
@@ -91,6 +103,11 @@ function createApp({
       google_web_client_id: googleWebClientId,
       web_code_sign_in: Boolean(google.deviceSignInAvailable),
       version: SERVER_VERSION,
+      // TVs search the network for this to find the server by themselves.
+      kind: 'kiosk-signage',
+      role: 'main',
+      server_id: serverId,
+      site_name: siteName,
     })
   );
 
@@ -524,6 +541,8 @@ function createApp({
       current_filename: current ? current.filename : null,
       free_bytes: d.free_bytes,
       app_version: d.app_version,
+      model: d.model,
+      site: d.site,
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
@@ -558,8 +577,25 @@ function createApp({
   }
 
   app.get('/api/devices', requireDevices, (req, res) => {
-    const rows = db.prepare(`SELECT * FROM devices WHERE claimed = 1 ORDER BY location, name`).all();
+    const rows = db.prepare(`SELECT * FROM devices WHERE claimed = 1 ORDER BY site, location, name`).all();
     res.json(rows.map(deviceView));
+  });
+
+  // New TVs showing a pairing code right now, so they can be added with one
+  // click instead of typing the code. TVs that never got added are tidied up after a day.
+  app.get('/api/devices/waiting', requireDevices, (req, res) => {
+    const now = Date.now();
+    db.prepare(`DELETE FROM devices WHERE claimed = 0 AND COALESCE(last_seen, created_at) < ?`).run(now - WAITING_FORGET_MS);
+    const rows = db.prepare(
+      `SELECT * FROM devices WHERE claimed = 0 AND last_seen >= ? ORDER BY created_at`
+    ).all(now - WAITING_WINDOW_MS);
+    res.json(rows.map((d) => ({
+      id: d.id,
+      model: d.model,
+      site: d.site,
+      pairing_code: d.pairing_code,
+      last_seen: d.last_seen,
+    })));
   });
 
   // Pairing. "code" is either what the admin app read from the TV's QR code
@@ -651,14 +687,18 @@ function createApp({
   // pairing code, which it shows on screen as a QR code and as text.
   app.post('/api/player/register', (req, res) => {
     const token = auth.newToken();
-    const appVersion = (req.body && req.body.app_version) || null;
+    const body = req.body || {};
+    const appVersion = typeof body.app_version === 'string' ? body.app_version : null;
+    const model = typeof body.model === 'string' ? body.model.trim().slice(0, 80) || null : null;
     const insert = db.prepare(
-      `INSERT INTO devices (token, pairing_code, app_version, created_at) VALUES (?, ?, ?, ?)`
+      `INSERT INTO devices (token, pairing_code, app_version, model, site, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = randomPairingCode();
       try {
-        insert.run(token, code, appVersion, Date.now());
+        const now = Date.now();
+        insert.run(token, code, appVersion, model, siteOf(req), now, now);
         return res.status(201).json({ token, pairing_code: code, qr_payload: `kiosk-pair:${code}` });
       } catch (err) {
         if (err.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err; // otherwise: code taken, try another
@@ -669,6 +709,8 @@ function createApp({
 
   app.get('/api/player/status', auth.requireDevice(db, { claimedOnly: false }), (req, res) => {
     const d = req.device;
+    // A TV waiting to be added asks every few seconds; that keeps it on the "waiting" list.
+    if (!d.claimed) db.prepare(`UPDATE devices SET last_seen = ?, site = ? WHERE id = ?`).run(Date.now(), siteOf(req), d.id);
     res.json({
       claimed: !!d.claimed,
       name: d.name,
@@ -711,7 +753,7 @@ function createApp({
     const body = req.body || {};
     db.prepare(
       `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ?,
-       download_done = ?, download_total = ? WHERE id = ?`
+       download_done = ?, download_total = ?, site = ? WHERE id = ?`
     ).run(
       Date.now(),
       Number.isInteger(body.current_media_id) ? body.current_media_id : null,
@@ -719,6 +761,7 @@ function createApp({
       typeof body.app_version === 'string' ? body.app_version : req.device.app_version,
       Number.isInteger(body.download_done) ? body.download_done : null,
       Number.isInteger(body.download_total) ? body.download_total : null,
+      siteOf(req),
       req.device.id
     );
     res.json({ ok: true, version: playerPlaylist(req.device).version });

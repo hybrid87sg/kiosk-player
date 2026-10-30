@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { createApp, createIngressServer } = require('../src/app');
+const { createRelay } = require('../src/relay');
 const { createFakeGoogle } = require('./fake-google');
 
 const BOSS = 'boss@example.com';
@@ -59,8 +60,11 @@ test('Google sign-in: only invited emails get in, with their role', async (t) =>
   const { call, signIn } = await startServer(t);
 
   // The admin app learns which Google client to sign in with.
-  assert.deepEqual(await (await call('GET', '/api/config')).json(), {
+  const config = await (await call('GET', '/api/config')).json();
+  assert.match(config.server_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(config, {
     google_web_client_id: 'web-client-123', web_code_sign_in: true, version: require('../package.json').version,
+    kind: 'kiosk-signage', role: 'main', server_id: config.server_id, site_name: null,
   });
 
   assert.equal((await call('POST', '/api/auth/google', { json: { id_token: 'forged' } })).status, 401);
@@ -488,4 +492,111 @@ test('settings page: Drive folder, cache switch, connection test, download progr
   await call('POST', '/api/player/heartbeat', { token: tv.token, json: {} });
   [device] = await (await call('GET', '/api/devices', { token: boss })).json();
   assert.equal(device.download, null);
+});
+
+test('new TVs wait on a list, so they can be added without typing their code', async (t) => {
+  const { call, signIn, app } = await startServer(t, { siteName: 'Head office' });
+  const boss = await signIn(BOSS);
+  await call('POST', '/api/users', { token: boss, json: { email: 'up@example.com', role: 'content_uploader' } });
+  const uploader = await signIn('up@example.com');
+
+  // The server ID stays the same, so a TV can recognise its server after an address change.
+  const id = (await (await call('GET', '/api/config')).json()).server_id;
+  assert.equal((await (await call('GET', '/api/config')).json()).server_id, id);
+
+  const tv = await (await call('POST', '/api/player/register', { json: { app_version: '0.4.0', model: '  Xiaomi MIBOX4  ' } })).json();
+  const waiting = await (await call('GET', '/api/devices/waiting', { token: boss })).json();
+  assert.equal(waiting.length, 1);
+  assert.equal(waiting[0].model, 'Xiaomi MIBOX4');
+  assert.equal(waiting[0].site, 'Head office');
+  assert.equal(waiting[0].pairing_code, tv.pairing_code);
+  assert.equal((await call('GET', '/api/devices/waiting', { token: uploader })).status, 403);
+
+  // Adding it (the "Add" button sends the code) takes it off the list.
+  const added = await (await call('POST', '/api/devices/claim', {
+    token: boss, json: { code: waiting[0].pairing_code, name: 'Lobby TV' },
+  })).json();
+  assert.equal(added.site, 'Head office');
+  assert.equal(added.model, 'Xiaomi MIBOX4');
+  assert.deepEqual(await (await call('GET', '/api/devices/waiting', { token: boss })).json(), []);
+
+  // A TV that stopped asking drops off the list, and is forgotten after a day.
+  const old = await (await call('POST', '/api/player/register', { json: {} })).json();
+  app.locals.db.prepare(`UPDATE devices SET last_seen = ?, created_at = ? WHERE token = ?`)
+    .run(Date.now() - 20 * 60 * 1000, Date.now() - 20 * 60 * 1000, old.token);
+  assert.deepEqual(await (await call('GET', '/api/devices/waiting', { token: boss })).json(), []);
+  assert.equal((await call('GET', '/api/player/status', { token: old.token })).status, 200);
+  assert.equal((await (await call('GET', '/api/devices/waiting', { token: boss })).json()).length, 1);
+  app.locals.db.prepare(`UPDATE devices SET last_seen = ?, created_at = ? WHERE token = ?`)
+    .run(Date.now() - 25 * 60 * 60 * 1000, Date.now() - 25 * 60 * 60 * 1000, old.token);
+  await call('GET', '/api/devices/waiting', { token: boss });
+  assert.equal((await call('GET', '/api/player/status', { token: old.token })).status, 401);
+});
+
+test('another site: TVs reach the main server through a relay that keeps copies of files', async (t) => {
+  const { call, signIn, upload, google, base } = await startServer(t, { siteName: 'Head office' });
+  const boss = await signIn(BOSS);
+
+  const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-relay-'));
+  const relayApp = createRelay({ mainUrl: base, siteName: 'Orchard branch', dataDir: relayDir, log: () => {}, pruneIntervalMs: 0 });
+  const relayServer = await new Promise((resolve) => {
+    const s = relayApp.listen(0, () => resolve(s));
+  });
+  t.after(async () => {
+    await new Promise((resolve) => relayServer.close(resolve));
+    fs.rmSync(relayDir, { recursive: true, force: true });
+  });
+  const relay = `http://127.0.0.1:${relayServer.address().port}`;
+  const viaRelay = (url, { token, json, headers = {} } = {}) => {
+    if (token) headers.authorization = `Bearer ${token}`;
+    if (json !== undefined) headers['content-type'] = 'application/json';
+    return fetch(relay + url, { method: json !== undefined ? 'POST' : 'GET', headers, body: json !== undefined ? JSON.stringify(json) : undefined });
+  };
+
+  // TVs find the relay just like a main server, and it says which site it is.
+  const config = await (await viaRelay('/api/config')).json();
+  assert.equal(config.kind, 'kiosk-signage');
+  assert.equal(config.role, 'relay');
+  assert.equal(config.site_name, 'Orchard branch');
+
+  // A TV at the branch registers through the relay and waits on the main server's list.
+  const tv = await (await viaRelay('/api/player/register', { json: { model: 'Branch box' } })).json();
+  const [waiting] = await (await call('GET', '/api/devices/waiting', { token: boss })).json();
+  assert.equal(waiting.site, 'Orchard branch');
+
+  const data = crypto.randomBytes(5000);
+  const media = await (await upload(boss, 'promo.jpg', data, 'image/jpeg')).json();
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Branch', orientation: 'landscape' } })).json();
+  await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: media.id }] } });
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Branch TV', playlist_id: playlist.id } });
+
+  const list = await (await viaRelay('/api/player/playlist', { token: tv.token })).json();
+  assert.equal(list.items.length, 1);
+  const [screen] = await (await call('GET', '/api/devices', { token: boss })).json();
+  assert.equal(screen.site, 'Orchard branch');
+
+  // The first download goes to the main server; later ones (and resumed
+  // ones) come from the relay's own copy.
+  const before = google.downloadCount();
+  const first = await viaRelay(list.items[0].url, { token: tv.token });
+  assert.equal(first.status, 200);
+  assert.deepEqual(Buffer.from(await first.arrayBuffer()), data);
+  await relayApp.locals.waitForCopies();
+  const again = await viaRelay(list.items[0].url, { token: tv.token });
+  assert.deepEqual(Buffer.from(await again.arrayBuffer()), data);
+  const part = await viaRelay(list.items[0].url, { token: tv.token, headers: { range: 'bytes=4000-' } });
+  assert.equal(part.status, 206);
+  assert.deepEqual(Buffer.from(await part.arrayBuffer()), data.subarray(4000));
+  assert.equal(google.downloadCount() - before, 1);
+
+  // Heartbeats keep the site, and the status page knows the TV.
+  await viaRelay('/api/player/heartbeat', { token: tv.token, json: { app_version: '0.4.0' } });
+  const status = await (await viaRelay('/api/relay/status')).json();
+  assert.equal(status.main.reachable, true);
+  assert.equal(status.tvs_seen, 1);
+  assert.equal(status.cache.files, 1);
+
+  // Files are only for real, paired TVs.
+  assert.equal((await viaRelay(list.items[0].url, { token: 'made-up' })).status, 401);
+  assert.equal((await viaRelay(list.items[0].url)).status, 401);
 });

@@ -5,6 +5,7 @@ import com.kiosk.core.data.AdminRepository
 import com.kiosk.core.model.Device
 import com.kiosk.core.model.PlayerSetup
 import com.kiosk.core.model.PlaylistSummary
+import com.kiosk.core.model.WaitingDevice
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,6 +13,8 @@ import kotlinx.coroutines.flow.update
 
 data class PlayersUiState(
     val devices: List<Device>? = null,
+    /** TVs showing a pairing code right now, waiting to be added. */
+    val waiting: List<WaitingDevice> = emptyList(),
     val playlists: List<PlaylistSummary> = emptyList(),
     val busy: Boolean = false,
 )
@@ -22,17 +25,19 @@ class PlayersViewModel(private val repo: AdminRepository, onSignedOut: () -> Uni
 
     init {
         launchSafely { _state.update { it.copy(playlists = repo.playlists()) } }
-        // Keep online/offline and "now playing" fresh while this screen is open.
+        // Keep online/offline, "now playing" and new TVs fresh while this screen is open.
         launchSafely {
             while (true) {
-                _state.update { it.copy(devices = repo.devices()) }
-                delay(30_000)
+                val devices = repo.devices()
+                val waiting = repo.waitingDevices()
+                _state.update { it.copy(devices = devices, waiting = waiting) }
+                delay(10_000)
             }
         }
     }
 
     private suspend fun reload() {
-        _state.update { it.copy(devices = repo.devices(), playlists = repo.playlists()) }
+        _state.update { it.copy(devices = repo.devices(), waiting = repo.waitingDevices(), playlists = repo.playlists()) }
     }
 
     /** Pairs the TV showing [code] and sets it up. [onDone] closes the form. */

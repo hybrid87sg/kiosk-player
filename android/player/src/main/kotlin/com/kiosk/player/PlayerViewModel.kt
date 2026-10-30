@@ -1,6 +1,9 @@
 package com.kiosk.player
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kiosk.core.model.MediaType
@@ -11,6 +14,8 @@ import com.kiosk.core.network.ApiException
 import com.kiosk.core.network.normaliseBaseUrl
 import com.kiosk.core.player.ContentSync
 import com.kiosk.core.player.DownloadException
+import com.kiosk.core.player.FoundServer
+import com.kiosk.core.player.ServerFinder
 import com.kiosk.core.player.RemotePlayerRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.net.Inet4Address
 
 /** One thing to show: a downloaded file, or (in Demo mode) a coloured slide. */
 data class PlayItem(
@@ -34,12 +40,17 @@ data class PlayItem(
 /** What the TV shows right now. */
 sealed interface PlayerUi {
     data object Loading : PlayerUi
-    /** First launch: choose Demo or a server. */
-    data object Setup : PlayerUi
+    /** First launch: find the server, type its address, or try Demo. */
+    data class Setup(val typeAddress: Boolean = false) : PlayerUi
+    /** Searching the network for the Kiosk server; [found] is null while still searching. */
+    data class Finding(val found: List<FoundServer>?, val problem: String? = null) : PlayerUi
     data class Pairing(val code: String, val qrPayload: String, val demo: Boolean, val problem: String? = null) : PlayerUi
     data class Waiting(val name: String?, val title: String, val detail: String, val progress: Float? = null) : PlayerUi
     data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null) : PlayerUi
 }
+
+/** How long the server must be silent before the TV looks for it at a new address. */
+private const val FOLLOW_SERVER_AFTER_MS = 2 * 60_000L
 
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = PlayerSettings(app)
@@ -55,6 +66,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val demoMounting: Mounting get() = settings.demoMounting
 
     private var job: Job? = null
+    private val finder = ServerFinder()
 
     init { start() }
 
@@ -62,11 +74,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         job?.cancel()
         job = viewModelScope.launch {
             when (settings.mode) {
-                null -> _ui.value = PlayerUi.Setup
+                null -> _ui.value = PlayerUi.Setup()
                 PlayerMode.DEMO -> _ui.value = PlayerUi.Pairing("DEMO42", "kiosk-pair:DEMO42", demo = true)
                 PlayerMode.SERVER -> {
                     val url = settings.serverUrl
-                    if (url == null) _ui.value = PlayerUi.Setup else runServer(url)
+                    if (url == null) _ui.value = PlayerUi.Setup() else runServer(url)
                 }
             }
         }
@@ -79,8 +91,46 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         start()
     }
 
-    fun chooseServer(address: String) {
-        settings.serverUrl = normaliseBaseUrl(address)
+    /** Searches this TV's network for the Kiosk server; connects straight away if there's just one. */
+    fun findServer() {
+        job?.cancel()
+        job = viewModelScope.launch {
+            _ui.value = PlayerUi.Finding(found = null)
+            val own = ownAddress()
+            if (own == null) {
+                _ui.value = PlayerUi.Finding(emptyList(), "This TV isn't connected to a network. Connect it to Wi-Fi or a cable first.")
+                return@launch
+            }
+            val found = finder.find(own)
+            when (found.size) {
+                0 -> _ui.value = PlayerUi.Finding(
+                    emptyList(),
+                    "No Kiosk server found on this network (${own.substringBeforeLast('.')}.x). " +
+                        "Check that the Kiosk add-on is running in Home Assistant, or type its address.",
+                )
+                1 -> chooseFound(found.single())
+                else -> _ui.value = PlayerUi.Finding(found)
+            }
+        }
+    }
+
+    fun chooseFound(server: FoundServer) = connect(server.url, server.serverId)
+
+    fun typeAddress() {
+        job?.cancel()
+        _ui.value = PlayerUi.Setup(typeAddress = true)
+    }
+
+    fun backToSetup() {
+        job?.cancel()
+        _ui.value = PlayerUi.Setup()
+    }
+
+    fun chooseServer(address: String) = connect(normaliseBaseUrl(address), serverId = null)
+
+    private fun connect(url: String, serverId: String?) {
+        settings.serverUrl = url
+        settings.serverId = serverId
         settings.token = null
         settings.cachedPlaylist = null
         settings.mode = PlayerMode.SERVER
@@ -113,8 +163,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         // After a power cut, start playing what's already on the box straight away.
         if (settings.token != null) settings.cachedPlaylist?.let { show(it, sync) }
 
+        // Remember which server this is, so the TV can find it again if its address changes.
+        if (settings.serverId == null) {
+            runCatching { repo.config().serverId }.getOrNull()?.let { settings.serverId = it }
+        }
+
         waitUntilPaired(repo)
         var version: String? = settings.cachedPlaylist?.version
+        var unreachableSince: Long? = null
         while (true) {
             var wait = 60_000L
             try {
@@ -126,6 +182,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 show(playlist, sync)
                 repo.heartbeat(currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME)
+                unreachableSince = null
             } catch (e: ApiException) {
                 when (e.status) {
                     401 -> { // removed in Kiosk Admin: forget everything and show a new code
@@ -142,6 +199,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     else -> {
                         offline(e.message)
                         wait = 15_000
+                        // No answer at all for 2 minutes: maybe the server got a new
+                        // address from the router. Look for it (at most every 2 minutes).
+                        val now = System.currentTimeMillis()
+                        val since = unreachableSince ?: now.also { unreachableSince = it }
+                        if (e.status == null && now - since > FOLLOW_SERVER_AFTER_MS) {
+                            unreachableSince = now
+                            if (followServer()) return
+                        }
                     }
                 }
             } catch (e: DownloadException) {
@@ -158,7 +223,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         while (true) {
             try {
                 if (repo.token == null) {
-                    settings.token = repo.register(BuildConfig.VERSION_NAME).token
+                    settings.token = repo.register(BuildConfig.VERSION_NAME, deviceModel()).token
                 }
                 val status = repo.status()
                 if (status.claimed) return
@@ -213,6 +278,35 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.orientation) current.copy(badge = null)
             else PlayerUi.Playing(items, playlist.orientation)
         }
+    }
+
+    /**
+     * Looks for this TV's server (same ID) at a new address. If it's found,
+     * switches to it and starts again (returns true); the TV keeps playing meanwhile.
+     */
+    private suspend fun followServer(): Boolean {
+        val id = settings.serverId ?: return false
+        val own = ownAddress() ?: return false
+        val moved = finder.find(own, serverId = id).firstOrNull() ?: return false
+        if (moved.url == settings.serverUrl) return false
+        settings.serverUrl = moved.url
+        start()
+        return true
+    }
+
+    /** This TV's IPv4 address on its network, e.g. "192.168.1.37". */
+    private fun ownAddress(): String? {
+        val connectivity = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val link = connectivity.getLinkProperties(connectivity.activeNetwork) ?: return null
+        return link.linkAddresses.map { it.address }
+            .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+            ?.hostAddress
+    }
+
+    /** e.g. "Xiaomi MIBOX4", shown in Kiosk Signage while this TV waits to be added. */
+    private fun deviceModel(): String {
+        val maker = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+        return if (Build.MODEL.startsWith(Build.MANUFACTURER, ignoreCase = true)) Build.MODEL else "$maker ${Build.MODEL}"
     }
 
     private fun offline(message: String?) {

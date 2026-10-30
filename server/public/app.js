@@ -300,29 +300,54 @@ window.addEventListener('hashchange', route);
 
 async function pageScreens(page) {
   async function draw() {
-    const [devices, playlists] = await Promise.all([api('GET', 'api/devices'), api('GET', 'api/playlists')]);
+    const [devices, playlists, waiting] = await Promise.all([
+      api('GET', 'api/devices'), api('GET', 'api/playlists'), api('GET', 'api/devices/waiting'),
+    ]);
     const online = devices.filter((d) => d.online).length;
+    // With TVs at more than one site, group by site first, then location.
+    const sites = new Set([...devices, ...waiting].map((d) => d.site || ''));
+    const manySites = sites.size > 1;
     const groups = new Map();
     for (const d of devices) {
       const loc = d.location || 'No location';
-      if (!groups.has(loc)) groups.set(loc, []);
-      groups.get(loc).push(d);
+      const key = manySites ? `${d.site || 'This site'} › ${loc}` : loc;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(d);
     }
-    fill(page, 
+    fill(page,
       el('div', { class: 'page-head' },
         el('div', {}, el('h1', {}, 'Screens'),
           el('p', { class: 'sub' }, `${devices.length} screen${devices.length === 1 ? '' : 's'} · ${online} online · updates every 10 seconds`)),
-        el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add a screen')),
+        el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add by code')),
+      waiting.length ? waitingCard(waiting, manySites, playlists, devices, draw) : null,
       devices.length === 0
-        ? el('div', { class: 'empty' }, 'No screens yet. Open Kiosk Player on a TV, then click “Add a screen” and type the code it shows.')
-        : [...groups.entries()].map(([loc, list]) => [
-          el('div', { class: 'section-label' }, `${loc} · ${list.length}`),
+        ? el('div', { class: 'empty' }, 'No screens yet. Open Kiosk Player on a TV and choose “Find my server automatically”; it then appears here under “New screens waiting”.')
+        : [...groups.entries()].map(([group, list]) => [
+          el('div', { class: 'section-label' }, `${group} · ${list.length}`),
           el('div', { class: 'grid' }, list.map((d) => screenCard(d, playlists, devices, draw))),
         ]),
     );
   }
   await attempt(draw);
   pageTimer = setInterval(() => attempt(draw), 10000);
+}
+
+/** TVs showing a pairing code right now: add one with a click instead of typing its code. */
+function waitingCard(waiting, manySites, playlists, devices, redraw) {
+  const pretty = (code) => `${code.slice(0, 3)}-${code.slice(3)}`;
+  return el('div', { class: 'waiting' },
+    el('div', { class: 'section-label' }, `New screens waiting · ${waiting.length}`),
+    el('div', { class: 'list' }, waiting.map((w) =>
+      el('div', { class: 'list-row' },
+        el('div', { class: 'grow' },
+          el('div', { class: 'name' }, w.model || 'Android TV'),
+          el('div', { class: 'meta' }, manySites && w.site ? `${w.site} · ` : '', 'Showing code ',
+            el('strong', {}, pretty(w.pairing_code)), ' on its screen')),
+        el('button', {
+          class: 'btn primary small',
+          onclick: () => screenForm({ code: w.pairing_code, playlists, devices, onDone: redraw }),
+        }, 'Add')))),
+  );
 }
 
 function screenCard(d, playlists, devices, redraw) {
@@ -415,7 +440,7 @@ function screenForm({ code, device, playlists, devices, onDone }) {
         onDone();
       },
     },
-    el('h2', {}, device ? 'Edit screen' : `Set up screen ${code}`),
+    el('h2', {}, device ? 'Edit screen' : `Set up screen ${code.slice(0, 3)}-${code.slice(3)}`),
     el('label', { class: 'field' }, 'Name', name),
     el('label', { class: 'field' }, 'Location', location, el('datalist', { id: listId }, locations.map((l) => el('option', { value: l })))),
     el('div', { class: 'field' }, el('strong', {}, 'How the screen is mounted'), mountChoices,

@@ -16,6 +16,7 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.ServerConfig
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import okhttp3.RequestBody
@@ -46,6 +47,7 @@ internal interface AdminApi {
     @DELETE("api/playlists/{id}") suspend fun deletePlaylist(@Path("id") id: Long): OkReply
 
     @GET("api/devices") suspend fun devices(): List<Device>
+    @GET("api/devices/waiting") suspend fun waitingDevices(): List<WaitingDevice>
     @POST("api/devices/claim") suspend fun claim(@Body body: DeviceBody): Device
     @PATCH("api/devices/{id}") suspend fun updateDevice(@Path("id") id: Long, @Body body: DeviceBody): Device
     @DELETE("api/devices/{id}") suspend fun deleteDevice(@Path("id") id: Long): OkReply
@@ -57,6 +59,7 @@ internal interface AdminApi {
 }
 
 internal interface PlayerApi {
+    @GET("api/config") suspend fun config(): ServerConfig
     @POST("api/player/register") suspend fun register(@Body body: AppVersionBody): Registration
     @GET("api/player/status") suspend fun status(): PlayerStatus
     @GET("api/player/playlist") suspend fun playlist(): PlayerPlaylist
@@ -78,7 +81,12 @@ internal data class ItemBody(
 @Serializable internal data class ItemsBody(val items: List<ItemBody>)
 @Serializable internal data class UserBody(val email: String, val role: Role)
 @Serializable internal data class RoleBody(val role: Role)
-@Serializable internal data class AppVersionBody(@SerialName("app_version") val appVersion: String)
+@Serializable
+internal data class AppVersionBody(
+    @SerialName("app_version") val appVersion: String,
+    /** The TV box's make and model, shown while it waits to be added. */
+    val model: String? = null,
+)
 
 @Serializable
 internal data class DeviceBody(

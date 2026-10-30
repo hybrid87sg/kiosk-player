@@ -24,6 +24,11 @@ class PlayerSettings(context: Context) {
         get() = prefs.getString("server_url", null)
         set(value) = prefs.edit().putString("server_url", value).apply()
 
+    /** The server's own ID, so the TV can find it again if its address changes. */
+    var serverId: String?
+        get() = prefs.getString("server_id", null)
+        set(value) = prefs.edit().putString("server_id", value).apply()
+
     var token: String?
         get() = prefs.getString("token", null)
         set(value) = prefs.edit().putString("token", value).apply()

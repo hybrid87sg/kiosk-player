@@ -29,23 +29,30 @@ You need the one-time Google setup, which gives you:
    then **Start**. The **Log** tab should say `Kiosk server running on port 3000`.
 7. Switch on **Start on boot** and **Watchdog**.
 
-## Connecting the apps
-
-In Kiosk Admin and Kiosk Player, enter the server address:
-
-```
-http://<your Home Assistant's IP address>:3000
-```
-
-for example `http://192.168.1.20:3000`. Find the IP address under
-Settings → System → Network. The phone and TVs must be on the same network.
-
-## The web interface
+## The web interface: the main control
 
 - **In Home Assistant:** open **Kiosk Signage** in the sidebar. It's for Home Assistant admins, who get
   full (Spongebob) access.
-- **In any browser:** go to `http://<address>:3000`. People sign in with Google using a code from
-  google.com/device. This needs the two optional **Web sign-in client** settings.
+- **In any browser:** go to `http://<address>:3000`, or click **Open web UI** on this add-on's page.
+  People you invited sign in with Google using a code from google.com/device; they don't need a Home
+  Assistant account. This needs the two optional **Web sign-in client** settings.
+
+## Adding TVs
+
+On each TV, open Kiosk Player and choose **Find my server automatically**. The TV then shows up on the
+web interface's Screens page under **New screens waiting**; click **Add**. The TV must be on the same
+network as Home Assistant. If it can't find the server, type `http://<Home Assistant's IP address>:3000`
+instead (Settings → System → Network shows the IP address).
+
+For the phone app, use your Home Assistant's Tailscale address plus `:3000`.
+
+## Other sites (relay mode)
+
+With Home Assistants at several sites, keep this add-on in **main** mode on one of them. At each other
+site, install the Tailscale add-on (with userspace networking off) and this add-on in **relay** mode, with
+that site's **Site name** and the main server's Tailscale address (e.g. `100.101.102.103:3000`). A relay
+needs no Google settings. Its TVs find it by themselves and show up on the main web interface, labelled
+with their site.
 
 ## Managing screens away from home
 

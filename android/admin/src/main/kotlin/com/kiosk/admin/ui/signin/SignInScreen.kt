@@ -78,7 +78,13 @@ fun SignInScreen(app: KioskAdminApplication) {
             try {
                 val url = normaliseBaseUrl(serverUrl)
                 val repo = app.remoteRepository(url)
-                val clientId = repo.serverConfig().googleWebClientId
+                val config = repo.serverConfig()
+                if (config.role == "relay") {
+                    throw ApiException(
+                        "This is the relay for ${config.siteName ?: "another site"}. Sign in with the main Kiosk server's address instead.",
+                    )
+                }
+                val clientId = config.googleWebClientId
                     ?: throw ApiException("This server isn't set up for Google sign-in yet (GOOGLE_WEB_CLIENT_ID is missing).")
                 val idToken = googleIdToken(context, clientId)
                 val session = repo.signInWithGoogle(idToken)

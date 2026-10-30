@@ -71,6 +71,7 @@ import com.kiosk.core.model.Device
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerSetup
 import com.kiosk.core.model.PlaylistSummary
+import com.kiosk.core.model.WaitingDevice
 import kotlinx.coroutines.launch
 
 /** Which form is open: setting up a newly scanned TV, or editing one. */
@@ -97,6 +98,8 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
     var form by remember { mutableStateOf<PlayerForm?>(null) }
     var showPin by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<Device?>(null) }
+    // With TVs at more than one site, screens are grouped by site first.
+    val manySites = (state.devices.orEmpty().map { it.site } + state.waiting.map { it.site }).distinct().size > 1
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -112,7 +115,8 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Add a player", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            "Open Kiosk Player on the TV. It shows a QR code and a code you can type.",
+                            "Open Kiosk Player on the TV and let it find the server; it then appears under New TVs waiting. " +
+                                "Or scan the QR code it shows, or type its code.",
                             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Button(
@@ -137,13 +141,24 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                     }
                 }
             }
+            if (state.waiting.isNotEmpty()) {
+                item(key = "waiting") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SectionLabel("New TVs waiting · ${state.waiting.size}")
+                        state.waiting.forEach { w -> WaitingCard(w, manySites) { form = PlayerForm.New(w.pairingCode) } }
+                    }
+                }
+            }
             val devices = state.devices
             if (devices == null) {
                 item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
             } else if (devices.isEmpty()) {
                 item { EmptyState("No players yet", "Scan the QR code on a TV running Kiosk Player to add it.") }
             } else {
-                devices.groupBy { it.location?.takeIf { l -> l.isNotBlank() } ?: "No location" }.forEach { (location, group) ->
+                devices.groupBy {
+                    val location = it.location?.takeIf { l -> l.isNotBlank() } ?: "No location"
+                    if (manySites) "${it.site ?: "This site"} › $location" else location
+                }.forEach { (location, group) ->
                     item(key = "loc-$location") {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             SectionLabel("$location · ${group.size}")
@@ -210,6 +225,24 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
             },
             dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("Cancel") } },
         )
+    }
+}
+
+/** A TV that found the server by itself; one tap opens its setup form. */
+@Composable
+private fun WaitingCard(w: WaitingDevice, showSite: Boolean, onAdd: () -> Unit) {
+    val code = w.pairingCode.take(3) + "-" + w.pairingCode.drop(3)
+    KioskCard {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(w.model ?: "Android TV", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    (if (showSite && w.site != null) "${w.site} · " else "") + "Showing code $code",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(onClick = onAdd) { Text("Add") }
+        }
     }
 }
 
