@@ -85,6 +85,18 @@ class ContentSyncTest {
         }
     }
 
+    @Test fun doesNotStartADownloadThatWouldFillTheDisk() = runTest {
+        val sync = ContentSync(OkHttpClient(), server.url("/").toString(), tmp.root) { 1024 }
+        try {
+            sync.sync(PlayerPlaylist("1", items = listOf(item)))
+            fail("should stop before filling the disk")
+        } catch (e: DownloadException) {
+            assertTrue(e.message!!.contains("free space"))
+        }
+        assertEquals(0, server.requestCount)
+        assertFalse(sync.isReady(item))
+    }
+
     @Test fun removesFilesNoLongerInThePlaylist() = runTest {
         val sync = sync()
         sync.sync(PlayerPlaylist("1", items = listOf(item)))

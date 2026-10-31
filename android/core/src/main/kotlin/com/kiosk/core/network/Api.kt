@@ -3,6 +3,7 @@
 package com.kiosk.core.network
 
 import com.kiosk.core.model.Device
+import com.kiosk.core.model.DeviceCapabilities
 import com.kiosk.core.model.Library
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.Mounting
@@ -78,7 +79,10 @@ internal data class ItemBody(
 @Serializable internal data class ItemsBody(val items: List<ItemBody>)
 @Serializable internal data class UserBody(val email: String, val role: Role)
 @Serializable internal data class RoleBody(val role: Role)
-@Serializable internal data class AppVersionBody(@SerialName("app_version") val appVersion: String)
+@Serializable internal data class AppVersionBody(
+    @SerialName("app_version") val appVersion: String,
+    val decoders: DeviceCapabilities? = null,
+)
 
 @Serializable
 internal data class DeviceBody(
@@ -97,6 +101,9 @@ internal data class HeartbeatBody(
     /** While new files download: how many are done, out of how many. */
     @SerialName("download_done") val downloadDone: Int? = null,
     @SerialName("download_total") val downloadTotal: Int? = null,
+    val decoders: DeviceCapabilities? = null,
+    /** Empty string clears a previous error. Omitted when the app doesn't know. */
+    @SerialName("playback_error") val playbackError: String? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

@@ -59,6 +59,8 @@ data class Media(
     /** null while Drive is still working out the file's size. */
     val orientation: ScreenShape? = null,
     @SerialName("created_at") val createdAt: Long = 0,
+    /** Set when this video may not play smoothly on some TV boxes. */
+    @SerialName("playback_warning") val playbackWarning: String? = null,
 )
 
 @Serializable
@@ -119,6 +121,10 @@ data class Device(
     @SerialName("current_filename") val currentFilename: String? = null,
     @SerialName("free_bytes") val freeBytes: Long? = null,
     @SerialName("app_version") val appVersion: String? = null,
+    /** Last playback failure reported by the TV, if it is still failing. */
+    @SerialName("playback_error") val playbackError: String? = null,
+    /** What the TV said it can decode, from its last heartbeat. */
+    val decoders: DeviceCapabilities? = null,
 )
 
 @Serializable
@@ -146,6 +152,20 @@ data class PlaylistEntry(
 )
 
 // ---------- Player app ----------
+
+/** What a TV box reports about its screen and hardware decoders. */
+@Serializable
+data class DeviceCapabilities(
+    @SerialName("display_width") val displayWidth: Int = 0,
+    @SerialName("display_height") val displayHeight: Int = 0,
+    /** H.264 level times 10, so 41 means level 4.1. Null if the box didn't say. */
+    @SerialName("h264_level") val h264Level: Int? = null,
+    @SerialName("h264_max_long") val h264MaxLong: Int? = null,
+    @SerialName("h264_max_short") val h264MaxShort: Int? = null,
+    val hevc: Boolean = false,
+    @SerialName("hevc_max_long") val hevcMaxLong: Int? = null,
+    @SerialName("hevc_max_short") val hevcMaxShort: Int? = null,
+)
 
 @Serializable
 data class Registration(

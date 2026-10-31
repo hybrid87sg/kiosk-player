@@ -1,5 +1,6 @@
 package com.kiosk.core.player
 
+import com.kiosk.core.model.DeviceCapabilities
 import com.kiosk.core.model.PlayerPlaylist
 import com.kiosk.core.model.PlayerStatus
 import com.kiosk.core.model.Registration
@@ -12,14 +13,21 @@ import okhttp3.OkHttpClient
 
 /** What the TV player asks the server. */
 interface PlayerRepository {
-    suspend fun register(appVersion: String): Registration
+    suspend fun register(appVersion: String, decoders: DeviceCapabilities? = null): Registration
     suspend fun status(): PlayerStatus
     suspend fun playlist(): PlayerPlaylist
     /**
      * Reports "I'm alive"; returns the server's current playlist version.
      * [download] is (files done, total) while new files are downloading.
      */
-    suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String, download: Pair<Int, Int>? = null): String?
+    suspend fun heartbeat(
+        currentMediaId: Long?,
+        freeBytes: Long?,
+        appVersion: String,
+        download: Pair<Int, Int>? = null,
+        decoders: DeviceCapabilities? = null,
+        playbackError: String? = null,
+    ): String?
 }
 
 /** The real server. [token] is the TV's saved secret, null before registering. */
@@ -31,12 +39,22 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     val httpClient: OkHttpClient get() = connection.client
     val baseUrl: String get() = connection.baseUrl
 
-    override suspend fun register(appVersion: String): Registration =
-        apiCall { api.register(AppVersionBody(appVersion)) }.also { token = it.token }
+    override suspend fun register(appVersion: String, decoders: DeviceCapabilities?): Registration =
+        apiCall { api.register(AppVersionBody(appVersion, decoders)) }.also { token = it.token }
 
     override suspend fun status(): PlayerStatus = apiCall { api.status() }
     override suspend fun playlist(): PlayerPlaylist = apiCall { api.playlist() }
 
-    override suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String, download: Pair<Int, Int>?): String? =
-        apiCall { api.heartbeat(HeartbeatBody(currentMediaId, freeBytes, appVersion, download?.first, download?.second)) }.version
+    override suspend fun heartbeat(
+        currentMediaId: Long?,
+        freeBytes: Long?,
+        appVersion: String,
+        download: Pair<Int, Int>?,
+        decoders: DeviceCapabilities?,
+        playbackError: String?,
+    ): String? = apiCall {
+        api.heartbeat(HeartbeatBody(
+            currentMediaId, freeBytes, appVersion, download?.first, download?.second, decoders, playbackError,
+        ))
+    }.version
 }

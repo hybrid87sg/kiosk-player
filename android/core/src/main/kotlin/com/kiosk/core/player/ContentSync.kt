@@ -24,6 +24,7 @@ class ContentSync(
     private val client: OkHttpClient,
     private val baseUrl: String,
     private val mediaDir: File,
+    private val freeSpace: () -> Long = { mediaDir.usableSpace },
 ) {
     init { mediaDir.mkdirs() }
 
@@ -66,6 +67,10 @@ class ContentSync(
         val target = fileFor(item)
         val part = File(mediaDir, target.name + ".part")
         if (part.length() > item.size) part.delete()
+        val stillNeeded = (item.size - part.length()).coerceAtLeast(0)
+        if (!enoughFreeSpace(freeSpace(), stillNeeded)) {
+            throw DownloadException("${item.filename}: not enough free space on this TV")
+        }
 
         val request = Request.Builder().url(baseUrl.trimEnd('/') + item.url).apply {
             if (part.length() > 0) header("Range", "bytes=${part.length()}-")

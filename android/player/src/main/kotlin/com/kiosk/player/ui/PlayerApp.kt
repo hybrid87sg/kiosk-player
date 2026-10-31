@@ -84,7 +84,13 @@ fun PlayerApp(vm: PlayerViewModel) {
                 PlayerUi.Setup -> SetupScreen(onDemo = vm::chooseDemo, onServer = vm::chooseServer)
                 is PlayerUi.Pairing -> PairingScreen(state, onSettings = { settingsOpen = true }, onStartDemo = vm::startDemoPlayback)
                 is PlayerUi.Waiting -> CenterMessage(state.name?.uppercase(), state.title, state.detail, state.progress, onSettings = { settingsOpen = true })
-                is PlayerUi.Playing -> PlaybackScreen(state, onNowPlaying = { vm.currentMediaId = it }, onOpenSettings = { settingsOpen = true })
+                is PlayerUi.Playing -> PlaybackScreen(
+                    state,
+                    onNowPlaying = { vm.currentMediaId = it },
+                    onOpenSettings = { settingsOpen = true },
+                    onPlaybackProblem = vm::notePlaybackProblem,
+                    onPlaybackHealthy = vm::notePlaybackHealthy,
+                )
             }
             if (settingsOpen) {
                 SettingsPanel(vm, onClose = { settingsOpen = false })

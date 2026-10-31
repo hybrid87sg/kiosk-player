@@ -3,6 +3,7 @@ package com.kiosk.player
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.kiosk.core.model.DeviceCapabilities
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerPlaylist
@@ -12,8 +13,10 @@ import com.kiosk.core.network.normaliseBaseUrl
 import com.kiosk.core.player.ContentSync
 import com.kiosk.core.player.DownloadException
 import com.kiosk.core.player.RemotePlayerRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -49,6 +52,37 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Set by the playback screen, reported in the heartbeat ("Now playing"). */
     @Volatile var currentMediaId: Long? = null
+
+    /** Last playback failure, sent until a file plays again. Empty string clears it on the server. */
+    @Volatile private var playbackError: String? = null
+    private var capabilities: DeviceCapabilities? = null
+    private var reportStatus: (suspend () -> Unit)? = null
+
+    /** The screen hit a decoder or file error. Logged by the player; repeated here for the admin app. */
+    fun notePlaybackProblem(mediaId: Long?, message: String) {
+        playbackError = message.take(500)
+        pushStatus()
+    }
+
+    fun notePlaybackHealthy() {
+        if (playbackError == null) return
+        playbackError = null
+        pushStatus()
+    }
+
+    private fun pushStatus() {
+        val send = reportStatus ?: return
+        viewModelScope.launch { runCatching { send() } }
+    }
+
+    private suspend fun deviceCapabilities(): DeviceCapabilities {
+        capabilities?.let { return it }
+        val read = withContext(Dispatchers.Default) {
+            runCatching { DeviceCapabilitiesReader.read(getApplication()) }.getOrDefault(DeviceCapabilities())
+        }
+        capabilities = read
+        return read
+    }
 
     val isDemo: Boolean get() = settings.mode == PlayerMode.DEMO
     val serverUrl: String? get() = settings.serverUrl
@@ -109,23 +143,36 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runServer(url: String) {
         val repo = RemotePlayerRepository(url, settings.token)
         val sync = ContentSync(repo.httpClient, repo.baseUrl, mediaDir)
+        val caps = deviceCapabilities()
+        reportStatus = {
+            repo.heartbeat(
+                currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
+                decoders = caps, playbackError = playbackError.orEmpty(),
+            )
+        }
 
         // After a power cut, start playing what's already on the box straight away.
         if (settings.token != null) settings.cachedPlaylist?.let { show(it, sync) }
 
-        waitUntilPaired(repo)
+        waitUntilPaired(repo, caps)
+        // Tell the server what this box can play before the first playlist, so the
+        // right copy is chosen straight away.
+        runCatching { reportStatus?.invoke() }
         var version: String? = settings.cachedPlaylist?.version
         while (true) {
             var wait = 60_000L
             try {
                 val playlist = repo.playlist()
                 if (playlist.version != version || playlist.items.any { !sync.isReady(it) }) {
-                    download(playlist, sync, repo)
+                    download(playlist, sync, repo, caps)
                     settings.cachedPlaylist = playlist
                     version = playlist.version
                 }
                 show(playlist, sync)
-                repo.heartbeat(currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME)
+                repo.heartbeat(
+                    currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
+                    decoders = caps, playbackError = playbackError.orEmpty(),
+                )
             } catch (e: ApiException) {
                 when (e.status) {
                     401 -> { // removed in Kiosk Admin: forget everything and show a new code
@@ -135,17 +182,23 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                         sync.removeUnused(emptyList())
                         version = null
                         _ui.value = PlayerUi.Loading
-                        waitUntilPaired(repo)
+                        waitUntilPaired(repo, caps)
                         continue
                     }
-                    403 -> { waitUntilPaired(repo); continue }
+                    403 -> { waitUntilPaired(repo, caps); continue }
                     else -> {
                         offline(e.message)
                         wait = 15_000
                     }
                 }
             } catch (e: DownloadException) {
-                setBadge("Download problem, retrying…")
+                val text = if (e.message?.contains("free space") == true) "Not enough free space, retrying…" else "Download problem, retrying…"
+                val current = _ui.value
+                _ui.value = when (current) {
+                    is PlayerUi.Playing -> current.copy(badge = text)
+                    is PlayerUi.Waiting -> current.copy(detail = text)
+                    else -> current
+                }
                 wait = 15_000
             }
             delay(wait)
@@ -153,12 +206,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Registers if needed, then shows the pairing code until an admin claims this TV. */
-    private suspend fun waitUntilPaired(repo: RemotePlayerRepository) {
+    private suspend fun waitUntilPaired(repo: RemotePlayerRepository, caps: DeviceCapabilities) {
         var lastCode: PlayerUi.Pairing? = null
         while (true) {
             try {
                 if (repo.token == null) {
-                    settings.token = repo.register(BuildConfig.VERSION_NAME).token
+                    settings.token = repo.register(BuildConfig.VERSION_NAME, caps).token
                 }
                 val status = repo.status()
                 if (status.claimed) return
@@ -182,12 +235,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun download(playlist: PlayerPlaylist, sync: ContentSync, repo: RemotePlayerRepository) {
+    private suspend fun download(playlist: PlayerPlaylist, sync: ContentSync, repo: RemotePlayerRepository, caps: DeviceCapabilities) {
         sync.sync(playlist) { done, total ->
             // Tell the server how far we are, so Kiosk Admin can show "Downloading 2 of 3".
             if (done < total) {
                 viewModelScope.launch {
-                    runCatching { repo.heartbeat(currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME, done to total) }
+                    runCatching {
+                        repo.heartbeat(
+                            currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME, done to total,
+                            decoders = caps, playbackError = playbackError.orEmpty(),
+                        )
+                    }
                 }
             }
             val text = "Downloading ${minOf(done + 1, total)} of $total new files"
