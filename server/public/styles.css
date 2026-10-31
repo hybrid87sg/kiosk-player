@@ -1,29 +1,35 @@
-/* Kiosk Signage web interface. Colours match the phone app's style sheet. */
+/* Kiosk Signage web interface: the app's colour palette (one look, used in
+   light and dark mode alike). The short names below the palette are what the
+   rest of this file uses. */
 :root {
-  --page: #E3ECEA; --bg: #F4F8F7; --card: #FFFFFF; --card2: #EAF2F0;
-  --border: #D3DEDB; --border-strong: #7A8C88;
-  --ink: #10201E; --muted: #4A5C59;
-  --primary: #0F766E; --on-primary: #FFFFFF; --primary-container: #CCFBF1; --on-primary-container: #0B4F4A;
-  --accent: #C2410C; --accent-container: #FFEDD5; --on-accent-container: #7C2D12;
-  --danger: #B91C1C; --on-danger: #FFFFFF;
-  --success: #15803D; --success-container: #DCFCE7; --on-success-container: #14532D;
-  --neutral-container: #E7ECEB; --on-neutral-container: #3B4A47;
-  --shadow: 0 6px 24px rgba(8, 20, 18, 0.12);
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --page: #070D0C; --bg: #0E1716; --card: #16211F; --card2: #1D2A28;
-    --border: #2C3B38; --border-strong: #6B8580;
-    --ink: #E6F0EE; --muted: #A3B5B1;
-    --primary: #5EEAD4; --on-primary: #042F2C; --primary-container: #134E4A; --on-primary-container: #CCFBF1;
-    --accent: #FDBA74; --accent-container: #431407; --on-accent-container: #FED7AA;
-    --danger: #FCA5A5; --on-danger: #450A0A;
-    --success: #86EFAC; --success-container: #14361F; --on-success-container: #BBF7D0;
-    --neutral-container: #26332F; --on-neutral-container: #C8D6D3;
-    --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
-    color-scheme: dark;
-  }
+  /* The palette */
+  --bg-main: #003333;          /* app background */
+  --bg-surface: #11384F;       /* cards and the side menu */
+  --bg-elevated: #F3EFEA;      /* hover, inputs */
+  --border-color: #E6E0D6;     /* borders and dividers */
+  --text-primary: #FFFFFF;     /* headings and main text */
+  --text-secondary: #D4D4D4;   /* secondary and muted text */
+  --accent-primary: #D97706;   /* buttons and highlights */
+  --accent-secondary: #003333; /* text on light or orange surfaces */
+  --status-success: #15803D;   /* online */
+  --status-warning: #B45309;   /* pending, attention */
+  --status-danger: #B91C1C;    /* errors, removing things */
+
+  /* What the components use */
+  --page: var(--bg-main); --bg: var(--bg-main); --card: var(--bg-surface); --card2: var(--bg-elevated);
+  --border: rgba(230, 224, 214, 0.28); --border-strong: var(--border-color);
+  --ink: var(--text-primary); --muted: var(--text-secondary);
+  --primary: var(--accent-primary); --on-primary: var(--accent-secondary);
+  --primary-container: rgba(243, 239, 234, 0.16); --on-primary-container: var(--text-primary); /* a soft tint of the elevated cream */
+  --accent: var(--accent-primary); --accent-container: rgba(180, 83, 9, 0.30); --on-accent-container: var(--text-primary);
+  /* The red is too dark to read as text on navy: text uses a light tint of it. */
+  --danger: #FCA5A5; --danger-solid: var(--status-danger); --on-danger: #FFFFFF;
+  --success: var(--status-success); --success-container: var(--status-success); --on-success-container: #FFFFFF;
+  --neutral-container: rgba(255, 255, 255, 0.12); --on-neutral-container: var(--text-secondary);
+  --input-bg: var(--bg-elevated); --input-ink: var(--accent-secondary);
+  --hover-bg: var(--bg-elevated); --hover-ink: var(--accent-secondary);
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -48,8 +54,10 @@ a { color: var(--primary); }
   display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px;
   color: var(--ink); text-decoration: none; font-weight: 500;
 }
-.nav a:hover { background: var(--card2); }
-.nav a[aria-current="page"] { background: var(--primary-container); color: var(--on-primary-container); font-weight: 700; }
+.nav a:hover { background: var(--hover-bg); color: var(--hover-ink); }
+.nav a:hover .count { color: var(--hover-ink); }
+.nav a[aria-current="page"] { background: var(--accent-primary); color: var(--accent-secondary); font-weight: 700; }
+.nav a[aria-current="page"] .count { color: var(--accent-secondary); }
 .nav .spacer { flex: 1; }
 .who { padding: 12px; border-top: 1px solid var(--border); margin-top: 8px; font-size: 13px; color: var(--muted); }
 .who strong { display: block; color: var(--ink); font-size: 14px; word-break: break-all; }
@@ -76,12 +84,13 @@ h2 { margin: 0 0 8px; font-size: 18px; }
   min-height: 44px; padding: 0 18px; border-radius: 22px; border: 1px solid var(--border-strong);
   background: var(--card); cursor: pointer; font-weight: 600; text-decoration: none; color: var(--ink);
 }
-.btn:hover { filter: brightness(0.96); }
+.btn:hover { filter: brightness(1.12); }
+.btn:not(.primary):not(.tonal):not(.solid):hover { background: var(--hover-bg); color: var(--hover-ink); filter: none; }
 .btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .btn.tonal { background: var(--primary-container); color: var(--on-primary-container); border-color: transparent; }
 .btn.text { border-color: transparent; background: transparent; color: var(--primary); }
 .btn.danger { border-color: transparent; background: transparent; color: var(--danger); }
-.btn.danger.solid { background: var(--danger); color: var(--on-danger); }
+.btn.danger.solid { background: var(--danger-solid); color: var(--on-danger); }
 .btn.small { min-height: 36px; padding: 0 14px; font-size: 14px; }
 .btn.icon { width: 40px; min-height: 40px; padding: 0; border-color: transparent; background: transparent; color: var(--muted); }
 .btn:disabled { opacity: 0.4; cursor: default; }
@@ -101,7 +110,7 @@ h2 { margin: 0 0 8px; font-size: 18px; }
 /* Chips and badges */
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 12px; }
 .chip.primary { background: var(--primary-container); color: var(--on-primary-container); }
-.chip.attention { background: var(--accent-container); color: var(--on-accent-container); }
+.chip.attention { background: var(--status-warning); color: #FFFFFF; }
 .chip.online { background: var(--success-container); color: var(--on-success-container); }
 .chip.offline { background: var(--neutral-container); color: var(--on-neutral-container); }
 .dot { width: 8px; height: 8px; border-radius: 4px; background: currentColor; display: inline-block; }
@@ -111,7 +120,7 @@ h2 { margin: 0 0 8px; font-size: 18px; }
 .thumb { flex: none; width: 52px; height: 52px; display: grid; place-items: center; }
 .thumb > span { border-radius: 9px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px; }
 .thumb .video { background: var(--primary); }
-.thumb .image { background: var(--accent); }
+.thumb .image { background: var(--status-warning); }
 .shape { display: inline-block; border: 2px solid currentColor; border-radius: 3px; vertical-align: middle; }
 
 /* Upload drop zone */
@@ -128,8 +137,8 @@ h2 { margin: 0 0 8px; font-size: 18px; }
 .pl-row.dragging { opacity: 0.4; }
 .pl-row.drop-before { box-shadow: inset 0 3px 0 var(--primary); }
 .grip { color: var(--muted); font-size: 20px; line-height: 1; padding: 0 2px; cursor: grab; user-select: none; }
-.secs { width: 72px; min-height: 36px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 0 8px; background: var(--card); }
-.date-input { min-height: 36px; max-width: 150px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 0 8px; background: var(--card); }
+.secs { width: 72px; min-height: 36px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 0 8px; background: var(--input-bg); color: var(--input-ink); color-scheme: light; }
+.date-input { min-height: 36px; max-width: 150px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 0 8px; background: var(--input-bg); color: var(--input-ink); color-scheme: light; }
 .save-bar {
   position: sticky; bottom: 16px; margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
   background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 12px 16px; box-shadow: var(--shadow);
@@ -138,11 +147,13 @@ h2 { margin: 0 0 8px; font-size: 18px; }
 /* Forms */
 label.field { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 14px; }
 input[type=text], input[type=email], select {
-  min-height: 46px; border: 1px solid var(--border-strong); border-radius: 12px; padding: 0 14px; background: var(--card); font-weight: 400;
+  min-height: 46px; border: 1px solid var(--border-strong); border-radius: 12px; padding: 0 14px; font-weight: 400;
+  background: var(--input-bg); color: var(--input-ink); color-scheme: light;
 }
+input::placeholder { color: #5E6B6B; }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .choice { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 14px; cursor: pointer; font-weight: 500; }
-.choice:has(input:checked) { border: 2px solid var(--primary); background: var(--primary-container); }
+.choice:has(input:checked) { border: 2px solid var(--accent-primary); background: var(--primary-container); }
 .choice input { margin-top: 4px; accent-color: var(--primary); }
 .error { color: var(--danger); font-size: 13px; font-weight: 500; }
 .note { background: var(--accent-container); color: var(--on-accent-container); border-radius: 12px; padding: 10px 14px; font-size: 14px; }
@@ -152,7 +163,7 @@ dialog {
   border: 0; border-radius: 24px; padding: 0; width: min(560px, calc(100vw - 32px));
   background: var(--card); color: var(--ink); box-shadow: var(--shadow);
 }
-dialog::backdrop { background: rgba(8, 20, 18, 0.5); }
+dialog::backdrop { background: rgba(0, 20, 20, 0.6); }
 dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
@@ -208,7 +219,8 @@ dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column
 
 /* Locations pages and the working-hours editor */
 .link-row { color: var(--ink); text-decoration: none; }
-.link-row:hover { background: var(--card2); }
+.link-row:hover { background: var(--hover-bg); color: var(--hover-ink); }
+.link-row:hover .meta { color: var(--hover-ink); }
 .loc-mark { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--primary-container); color: var(--on-primary-container); flex: none; }
 .group-head { gap: 12px; }
 .hours-link { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--primary); text-decoration: none; }

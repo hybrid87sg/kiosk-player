@@ -205,7 +205,7 @@ private fun Badge(text: String, modifier: Modifier) {
         modifier.padding(20.dp).background(Color(0x99000000), RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(10.dp).background(if (text.startsWith("Offline")) Color(0xFFFDBA74) else Teal, CircleShape))
+        Box(Modifier.size(10.dp).background(if (text.startsWith("Offline")) Color(0xFFB45309) else Accent, CircleShape))
         Text("  $text", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
     }
 }
