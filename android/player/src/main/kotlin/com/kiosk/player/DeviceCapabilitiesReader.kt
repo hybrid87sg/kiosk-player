@@ -1,9 +1,11 @@
 package com.kiosk.player
 
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
+import android.view.Display
 import android.view.WindowManager
 import com.kiosk.core.model.DeviceCapabilities
 import com.kiosk.core.player.avcLevelNumber
@@ -31,7 +33,17 @@ object DeviceCapabilitiesReader {
         )
     }
 
-    private fun displaySize(context: Context): Pair<Int, Int> {
+    fun displaySize(context: Context): Pair<Int, Int> {
+        try {
+            val display = context.getSystemService(DisplayManager::class.java)
+                ?.getDisplay(Display.DEFAULT_DISPLAY)
+            if (display != null) {
+                val mode = display.mode
+                return mode.physicalWidth to mode.physicalHeight
+            }
+        } catch (e: RuntimeException) {
+            // Fall through to the window manager.
+        }
         val manager = context.getSystemService(WindowManager::class.java) ?: return 0 to 0
         return try {
             @Suppress("DEPRECATION")

@@ -253,6 +253,8 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                     "Screen ${caps.displayWidth}×${caps.displayHeight}$level$hevc",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             d.playbackError?.let {

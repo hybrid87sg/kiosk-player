@@ -71,6 +71,7 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.player.RefreshMode
 import com.kiosk.core.player.chooseDisplayMode
 import com.kiosk.core.player.playbackRetryDelayMs
+import com.kiosk.core.player.playlistVisitKey
 import com.kiosk.core.player.seamlessRefreshSwitch
 import com.kiosk.player.PlayItem
 import com.kiosk.player.PlayerUi
@@ -164,10 +165,12 @@ private fun MixedPlaylist(
         }
     }
     when (segment) {
-        is Segment.Videos -> ContinuousPlaylist(
-            segment.items, mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy,
-            repeat = false, onFinished = advance,
-        )
+        is Segment.Videos -> key(playlistVisitKey(index, plays)) {
+            ContinuousPlaylist(
+                segment.items, mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy,
+                repeat = false, onFinished = advance,
+            )
+        }
         is Segment.Picture -> {
             val item = segment.item
             LaunchedEffect(item.id, plays) { onNowPlaying(item.id) }
@@ -348,13 +351,13 @@ private fun ContinuousPlaylist(
         problem?.let {
             Text(
                 it,
-                color = Color.White,
+                color = Teal,
                 fontSize = 18.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(24.dp)
-                    .background(Color(0xCC000000), RoundedCornerShape(12.dp))
+                    .background(Panel, RoundedCornerShape(12.dp))
                     .padding(horizontal = 16.dp, vertical = 10.dp),
             )
         }

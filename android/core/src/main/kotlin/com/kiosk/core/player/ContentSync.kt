@@ -38,11 +38,16 @@ class ContentSync(
      * deletes files no longer used. [onProgress] gets (files done, total).
      * Throws if a download fails; files already finished are kept.
      */
-    suspend fun sync(playlist: PlayerPlaylist, onProgress: (Int, Int) -> Unit = { _, _ -> }) {
+    suspend fun sync(
+        playlist: PlayerPlaylist,
+        keepPlaying: List<File> = emptyList(),
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ) {
         val items = playlist.items.distinctBy { it.id to it.md5 }
         // Drop files the playlist no longer uses before downloading, so a nearly
-        // full box can make room instead of failing and keeping the old files.
-        removeUnused(items)
+        // full box can make room. Files still on screen stay until a later sync,
+        // after playback has moved on to the new copy.
+        removeUnused(items, keepPlaying)
         var done = items.count { isReady(it) }
         onProgress(done, items.size)
         for (item in items) {
@@ -53,9 +58,9 @@ class ContentSync(
         }
     }
 
-    /** Deletes finished and partial files that aren't in [keep]. */
-    fun removeUnused(keep: List<PlayerItem>) {
-        val wanted = keep.map { fileFor(it).name }.toSet()
+    /** Deletes finished and partial files that aren't in [keep] or [keepPlaying]. */
+    fun removeUnused(keep: List<PlayerItem>, keepPlaying: List<File> = emptyList()) {
+        val wanted = keep.map { fileFor(it).name }.toSet() + keepPlaying.map { it.name }
         mediaDir.listFiles()?.forEach { f ->
             val name = f.name.removeSuffix(".part")
             if (name !in wanted) f.delete()

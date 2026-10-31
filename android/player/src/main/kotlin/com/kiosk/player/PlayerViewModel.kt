@@ -13,6 +13,7 @@ import com.kiosk.core.network.normaliseBaseUrl
 import com.kiosk.core.player.ContentSync
 import com.kiosk.core.player.DownloadException
 import com.kiosk.core.player.RemotePlayerRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -60,6 +61,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The screen hit a decoder or file error. Logged by the player; repeated here for the admin app. */
     fun notePlaybackProblem(mediaId: Long?, message: String) {
+        if (mediaId != null) currentMediaId = mediaId
         playbackError = message.take(500)
         pushStatus()
     }
@@ -72,16 +74,24 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun pushStatus() {
         val send = reportStatus ?: return
-        viewModelScope.launch { runCatching { send() } }
+        viewModelScope.launch {
+            try {
+                send()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The TV keeps playing if the report doesn't get through.
+            }
+        }
     }
 
     private suspend fun deviceCapabilities(): DeviceCapabilities {
-        capabilities?.let { return it }
-        val read = withContext(Dispatchers.Default) {
+        val known = capabilities ?: withContext(Dispatchers.Default) {
             runCatching { DeviceCapabilitiesReader.read(getApplication()) }.getOrDefault(DeviceCapabilities())
-        }
-        capabilities = read
-        return read
+        }.also { capabilities = it }
+        val (width, height) = DeviceCapabilitiesReader.displaySize(getApplication())
+        return if (width == known.displayWidth && height == known.displayHeight) known
+        else known.copy(displayWidth = width, displayHeight = height)
     }
 
     val isDemo: Boolean get() = settings.mode == PlayerMode.DEMO
@@ -147,7 +157,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         reportStatus = {
             repo.heartbeat(
                 currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
-                decoders = caps, playbackError = playbackError.orEmpty(),
+                decoders = deviceCapabilities(), playbackError = playbackError.orEmpty(),
             )
         }
 
@@ -157,7 +167,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         waitUntilPaired(repo, caps)
         // Tell the server what this box can play before the first playlist, so the
         // right copy is chosen straight away.
-        runCatching { reportStatus?.invoke() }
+        try {
+            reportStatus?.invoke()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Pairing already succeeded; a missed heartbeat is reported on the next loop.
+        }
         var version: String? = settings.cachedPlaylist?.version
         while (true) {
             var wait = 60_000L
@@ -169,9 +185,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     version = playlist.version
                 }
                 show(playlist, sync)
+                val latestCaps = deviceCapabilities()
                 repo.heartbeat(
                     currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
-                    decoders = caps, playbackError = playbackError.orEmpty(),
+                    decoders = latestCaps, playbackError = playbackError.orEmpty(),
                 )
             } catch (e: ApiException) {
                 when (e.status) {
@@ -236,15 +253,20 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun download(playlist: PlayerPlaylist, sync: ContentSync, repo: RemotePlayerRepository, caps: DeviceCapabilities) {
-        sync.sync(playlist) { done, total ->
+        val stillOnScreen = (_ui.value as? PlayerUi.Playing)?.items?.mapNotNull { it.file }.orEmpty()
+        sync.sync(playlist, stillOnScreen) { done, total ->
             // Tell the server how far we are, so Kiosk Admin can show "Downloading 2 of 3".
             if (done < total) {
                 viewModelScope.launch {
-                    runCatching {
+                    try {
                         repo.heartbeat(
                             currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME, done to total,
                             decoders = caps, playbackError = playbackError.orEmpty(),
                         )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Progress report is optional.
                     }
                 }
             }

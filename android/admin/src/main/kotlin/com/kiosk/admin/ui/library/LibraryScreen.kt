@@ -222,7 +222,13 @@ private fun MediaRow(m: Media, onDelete: () -> Unit) {
                 Text(mediaMeta(m), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             m.playbackWarning?.let { warning ->
-                Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Text(
+                    warning,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         IconButton(onClick = onDelete) {

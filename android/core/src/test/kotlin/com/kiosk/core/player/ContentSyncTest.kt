@@ -85,6 +85,18 @@ class ContentSyncTest {
         }
     }
 
+    @Test fun keepsTheFileThatIsPlayingWhenACopyReplacesIt() = runTest {
+        val playing = java.io.File(tmp.root, "7-oldmd5.mp4")
+        playing.writeBytes(ByteArray(16))
+        val sync = sync()
+        sync.sync(PlayerPlaylist("1", items = listOf(item)), keepPlaying = listOf(playing))
+        assertTrue(playing.exists())
+        assertTrue(sync.isReady(item))
+        sync.sync(PlayerPlaylist("2", items = listOf(item)))
+        assertFalse(playing.exists())
+        assertTrue(sync.isReady(item))
+    }
+
     @Test fun freesOldFilesBeforeCheckingThereIsRoom() = runTest {
         val stale = java.io.File(tmp.root, "old-file.mp4")
         stale.writeBytes(ByteArray(32))
