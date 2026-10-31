@@ -6,12 +6,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -20,8 +23,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -120,7 +125,8 @@ fun UsersRoute(ctx: ScreenContext) {
             item {
                 Button(onClick = { showInvite = true }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                     Icon(Icons.Outlined.Add, contentDescription = null)
-                    Text("  Invite someone")
+                    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                    Text("Invite someone")
                 }
             }
             item {
@@ -142,7 +148,7 @@ fun UsersRoute(ctx: ScreenContext) {
             item {
                 Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SectionLabel("What each role can do", Modifier.padding(0.dp))
+                        SectionLabel("What each role can do")
                         Role.entries.forEach { r ->
                             Text("${r.label} · ${roleDescriptions[r]}", style = MaterialTheme.typography.bodyMedium)
                         }
@@ -170,7 +176,10 @@ private fun UserRow(u: User, isMe: Boolean, onRole: (Role) -> Unit, onRemove: ()
                 Text("You · ${u.role.label}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Box {
-                    OutlinedButton(onClick = { menu = true }, modifier = Modifier.height(36.dp)) { Text(u.role.label + "  ▾") }
+                    OutlinedButton(onClick = { menu = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text(u.role.label)
+                        Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
+                    }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         Role.entries.forEach { r ->
                             DropdownMenuItem(text = { Text(r.label) }, onClick = { menu = false; if (r != u.role) onRole(r) })
