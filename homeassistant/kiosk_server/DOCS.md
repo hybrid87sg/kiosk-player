@@ -37,11 +37,22 @@ You need the one-time Google setup, which gives you:
   People you invited sign in with Google using a code from google.com/device; they don't need a Home
   Assistant account. This needs the two optional **Web sign-in client** settings.
 
-## Files, expiry dates and Google Drive
+## Files, dates and Google Drive
 
-Each file can have an expiry date (Library → calendar button). After that day it leaves Kiosk, every
-playlist and every screen; it waits under **Expired and removed**, where it can be restored. Kiosk never
-deletes anything from Google Drive: expired and removed files stay in the shared drive.
+Each file can have a first and last day to show (Library → calendar button). Before the first day it
+waits in the library; after the last day it leaves Kiosk, every playlist and every screen, and waits under
+**Expired and removed**, where it can be restored. Kiosk never deletes anything from Google Drive.
+
+## Locations and working hours
+
+The web interface's **Locations** menu lists every location; each can have working hours. Outside them,
+its screens go black (and into standby where the TV allows it), and come back at opening time.
+
+## Notifications
+
+This add-on can ask Home Assistant to send notifications. In the web interface, **Settings →
+Notifications**, tick the devices (phones with the Home Assistant app appear as `notify.mobile_app_…`).
+They hear about screens that are offline for 5 minutes during working hours, and when they're back.
 
 ## Adding TVs
 

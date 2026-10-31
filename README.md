@@ -200,7 +200,8 @@ flowchart TB
 
 ### Part 6: The TVs (about 5 minutes per TV)
 
-1. Install `KioskPlayer-for-TV.apk` on the TV box. You can:
+1. Install `KioskPlayer-for-TV.apk` on the screen itself if it runs Android TV or Google TV (e.g. Xiaomi TVs,
+   many SWOSH TVs and commercial displays), otherwise on an Android TV box plugged into it. You can:
    - copy it on a USB stick and open it with a file manager app, or
    - use the **Send Files to TV** app on your phone and the TV, or
    - install it from a computer over ADB (`adb install KioskPlayer-for-TV.apk`).
@@ -212,6 +213,12 @@ flowchart TB
    - On Google TV the menu is **Settings → Apps → Special app access → Display over other apps**.
    - If your TV box hides that menu, run this from a computer instead:
      `adb shell appops set com.kiosk.player SYSTEM_ALERT_WINDOW allow`
+
+   **Optional: let it switch the screen off after hours.** In Kiosk Player's **Settings**, choose
+   **Allow turning the screen off** and confirm. Outside the location's working hours the player then puts
+   the TV into standby where it can, and wakes it at opening time (see
+   [Working hours](#working-hours-and-after-hours)). If the TV hides that screen, run from a computer:
+   `adb shell dpm set-active-admin com.kiosk.player/.ScreenOffAdmin`
 3. Choose **Find my server automatically**. After a few seconds the TV shows a big **QR code** and a
    **code**. (If it finds nothing, choose **Type the address** and enter the home-network address from
    Part 4, e.g. `192.168.1.20:3000`.)
@@ -243,19 +250,59 @@ can't get into Home Assistant itself without a Home Assistant login.
 
 What's on it:
 - **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage),
-  updated every 10 seconds and grouped by site and location. New TVs appear under **New screens waiting**;
-  click **Add**. **Add by code** is there too.
+  updated every 10 seconds and grouped by site and location, with each location's working hours. New TVs
+  appear under **New screens waiting**; click **Add**. **Add by code** is there too.
+- **Locations:** every location is listed in the side menu. Open one to see its screens, set its
+  **working hours**, rename it, or **move a screen here**. **+ Add location** makes a new one.
+  **Delete location** asks you to type the location's name, and only works once no screens are left in it.
 - **Library:** drag files from your computer onto the page to upload them.
-  - **Expiry dates:** click a file's calendar button (or pick a date before uploading) to choose the last day
-    it shows. After that day it leaves Kiosk, every playlist and every screen by itself.
+  - **Show from / until:** click a file's calendar button (or pick dates before uploading) to choose the
+    first and last day it shows. Before the first day it waits in the library (TVs download it a day early,
+    so it starts on time). After the last day it leaves Kiosk, every playlist and every screen by itself.
   - **Remove** takes a file out of Kiosk straight away.
   - Expired and removed files wait under **Expired and removed**, where **Restore** brings them back.
   - **Kiosk never deletes anything from Google Drive.** Removed and expired files stay in the shared drive;
     tidy it up there yourself whenever you like.
 - **Playlists:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
   Dates use the browser's local timezone; players include files only during that window.
-- **Settings** (Spongebob): change the Drive folder and test the connection, switch local copies on or off
-  and clear them, and check which sign-in methods are set up.
+- **Settings** (Spongebob): pick who gets **notifications** when a screen goes offline, change the Drive
+  folder and test the connection, switch local copies on or off and clear them, and check which sign-in
+  methods are set up.
+
+The **‹** button next to the name folds the side menu down to icons; it's remembered in that browser.
+
+### Working hours and after hours
+
+Each location can have working hours (Locations → a location → **Working hours**): opening and closing
+times per day, days it's closed, or **Always on**. A closing time earlier than the opening time runs past
+midnight (e.g. 18:00 to 02:00). Each TV uses its own clock, so it keeps to the hours even if the internet
+drops.
+
+Outside working hours the screens show **black**, and where possible go into **standby**:
+
+| Your screen | What to do |
+|---|---|
+| **Xiaomi TV** (Android TV / Google TV built in) | Install Kiosk Player on the TV. Allow **turning the screen off** (Part 6, step 2); many such TVs then go into standby after hours. |
+| **SWOSH TV** | If its home screen says Google TV or Android TV, as for Xiaomi. If not, plug in an Android TV box (e.g. Xiaomi Mi Box) and use the box. |
+| **Commercial display** | If it can install apps (Android inside), install directly. For real power saving, also set the display's own **on/off timer** in its menu to match the working hours. |
+| **Any TV with an Android TV box** | Allow **turning the screen off** on the box, and switch on **HDMI-CEC** on the TV (Samsung: Anynet+, LG: SIMPLINK, Sony: BRAVIA Sync, others: CEC). The TV then follows the box into standby and back on. |
+
+Screens that can't go into standby simply stay black after hours. Screen cards show **After hours ·
+standby** or **After hours · black screen** so you can see which is which.
+
+### Notifications when a screen goes offline
+
+Home Assistant can tell your phone when a screen stops working:
+
+1. Install the **Home Assistant** app on your phone and sign in to your Home Assistant. (It adds a
+   `notify.mobile_app_…` service for the phone.)
+2. In the Kiosk web interface, go to **Settings → Notifications**, tick your phone (and anyone else's), and
+   click **Send a test notification**.
+
+You get one notification when a screen has been offline for **5 minutes during its location's working
+hours** (several at once are grouped; a whole site going quiet is reported as that site), and another
+when it's **back online**. Nothing is sent outside working hours. Tapping it opens Kiosk Signage in the
+Home Assistant app.
 
 ### Adding another site
 
@@ -325,6 +372,10 @@ connect with Tailscale, and sign in with Google.
 | Web page says sign-in "isn't set up" | Fill in the web sign-in client ID and secret (Part 1, step 9), or use the Home Assistant sidebar page. |
 | Phone: "… is not allowed in yet" | Sign in with the Spongebob account, or ask Spongebob to invite you. |
 | Library says "Could not reach Google Drive" | Check the Drive folder ID, and that the service account is a **Content manager** on the shared drive. |
+| A screen is black during the day | Check its location's **working hours** (Locations), and that the TV's clock and time zone are right. |
+| A TV doesn't wake up at opening time | Allow **turning the screen off** again in Kiosk Player's Settings, switch on HDMI-CEC on the TV (with a box), or use the display's own on/off timer. You get a notification 5 minutes after opening if it stays offline. |
+| No offline notifications | **Settings → Notifications**: tick a device and **Send a test notification**. The phone needs the Home Assistant app, signed in. |
+| Can't delete a location | Move its screens to another location first, and type its name exactly. |
 | A file disappeared from the library or the screens | It probably expired or was removed: see **Library → Expired and removed**, and **Restore** it. |
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |
 | TV says "No server found" | Is the Kiosk add-on running, and is the TV on the same network as Home Assistant (not a guest Wi-Fi)? Or choose **Type the address**. |
