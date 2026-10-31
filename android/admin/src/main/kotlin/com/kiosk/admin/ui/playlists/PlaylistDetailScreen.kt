@@ -55,6 +55,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -63,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -82,10 +84,11 @@ import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.ScreenShape
-import kotlin.math.roundToInt
 
+/** Minimum row height. Real rows are often taller; drag math uses the measured height. */
 private val RowHeight = 96.dp
 private val RowGap = 8.dp
+private const val DRAG_SLOP_PX = 20f
 
 @Composable
 fun PlaylistDetailRoute(ctx: ScreenContext, id: Long, onBack: () -> Unit) {
@@ -226,26 +229,31 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
  * The playlist rows. Hold a row's handle and drag it up or down; the other rows
  * slide out of the way, and letting go drops it there. The ⋮ menu offers the
  * same moves for people who can't drag.
+ *
+ * Each row reports its real height. The held row swaps with a neighbour when
+ * their centres cross, and the neighbours slide by the held row's height, so
+ * a tall image row and a short video row don't share a 96dp step.
  */
 @Composable
 private fun ReorderableItems(items: List<EditItem>, playlistShape: ScreenShape, vm: PlaylistDetailViewModel) {
-    val stepPx = with(LocalDensity.current) { (RowHeight + RowGap).toPx() }
+    val density = LocalDensity.current
+    val gapPx = with(density) { RowGap.toPx() }
+    val fallbackHeightPx = with(density) { RowHeight.toPx() }
+    val measuredHeights = remember { mutableStateMapOf<Long, Int>() }
+    val heightsPx = items.map { measuredHeights[it.key]?.toFloat() ?: fallbackHeightPx }
+    val heightsForGesture by rememberUpdatedState(heightsPx)
+    val gapForGesture by rememberUpdatedState(gapPx)
     var dragKey by remember { mutableStateOf<Long?>(null) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
-    val lastIndex by rememberUpdatedState(items.lastIndex) // read fresh inside the drag handler
     val dragIndex = items.indexOfFirst { it.key == dragKey }.takeIf { it >= 0 }
-    val target = dragIndex?.let { (it + (dragOffset / stepPx).roundToInt()).coerceIn(0, items.lastIndex) }
+    val target = dragIndex?.let { reorderTargetIndex(it, dragOffset, heightsPx, gapPx) }
+    val draggedHeightPx = dragIndex?.let { heightsPx[it] } ?: fallbackHeightPx
 
     Column(verticalArrangement = Arrangement.spacedBy(RowGap)) {
         items.forEachIndexed { index, item ->
             key(item.key) {
                 val currentIndex by rememberUpdatedState(index)
-                val shift = when {
-                    dragIndex == null || target == null || index == dragIndex -> 0f
-                    dragIndex < target && index in (dragIndex + 1)..target -> -stepPx
-                    target < dragIndex && index in target until dragIndex -> stepPx
-                    else -> 0f
-                }
+                val shift = reorderShiftPx(index, dragIndex, target, draggedHeightPx, gapPx)
                 val animatedShift by animateFloatAsState(shift, label = "shift")
                 val dragging = item.key == dragKey
                 PlaylistRow(
@@ -255,6 +263,7 @@ private fun ReorderableItems(items: List<EditItem>, playlistShape: ScreenShape, 
                     mismatch = item.orientation != null && item.orientation != playlistShape,
                     dragging = dragging,
                     modifier = Modifier
+                        .onSizeChanged { measuredHeights[item.key] = it.height }
                         .zIndex(if (dragging) 1f else 0f)
                         .graphicsLayer {
                             translationY = if (dragging) dragOffset else animatedShift
@@ -266,13 +275,18 @@ private fun ReorderableItems(items: List<EditItem>, playlistShape: ScreenShape, 
                             onDragStart = { dragKey = item.key; dragOffset = 0f },
                             onDrag = { change, amount ->
                                 change.consume()
-                                val maxDown = (lastIndex - currentIndex) * stepPx + 20f
-                                val maxUp = -currentIndex * stepPx - 20f
+                                val measured = heightsForGesture
+                                val gap = gapForGesture
+                                val from = currentIndex.coerceIn(0, measured.lastIndex.coerceAtLeast(0))
+                                val maxDown = if (measured.isEmpty()) DRAG_SLOP_PX else reorderReachOffset(from, measured.lastIndex, measured, gap) + DRAG_SLOP_PX
+                                val maxUp = if (measured.isEmpty()) -DRAG_SLOP_PX else reorderReachOffset(from, 0, measured, gap) - DRAG_SLOP_PX
                                 dragOffset = (dragOffset + amount.y).coerceIn(maxUp, maxDown)
                             },
                             onDragEnd = {
-                                val to = (currentIndex + (dragOffset / stepPx).roundToInt()).coerceIn(0, lastIndex)
-                                vm.move(currentIndex, to)
+                                val measured = heightsForGesture
+                                val from = currentIndex.coerceIn(0, measured.lastIndex.coerceAtLeast(0))
+                                val to = if (measured.isEmpty()) from else reorderTargetIndex(from, dragOffset, measured, gapForGesture)
+                                vm.move(from, to)
                                 dragKey = null
                                 dragOffset = 0f
                             },
