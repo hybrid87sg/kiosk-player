@@ -20,12 +20,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CloudUpload
-import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -64,6 +66,8 @@ import com.kiosk.admin.ui.common.timeAgo
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.MediaType
+import com.kiosk.core.model.RemovedMedia
+import com.kiosk.core.data.UploadSource
 import com.kiosk.core.model.ScreenShape
 
 @Composable
@@ -74,16 +78,28 @@ fun LibraryRoute(ctx: ScreenContext) {
     ShowMessage(message, vm::messageShown)
 
     val context = LocalContext.current
+    // After picking a file, ask (optionally) until when it should show, then upload.
+    var pending by remember { mutableStateOf<UploadSource?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.upload(context.uploadSourceFor(uri))
+        if (uri != null) pending = context.uploadSourceFor(uri)
     }
     LibraryScreen(
         ctx = ctx,
         state = state,
         onRefresh = vm::syncNow,
         onPickFile = { picker.launch(arrayOf("video/mp4", "image/jpeg", "image/png", "image/webp")) },
-        onDelete = { vm.delete(it.id, it.filename) },
+        onSetExpiry = vm::setExpiry,
+        onRemove = vm::remove,
+        onRestore = vm::restore,
     )
+    pending?.let { file ->
+        ExpiryPicker(
+            current = null,
+            confirmLabel = "Upload",
+            onPicked = { expiresAt -> pending = null; vm.upload(file, expiresAt) },
+            onDismiss = { pending = null },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,10 +109,15 @@ fun LibraryScreen(
     state: LibraryUiState,
     onRefresh: () -> Unit,
     onPickFile: () -> Unit,
-    onDelete: (Media) -> Unit,
+    onSetExpiry: (Media, Long?) -> Unit,
+    onRemove: (Media) -> Unit,
+    onRestore: (RemovedMedia, Long?) -> Unit,
 ) {
     var showAdd by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf<Media?>(null) }
+    var confirmRemove by remember { mutableStateOf<Media?>(null) }
+    var expiryFor by remember { mutableStateOf<Media?>(null) }
+    var restoreFor by remember { mutableStateOf<RemovedMedia?>(null) }
+    var showRemoved by remember { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0),
@@ -138,7 +159,29 @@ fun LibraryScreen(
                             KioskCard {
                                 items.forEachIndexed { i, m ->
                                     if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                    MediaRow(m, onDelete = { confirmDelete = m })
+                                    MediaRow(m, onSetExpiry = { expiryFor = m }, onRemove = { confirmRemove = m })
+                                }
+                            }
+                        }
+                    }
+                }
+                if (library.removed.isNotEmpty()) {
+                    item(key = "removed") {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { showRemoved = !showRemoved }) {
+                                Text((if (showRemoved) "▾ " else "▸ ") + "Expired and removed · ${library.removed.size}")
+                            }
+                            if (showRemoved) {
+                                Text(
+                                    "Still in Google Drive, but not in Kiosk. Restore one to use it again.",
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 4.dp),
+                                )
+                                KioskCard {
+                                    library.removed.forEachIndexed { i, r ->
+                                        if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                        RemovedRow(r, onRestore = { restoreFor = r })
+                                    }
                                 }
                             }
                         }
@@ -147,6 +190,24 @@ fun LibraryScreen(
             }
             }
         }
+    }
+
+    expiryFor?.let { m ->
+        ExpiryPicker(
+            current = m.expiresAt,
+            confirmLabel = "Save",
+            onPicked = { expiresAt -> expiryFor = null; onSetExpiry(m, expiresAt) },
+            onDismiss = { expiryFor = null },
+        )
+    }
+
+    restoreFor?.let { r ->
+        ExpiryPicker(
+            current = null,
+            confirmLabel = "Restore",
+            onPicked = { expiresAt -> restoreFor = null; onRestore(r, expiresAt) },
+            onDismiss = { restoreFor = null },
+        )
     }
 
     if (showAdd) {
@@ -158,15 +219,15 @@ fun LibraryScreen(
         }
     }
 
-    confirmDelete?.let { m ->
+    confirmRemove?.let { m ->
         AlertDialog(
-            onDismissRequest = { confirmDelete = null },
-            title = { Text("Delete ${m.filename}?") },
-            text = { Text("It goes to the Google Drive trash and leaves every playlist. Screens stop showing it after their next update.") },
+            onDismissRequest = { confirmRemove = null },
+            title = { Text("Remove ${m.filename} from Kiosk?") },
+            text = { Text("It leaves the library, every playlist and every screen. It stays in Google Drive, and you can restore it from Expired and removed.") },
             confirmButton = {
-                TextButton(onClick = { confirmDelete = null; onDelete(m) }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { confirmRemove = null; onRemove(m) }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("Cancel") } },
         )
     }
 }
@@ -212,7 +273,8 @@ private fun UploadCard(upload: Upload) {
 }
 
 @Composable
-private fun MediaRow(m: Media, onDelete: () -> Unit) {
+private fun MediaRow(m: Media, onSetExpiry: () -> Unit, onRemove: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
     Row(Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         MediaThumb(m.type, m.orientation, 52)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -221,10 +283,40 @@ private fun MediaRow(m: Media, onDelete: () -> Unit) {
                 if (m.orientation == null) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                 Text(mediaMeta(m), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            m.expiresAt?.let { e ->
+                Text(
+                    showsUntil(e),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (expiresSoon(e)) LocalKioskColors.current.attention else MaterialTheme.colorScheme.primary,
+                )
+            }
         }
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Outlined.Delete, contentDescription = "Delete ${m.filename}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box {
+            IconButton(onClick = { menu = true }) {
+                Icon(Icons.Outlined.MoreVert, contentDescription = "More for ${m.filename}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text(if (m.expiresAt == null) "Set expiry date" else "Change expiry date") }, onClick = { menu = false; onSetExpiry() })
+                DropdownMenuItem(text = { Text("Remove from Kiosk") }, onClick = { menu = false; onRemove() })
+            }
         }
+    }
+}
+
+@Composable
+private fun RemovedRow(r: RemovedMedia, onRestore: () -> Unit) {
+    val day = java.time.Instant.ofEpochMilli(r.removedAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+    Row(Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        MediaThumb(r.type, r.orientation, 52)
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(r.filename, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                (if (r.expired) "Expired $day" else "Removed $day") + " · " + formatBytes(r.size),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = onRestore) { Text("Restore") }
     }
 }
 

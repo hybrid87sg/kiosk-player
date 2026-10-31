@@ -158,10 +158,13 @@ test('library: Drive folder sync, shapes, and file picker upload into Drive', as
   assert.equal((await upload(boss, 'notes.txt', 'hi', 'text/plain')).status, 415);
   assert.equal((await upload(boss, 'big.mp4', crypto.randomBytes(2 * 1024 * 1024))).status, 413);
 
-  // Deleting from the app sends the file to Drive's trash.
+  // "Remove from Kiosk" leaves Google Drive alone, and the next sync doesn't bring it back.
   const video = library.items.find((m) => m.filename === 'Lobby promo.mp4');
   assert.equal((await call('DELETE', `/api/media/${video.id}`, { token: boss })).status, 200);
-  assert.equal(google.has(dropped.id), false);
+  assert.equal(google.has(dropped.id), true);
+  const afterRemove = await (await call('POST', '/api/media/sync', { token: boss })).json();
+  assert.equal(afterRemove.items.some((m) => m.id === video.id), false);
+  assert.deepEqual(afterRemove.removed.map((m) => [m.id, m.removed_reason]), [[video.id, 'removed']]);
 
   // If Drive is unreachable, a refresh fails but the last known list is still shown.
   google.setFailing(true);
@@ -599,4 +602,61 @@ test('another site: TVs reach the main server through a relay that keeps copies 
   // Files are only for real, paired TVs.
   assert.equal((await viaRelay(list.items[0].url, { token: 'made-up' })).status, 401);
   assert.equal((await viaRelay(list.items[0].url)).status, 401);
+});
+
+test('file expiry: an expired file leaves Kiosk and every screen, but stays in Google Drive', async (t) => {
+  const { call, signIn, upload, google, app } = await startServer(t);
+  const boss = await signIn(BOSS);
+  await call('POST', '/api/users', { token: boss, json: { email: 'up@example.com', role: 'content_uploader' } });
+  const uploader = await signIn('up@example.com');
+  const inAWeek = Date.now() + 7 * 24 * 60 * 60 * 1000;
+
+  // An expiry can be chosen while uploading, or set later (also by content uploaders).
+  const offer = await (await upload(boss, 'offer.jpg', crypto.randomBytes(300), 'image/jpeg')).json();
+  const promo = await (await call('POST', '/api/media', {
+    token: boss, body: crypto.randomBytes(400), headers: { 'content-type': 'image/jpeg', 'x-filename': 'promo.jpg', 'x-expires-at': String(inAWeek) },
+  })).json();
+  assert.equal(promo.expires_at, inAWeek);
+  const set = await call('PATCH', `/api/media/${offer.id}`, { token: uploader, json: { expires_at: inAWeek } });
+  assert.equal((await set.json()).expires_at, inAWeek);
+  assert.equal((await call('PATCH', `/api/media/${offer.id}`, { token: boss, json: { expires_at: Date.now() - 1000 } })).status, 400);
+  assert.equal((await call('PATCH', `/api/media/${offer.id}`, { token: boss, json: { expires_at: 'soon' } })).status, 400);
+
+  // Both files play on a TV.
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape' } })).json();
+  await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: offer.id }, { media_id: promo.id }] } });
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Lobby TV', playlist_id: playlist.id } });
+  const before = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.deepEqual(before.items.map((i) => i.id), [offer.id, promo.id]);
+
+  // The offer's date passes (pretend time moved on).
+  app.locals.db.prepare(`UPDATE media SET expires_at = ? WHERE id = ?`).run(Date.now() - 1, offer.id);
+  const beat = await (await call('POST', '/api/player/heartbeat', { token: tv.token, json: { app_version: '0.4.0' } })).json();
+  assert.notEqual(beat.version, before.version); // the TV knows to update
+  const after = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.deepEqual(after.items.map((i) => i.id), [promo.id]);
+  assert.equal((await call('GET', `/media/${offer.id}`, { token: tv.token })).status, 404);
+  assert.deepEqual((await (await call('GET', `/api/playlists/${playlist.id}`, { token: boss })).json()).items.map((i) => i.media_id), [promo.id]);
+
+  // It's in "Expired and removed", Drive still has it, and syncing doesn't bring it back.
+  const library = await (await call('POST', '/api/media/sync', { token: boss })).json();
+  assert.deepEqual(library.items.map((m) => m.id), [promo.id]);
+  assert.deepEqual(library.removed.map((m) => [m.id, m.removed_reason]), [[offer.id, 'expired']]);
+  assert.equal(google.has(google.findByName('offer.jpg').id), true);
+  assert.equal((await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: offer.id }] } })).status, 400);
+
+  // Restoring needs a new date (or none), and brings it back to the library only.
+  assert.equal((await call('POST', `/api/media/${offer.id}/restore`, { token: boss, json: { expires_at: Date.now() - 5 } })).status, 400);
+  const restored = await (await call('POST', `/api/media/${offer.id}/restore`, { token: boss, json: { expires_at: null } })).json();
+  assert.equal(restored.expires_at, null);
+  const back = await (await call('GET', '/api/media', { token: boss })).json();
+  assert.deepEqual(back.items.map((m) => m.id).sort(), [offer.id, promo.id].sort());
+  assert.deepEqual(back.removed, []);
+  assert.equal((await (await call('GET', `/api/playlists/${playlist.id}`, { token: boss })).json()).item_count, 1);
+
+  // Once a file is gone from Drive itself, it's gone from the removed list too.
+  await call('DELETE', `/api/media/${offer.id}`, { token: boss });
+  google.removeFile(google.findByName('offer.jpg').id);
+  assert.deepEqual((await (await call('POST', '/api/media/sync', { token: boss })).json()).removed, []);
 });

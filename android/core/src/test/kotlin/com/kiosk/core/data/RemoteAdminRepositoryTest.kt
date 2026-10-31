@@ -84,6 +84,37 @@ class RemoteAdminRepositoryTest {
         assertEquals(1f, progress.last())
     }
 
+    @Test fun expiryDatesAndTheExpiredAndRemovedList() = runTest {
+        val expiry = 1_900_000_000_000L
+        // Upload with an expiry sends it as a header; without one, no header at all.
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":3,"filename":"a.jpg","type":"image","mime":"image/jpeg","size":5,"md5":"x","expires_at":$expiry}"""))
+        assertEquals(expiry, repo.upload(UploadSource("a.jpg", "image/jpeg", 5) { "hello".byteInputStream() }, expiry) {}.expiresAt)
+        assertEquals(expiry.toString(), server.takeRequest().getHeader("X-Expires-At"))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":4,"filename":"b.jpg","type":"image","mime":"image/jpeg","size":5,"md5":"y"}"""))
+        repo.upload(UploadSource("b.jpg", "image/jpeg", 5) { "hello".byteInputStream() }) {}
+        assertNull(server.takeRequest().getHeader("X-Expires-At"))
+
+        server.enqueue(MockResponse().setBody("""{"id":3,"filename":"a.jpg","type":"image","mime":"image/jpeg","size":5,"md5":"x","expires_at":$expiry}"""))
+        repo.setMediaExpiry(3, expiry)
+        val patch = server.takeRequest()
+        assertEquals("PATCH", patch.method)
+        assertEquals("/api/media/3", patch.path)
+        val patchBody = patch.body.readUtf8()
+        assertTrue(patchBody, patchBody.contains("\"expires_at\":$expiry"))
+
+        server.enqueue(MockResponse().setBody(
+            """{"items":[],"removed":[{"id":9,"filename":"old.jpg","type":"image","size":5,"removed_at":1800000000000,"removed_reason":"expired"}]}"""
+        ))
+        assertTrue(repo.library().removed.single().expired)
+        server.takeRequest()
+
+        server.enqueue(MockResponse().setBody("""{"id":9,"filename":"old.jpg","type":"image","mime":"image/jpeg","size":5,"md5":"z"}"""))
+        repo.restoreMedia(9, null)
+        val restore = server.takeRequest()
+        assertEquals("POST", restore.method)
+        assertEquals("/api/media/9/restore", restore.path)
+    }
+
     @Test fun signInSavesTheTokenAndSignOutClearsIt() = runTest {
         server.enqueue(MockResponse().setBody("""{"token":"new","email":"a@b.c","role":"system_manager"}"""))
         repo.signInWithGoogle("google-id-token")

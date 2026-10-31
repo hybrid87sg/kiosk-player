@@ -76,7 +76,7 @@ function createApp({
   const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
   const cacheOn = () => Boolean(cacheStore) && (getSetting(db, 'cache_media') ?? cacheMedia);
   const pruneCache = () => {
-    if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media`).all());
+    if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media WHERE removed_at IS NULL`).all());
   };
   // A Drive folder chosen on the web Settings page wins over the start-up setting.
   const savedFolder = getSetting(db, 'drive_folder_id');
@@ -227,7 +227,37 @@ function createApp({
 
   // ---------- Media library (Google Drive folder) ----------
 
-  const mediaColumns = `id, filename, type, mime, size, md5, width, height, orientation, created_at`;
+  const mediaColumns = `id, filename, type, mime, size, md5, width, height, orientation, created_at, expires_at`;
+  const removedColumns = `${mediaColumns}, removed_at, removed_reason`;
+
+  // Takes a file out of Kiosk: out of the library and every playlist, and off
+  // the screens (their playlists change, so they drop it). Google Drive is not
+  // touched, and the file can be restored from "Expired and removed".
+  function retireMedia(ids, reason) {
+    if (!ids.length) return;
+    db.transaction(() => {
+      for (const id of ids) {
+        bumpPlaylistVersions(db, playlistsUsingMedia(db, id));
+        db.prepare(`DELETE FROM playlist_items WHERE media_id = ?`).run(id);
+        db.prepare(`UPDATE media SET removed_at = ?, removed_reason = ? WHERE id = ?`).run(Date.now(), reason, id);
+      }
+    })();
+    pruneCache();
+  }
+
+  // Files whose expiry date has passed leave Kiosk.
+  function expireDue() {
+    const due = db.prepare(`SELECT id FROM media WHERE removed_at IS NULL AND expires_at <= ?`).all(Date.now());
+    retireMedia(due.map((r) => r.id), 'expired');
+  }
+
+  // An expiry date from the apps: a time in the future, or null for "never".
+  function checkExpiry(value) {
+    if (value === null || value === undefined) return { value: null };
+    if (!Number.isSafeInteger(value)) return { error: 'expires_at must be a time in milliseconds, or null' };
+    if (value <= Date.now()) return { error: 'Choose an expiry date in the future' };
+    return { value };
+  }
 
   // Saves (or refreshes) one Drive file in our catalogue. Returns the row,
   // or null if it's not a file type the player can show.
@@ -279,14 +309,16 @@ function createApp({
   }
 
   function libraryResponse(syncError) {
-    const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
-    return { items, synced_at: lastSyncAt || null, sync_error: syncError };
+    const items = db.prepare(`SELECT ${mediaColumns} FROM media WHERE removed_at IS NULL ORDER BY created_at DESC`).all();
+    const removed = db.prepare(`SELECT ${removedColumns} FROM media WHERE removed_at IS NOT NULL ORDER BY removed_at DESC`).all();
+    return { items, removed, synced_at: lastSyncAt || null, sync_error: syncError };
   }
 
   // Lists the library. Re-reads Drive first if it's been more than a minute,
   // or if a file's shape is still being checked.
   // If Drive can't be reached, the last known list is returned with sync_error.
   app.get('/api/media', requireContent, async (req, res) => {
+    expireDue();
     let syncError = null;
     const checking = db.prepare(`SELECT 1 FROM media WHERE orientation IS NULL LIMIT 1`).get();
     if (Date.now() - lastSyncAt > SYNC_THROTTLE_MS || checking) {
@@ -319,6 +351,10 @@ function createApp({
     if (!filename) return res.status(400).json({ error: 'Missing X-Filename header' });
     const kind = mediaKind(filename, (req.get('content-type') || '').split(';')[0].trim().toLowerCase());
     if (!kind) return res.status(415).json({ error: 'Only .mp4, .jpg, .png and .webp files are supported' });
+    // Optional expiry date chosen while uploading.
+    const expiryHeader = req.get('x-expires-at');
+    const expiry = checkExpiry(expiryHeader ? Number(expiryHeader) : null);
+    if (expiry.error) return res.status(400).json({ error: expiry.error });
     if (Number(req.get('content-length')) > maxUploadBytes) return res.status(413).json({ error: 'File is too large' });
 
     // Sits between the phone and Drive, counting bytes so a file that is too
@@ -350,33 +386,45 @@ function createApp({
       await google.deleteFile(file.id).catch(log);
       return res.status(400).json({ error: meter.errored ? 'Upload failed: ' + meter.errored.message : 'File is empty' });
     }
-    res.status(201).json(upsertMedia(file));
+    const saved = upsertMedia(file);
+    if (expiry.value) db.prepare(`UPDATE media SET expires_at = ? WHERE id = ?`).run(expiry.value, saved.id);
+    res.status(201).json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(saved.id));
   });
 
-  app.delete('/api/media/:id', requireContent, async (req, res) => {
-    const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
+  // Set or clear a file's expiry date.
+  app.patch('/api/media/:id', requireContent, (req, res) => {
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
-    try {
-      await google.deleteFile(media.drive_file_id); // goes to Drive's trash, so it can be recovered
-    } catch (err) {
-      if (!(err.status === 404 || (err.response && err.response.status === 404))) {
-        log(err);
-        return res.status(502).json({ error: 'Could not delete the file in Google Drive' });
-      }
-    }
-    db.transaction(() => {
-      bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
-      db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from every playlist
-    })();
-    pruneCache();
+    const expiry = checkExpiry((req.body || {}).expires_at);
+    if (expiry.error) return res.status(400).json({ error: expiry.error });
+    db.prepare(`UPDATE media SET expires_at = ? WHERE id = ?`).run(expiry.value, media.id);
+    res.json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(media.id));
+  });
+
+  // "Remove from Kiosk": out of the library, playlists and screens. The file
+  // stays in Google Drive; Kiosk never deletes anything there.
+  app.delete('/api/media/:id', requireContent, (req, res) => {
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
+    if (!media) return res.status(404).json({ error: 'Not found' });
+    retireMedia([media.id], 'removed');
     res.json({ ok: true });
+  });
+
+  // Brings an expired or removed file back into the library (not into playlists).
+  app.post('/api/media/:id/restore', requireContent, (req, res) => {
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NOT NULL`).get(req.params.id);
+    if (!media) return res.status(404).json({ error: 'Not found' });
+    const expiry = checkExpiry((req.body || {}).expires_at);
+    if (expiry.error) return res.status(400).json({ error: expiry.error });
+    db.prepare(`UPDATE media SET removed_at = NULL, removed_reason = NULL, expires_at = ? WHERE id = ?`).run(expiry.value, media.id);
+    res.json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(media.id));
   });
 
   // Download. Served from the local cache when there is a copy; otherwise
   // streamed from Drive (and, with the cache on, saved while it passes).
   // The "Range" header lets an interrupted download on the TV continue where it stopped.
   app.get('/media/:id', auth.requireUserOrDevice(db), async (req, res) => {
-    const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
     const cache = cacheOn() ? cacheStore : null;
     if (cache && cache.has(media)) {
@@ -411,7 +459,7 @@ function createApp({
 
   function playlistItems(playlistId) {
     return db.prepare(
-      `SELECT p.media_id, p.image_seconds, p.start_at, p.end_at, m.filename, m.type, m.mime, m.size, m.md5, m.orientation
+      `SELECT p.media_id, p.image_seconds, p.start_at, p.end_at, m.filename, m.type, m.mime, m.size, m.md5, m.orientation, m.expires_at
        FROM playlist_items p JOIN media m ON m.id = p.media_id
        WHERE p.playlist_id = ? ORDER BY p.position`
     ).all(playlistId);
@@ -479,7 +527,7 @@ function createApp({
     if (!p) return res.status(404).json({ error: 'Not found' });
     const items = req.body && req.body.items;
     if (!Array.isArray(items)) return res.status(400).json({ error: 'Body must be { items: [...] }' });
-    const mediaExists = db.prepare(`SELECT 1 FROM media WHERE id = ?`);
+    const mediaExists = db.prepare(`SELECT 1 FROM media WHERE id = ? AND removed_at IS NULL`);
     for (const item of items) {
       if (!Number.isInteger(item.media_id) || !mediaExists.get(item.media_id)) {
         return res.status(400).json({ error: `Unknown media_id ${item.media_id}` });
@@ -643,7 +691,7 @@ function createApp({
         ? { available: true, enabled: cacheOn(), ...cacheStore.stats() }
         : { available: false, enabled: false, files: 0, bytes: 0 },
       sign_in: { phone_app: Boolean(googleWebClientId), web_code: Boolean(google.deviceSignInAvailable) },
-      library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media`).get(),
+      library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
     };
   }
 
@@ -746,10 +794,12 @@ function createApp({
   }
 
   app.get('/api/player/playlist', auth.requireDevice(db), (req, res) => {
+    expireDue();
     res.json(playerPlaylist(req.device));
   });
 
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
+    expireDue(); // so the version below already leaves out files that just expired
     const body = req.body || {};
     db.prepare(
       `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ?,
@@ -773,6 +823,9 @@ function createApp({
     if (res.headersSent) return next(err);
     res.status(err.status || 500).json({ error: err.status ? err.message : 'Server error' });
   });
+
+  // Expired files leave the screens within a minute, even with nobody signed in.
+  if (syncIntervalMs > 0) setInterval(expireDue, 60 * 1000).unref();
 
   // Keep the library in step with Drive even when nobody has the admin app open.
   if (syncIntervalMs > 0) {

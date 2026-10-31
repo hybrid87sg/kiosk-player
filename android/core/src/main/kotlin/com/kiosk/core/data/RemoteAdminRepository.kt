@@ -15,6 +15,7 @@ import com.kiosk.core.model.User
 import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.AdminApi
 import com.kiosk.core.network.DeviceBody
+import com.kiosk.core.network.ExpiryBody
 import com.kiosk.core.network.GoogleSignInBody
 import com.kiosk.core.network.ItemBody
 import com.kiosk.core.network.ItemsBody
@@ -61,13 +62,15 @@ class RemoteAdminRepository(
     override suspend fun library(): Library = apiCall { api.library() }
     override suspend fun syncLibrary(): Library = apiCall { api.syncLibrary() }
 
-    override suspend fun upload(file: UploadSource, onProgress: (Float) -> Unit): Media {
+    override suspend fun upload(file: UploadSource, expiresAt: Long?, onProgress: (Float) -> Unit): Media {
         // encodeURIComponent-style: the server decodes it with decodeURIComponent.
         val encodedName = URLEncoder.encode(file.name, "UTF-8").replace("+", "%20")
-        return apiCall { api.upload(encodedName, StreamingBody(file, onProgress)) }
+        return apiCall { api.upload(encodedName, expiresAt?.toString(), StreamingBody(file, onProgress)) }
     }
 
+    override suspend fun setMediaExpiry(id: Long, expiresAt: Long?): Media = apiCall { api.setExpiry(id, ExpiryBody(expiresAt)) }
     override suspend fun deleteMedia(id: Long) { apiCall { api.deleteMedia(id) } }
+    override suspend fun restoreMedia(id: Long, expiresAt: Long?): Media = apiCall { api.restoreMedia(id, ExpiryBody(expiresAt)) }
 
     override suspend fun playlists(): List<PlaylistSummary> = apiCall { api.playlists() }
     override suspend fun playlist(id: Long): PlaylistDetail = apiCall { api.playlist(id) }

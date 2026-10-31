@@ -179,3 +179,8 @@ dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column
 .waiting { margin-bottom: 8px; }
 .waiting .list { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .waiting .section-label { color: var(--primary); margin-top: 0; }
+
+/* Library: expiry for new uploads, and the "Expired and removed" list */
+.upload-expiry { margin-top: 10px; gap: 8px; }
+.removed { margin-top: 24px; }
+.removed > .btn { padding-left: 4px; }

@@ -36,8 +36,14 @@ internal interface AdminApi {
 
     @GET("api/media") suspend fun library(): Library
     @POST("api/media/sync") suspend fun syncLibrary(): Library
-    @POST("api/media") suspend fun upload(@Header("X-Filename") encodedName: String, @Body file: RequestBody): Media
+    @POST("api/media") suspend fun upload(
+        @Header("X-Filename") encodedName: String,
+        @Header("X-Expires-At") expiresAt: String?, // left out when null
+        @Body file: RequestBody,
+    ): Media
+    @PATCH("api/media/{id}") suspend fun setExpiry(@Path("id") id: Long, @Body body: ExpiryBody): Media
     @DELETE("api/media/{id}") suspend fun deleteMedia(@Path("id") id: Long): OkReply
+    @POST("api/media/{id}/restore") suspend fun restoreMedia(@Path("id") id: Long, @Body body: ExpiryBody): Media
 
     @GET("api/playlists") suspend fun playlists(): List<PlaylistSummary>
     @GET("api/playlists/{id}") suspend fun playlist(@Path("id") id: Long): PlaylistDetail
@@ -69,6 +75,8 @@ internal interface PlayerApi {
 // ---------- Request and reply bodies ----------
 
 @Serializable internal data class OkReply(val ok: Boolean = true)
+/** null (left out) means "no expiry". */
+@Serializable internal data class ExpiryBody(@SerialName("expires_at") val expiresAt: Long? = null)
 @Serializable internal data class GoogleSignInBody(@SerialName("id_token") val idToken: String)
 @Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape)
 @Serializable

@@ -18,8 +18,9 @@ const { MediaCache } = require('./media-cache');
 const VERSION = require('../package.json').version;
 // How long the main server's "yes, that TV is real" answer is trusted.
 const TOKEN_CHECK_MS = 5 * 60 * 1000;
-// Copies of files no TV has had in its playlist for this long are deleted.
-const KEEP_UNUSED_MS = 7 * 24 * 60 * 60 * 1000;
+// Copies of files no TV has had in its playlist for a day are deleted (expired
+// and removed files leave every playlist, so their copies go within a day).
+const KEEP_UNUSED_MS = 24 * 60 * 60 * 1000;
 // A TV counts as "seen" for the status page if it asked something recently.
 const SEEN_WINDOW_MS = 10 * 60 * 1000;
 

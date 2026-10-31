@@ -4,6 +4,8 @@ import com.kiosk.admin.ui.common.KioskViewModel
 import com.kiosk.core.data.AdminRepository
 import com.kiosk.core.data.UploadSource
 import com.kiosk.core.model.Library
+import com.kiosk.core.model.Media
+import com.kiosk.core.model.RemovedMedia
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,19 +50,33 @@ class LibraryViewModel(private val repo: AdminRepository, onSignedOut: () -> Uni
         }
     }
 
-    fun upload(file: UploadSource) {
+    /** [expiresAt]: when it should leave Kiosk, or null for never. */
+    fun upload(file: UploadSource, expiresAt: Long?) {
         if (_state.value.upload != null) return say("Wait for the current upload to finish")
         _state.update { it.copy(upload = Upload(file.name, 0f)) }
         launchSafely(onError = { _state.update { s -> s.copy(upload = null) } }) {
-            repo.upload(file) { p -> _state.update { it.copy(upload = it.upload?.copy(progress = p)) } }
+            repo.upload(file, expiresAt) { p -> _state.update { it.copy(upload = it.upload?.copy(progress = p)) } }
             _state.update { it.copy(upload = null, library = repo.library()) }
             say("${file.name} saved to Google Drive")
         }
     }
 
-    fun delete(id: Long, name: String) = launchSafely {
-        repo.deleteMedia(id)
+    fun setExpiry(m: Media, expiresAt: Long?) = launchSafely {
+        repo.setMediaExpiry(m.id, expiresAt)
         _state.update { it.copy(library = repo.library()) }
-        say("$name moved to the Google Drive trash")
+        say(if (expiresAt == null) "${m.filename} no longer expires" else "${m.filename}: ${showsUntil(expiresAt).lowercase()}")
+    }
+
+    /** "Remove from Kiosk". Google Drive keeps the file. */
+    fun remove(m: Media) = launchSafely {
+        repo.deleteMedia(m.id)
+        _state.update { it.copy(library = repo.library()) }
+        say("${m.filename} removed from Kiosk. Google Drive still has it.")
+    }
+
+    fun restore(r: RemovedMedia, expiresAt: Long?) = launchSafely {
+        repo.restoreMedia(r.id, expiresAt)
+        _state.update { it.copy(library = repo.library()) }
+        say("${r.filename} is back in the library. Add it to a playlist to show it.")
     }
 }

@@ -37,6 +37,12 @@ You need the one-time Google setup, which gives you:
   People you invited sign in with Google using a code from google.com/device; they don't need a Home
   Assistant account. This needs the two optional **Web sign-in client** settings.
 
+## Files, expiry dates and Google Drive
+
+Each file can have an expiry date (Library → calendar button). After that day it leaves Kiosk, every
+playlist and every screen; it waits under **Expired and removed**, where it can be restored. Kiosk never
+deletes anything from Google Drive: expired and removed files stay in the shared drive.
+
 ## Adding TVs
 
 On each TV, open Kiosk Player and choose **Find my server automatically**. The TV then shows up on the

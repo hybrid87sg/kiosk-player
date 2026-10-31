@@ -56,6 +56,7 @@ const ICONS = {
   refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
   play: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
 };
 
 /** An icon from the fixed set above (our own markup, never server text). */
@@ -158,6 +159,68 @@ function thumb(type, shape, label) {
 
 function mediaMeta(m) {
   return `${m.type === 'video' ? 'Video' : 'Picture'} · ${m.orientation ? SHAPES[m.orientation] : 'Checking shape…'} · ${formatBytes(m.size)}`;
+}
+
+// ---------- Expiry dates ----------
+// People pick the last day a file shows. It expires at the start of the next
+// day, in this browser's time zone (like playlist dates).
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** "2026-12-24" for a date input, from an expiry time (the day before it). */
+function lastDayValue(expiresAt) {
+  if (expiresAt == null) return '';
+  const d = new Date(expiresAt - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** The expiry time for a chosen last day: midnight at the end of it. */
+function expiryFromLastDay(value) {
+  if (!value) return null;
+  const d = new Date(`${value}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+function shortDate(ms) {
+  return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: new Date(ms).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+
+/** "Shows until 24 Dec", warning-coloured when 3 days or less are left. */
+function expiryChip(expiresAt) {
+  if (expiresAt == null) return null;
+  const soon = expiresAt - Date.now() <= 3 * DAY_MS;
+  return el('span', { class: `chip ${soon ? 'attention' : 'primary'}`, title: 'After this day it leaves Kiosk and every screen. Google Drive keeps it.' },
+    `Shows until ${shortDate(expiresAt - 1)}`);
+}
+
+/** Choose a file's last day (or none). onSave(expiresAt | null) does the saving. */
+function expiryDialog({ title, text, current, saveLabel = 'Save', onSave }) {
+  openDialog((dialog) => {
+    const tomorrow = lastDayValue(Date.now() + DAY_MS);
+    const input = el('input', { type: 'date', class: 'date-input', value: lastDayValue(current), min: lastDayValue(Date.now() + 1) || tomorrow });
+    const save = async (value) => {
+      const ok = await attempt(() => onSave(value));
+      if (ok !== undefined) dialog.close();
+    };
+    const form = el('form', {
+      method: 'dialog',
+      onsubmit: (e) => {
+        e.preventDefault();
+        if (!input.value) return toast('Choose a date, or click No expiry');
+        save(expiryFromLastDay(input.value));
+      },
+    },
+    el('h2', {}, title),
+    el('p', { class: 'sub' }, text),
+    el('label', { class: 'field' }, 'Show until (the last day it plays)', input),
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { type: 'button', class: 'btn', onclick: () => save(null) }, 'No expiry'),
+      el('button', { class: 'btn primary' }, saveLabel)));
+    setTimeout(() => input.focus());
+    return form;
+  });
 }
 
 /** Opens a dialog. build(dialog) returns its content; it closes with dialog.close(). */
@@ -456,7 +519,7 @@ function screenForm({ code, device, playlists, devices, onDone }) {
 
 // ---------- Library ----------
 
-function uploadFile(file, onProgress) {
+function uploadFile(file, onProgress, expiresAt = null) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', 'api/media');
@@ -464,6 +527,7 @@ function uploadFile(file, onProgress) {
     if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
     xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    if (expiresAt) xhr.setRequestHeader('X-Expires-At', String(expiresAt));
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
     xhr.onload = () => {
       let data = {};
@@ -480,9 +544,11 @@ async function pageLibrary(page) {
   const listArea = el('div');
   const status = el('span', { class: 'meta' });
   let library = null;
+  let showRemoved = false;
 
   function draw() {
     const items = library.items;
+    const removed = library.removed || [];
     status.textContent = library.sync_error || `Google Drive · synced ${timeAgo(library.synced_at)}`;
     status.className = library.sync_error ? 'warn' : 'meta';
     const groups = [
@@ -490,19 +556,61 @@ async function pageLibrary(page) {
       ['Landscape files', items.filter((m) => m.orientation === 'landscape')],
       ['Portrait files', items.filter((m) => m.orientation === 'portrait')],
     ].filter(([, list]) => list.length);
-    fill(listArea, 
+    fill(listArea,
       groups.length === 0 ? el('div', { class: 'empty', style: 'margin-top:20px' }, 'No files yet. Drop files above, or add them to the Signage folder in Google Drive.') : null,
       groups.map(([title, list]) => [
         el('div', { class: 'section-label' }, `${title} · ${list.length}`),
         el('div', { class: 'list' }, list.map((m) => el('div', { class: 'list-row' },
           thumb(m.type, m.orientation),
-          el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta' }, mediaMeta(m))),
+          el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename),
+            el('div', { class: 'meta row', style: 'gap:8px' }, mediaMeta(m), expiryChip(m.expires_at))),
           el('button', {
-            class: 'btn icon', 'aria-label': `Delete ${m.filename}`, title: 'Delete',
-            onclick: () => confirmDialog(`Delete ${m.filename}?`, 'It goes to the Google Drive trash and leaves every playlist. Screens stop showing it after their next update.', 'Delete',
-              () => attempt(async () => { await api('DELETE', `api/media/${m.id}`); toast(`${m.filename} moved to the Google Drive trash`); await load(); })),
+            class: 'btn icon', 'aria-label': `Set when ${m.filename} expires`, title: 'Expiry date',
+            onclick: () => expiryDialog({
+              title: `When should ${m.filename} stop showing?`,
+              text: 'After this day it leaves Kiosk, every playlist and every screen. It stays in Google Drive, and you can restore it.',
+              current: m.expires_at,
+              onSave: async (expiresAt) => {
+                await api('PATCH', `api/media/${m.id}`, { expires_at: expiresAt });
+                toast(expiresAt ? `${m.filename} shows until ${shortDate(expiresAt - 1)}` : `${m.filename} no longer expires`);
+                await load();
+                return true;
+              },
+            }),
+          }, icon('calendar')),
+          el('button', {
+            class: 'btn icon', 'aria-label': `Remove ${m.filename} from Kiosk`, title: 'Remove from Kiosk',
+            onclick: () => confirmDialog(`Remove ${m.filename} from Kiosk?`, 'It leaves the library, every playlist and every screen. It stays in Google Drive, and you can restore it from “Expired and removed”.', 'Remove',
+              () => attempt(async () => { await api('DELETE', `api/media/${m.id}`); toast(`${m.filename} removed from Kiosk. Google Drive still has it.`); await load(); })),
           }, icon('trash'))))),
       ]),
+      removed.length ? el('div', { class: 'removed' },
+        el('button', {
+          class: 'btn text small', 'aria-expanded': String(showRemoved),
+          onclick: () => { showRemoved = !showRemoved; draw(); },
+        }, `${showRemoved ? '▾' : '▸'} Expired and removed · ${removed.length}`),
+        showRemoved ? [
+          el('p', { class: 'meta', style: 'margin:4px 4px 8px' }, 'These are still in Google Drive, but not in Kiosk. Restore one to use it again.'),
+          el('div', { class: 'list' }, removed.map((m) => el('div', { class: 'list-row' },
+            thumb(m.type, m.orientation),
+            el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename),
+              el('div', { class: 'meta' }, `${m.removed_reason === 'expired' ? 'Expired' : 'Removed'} ${shortDate(m.removed_at)} · ${mediaMeta(m)}`)),
+            el('button', {
+              class: 'btn tonal small',
+              onclick: () => expiryDialog({
+                title: `Restore ${m.filename}`,
+                text: 'It comes back to the library. Add it to playlists again to show it on screens.',
+                current: null,
+                saveLabel: 'Restore',
+                onSave: async (expiresAt) => {
+                  await api('POST', `api/media/${m.id}/restore`, { expires_at: expiresAt });
+                  toast(`${m.filename} is back in the library`);
+                  await load();
+                  return true;
+                },
+              }),
+            }, 'Restore')))),
+        ] : null) : null,
     );
   }
 
@@ -511,7 +619,11 @@ async function pageLibrary(page) {
     draw();
   }
 
+  // Optional: an expiry date for the files about to be uploaded.
+  const uploadExpiry = el('input', { type: 'date', class: 'date-input', id: 'upload-expiry', min: lastDayValue(Date.now() + 1) });
+
   async function addFiles(files) {
+    const expiresAt = expiryFromLastDay(uploadExpiry.value);
     for (const file of files) {
       const bar = el('div', { style: 'width:0%' });
       const label = el('span', { class: 'meta' }, '0%');
@@ -520,7 +632,7 @@ async function pageLibrary(page) {
         el('div', { class: 'progress' }, bar));
       uploads.append(row);
       try {
-        await uploadFile(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = `${Math.round(p * 100)}%`; });
+        await uploadFile(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = `${Math.round(p * 100)}%`; }, expiresAt);
         toast(`${file.name} saved to Google Drive`);
       } catch (e) {
         toast(`${file.name}: ${e.message}`);
@@ -542,11 +654,14 @@ async function pageLibrary(page) {
   el('strong', {}, 'Drop videos and pictures here, or click to choose'),
   el('div', { class: 'meta' }, '.mp4 videos up to 4K, and .jpg, .png, .webp pictures. They’re saved into the Signage folder in Google Drive.'));
 
-  fill(page, 
+  fill(page,
     el('div', { class: 'page-head' },
       el('div', {}, el('h1', {}, 'Library'), el('p', { class: 'sub' }, status)),
       el('button', { class: 'btn', onclick: () => attempt(async () => { await load(true); toast('Library is up to date'); }) }, icon('refresh', 18), 'Sync with Drive')),
-    drop, picker, uploads, listArea,
+    drop,
+    el('label', { class: 'row meta upload-expiry', for: 'upload-expiry' }, icon('calendar', 16), 'New uploads show until (optional):', uploadExpiry,
+      el('button', { type: 'button', class: 'btn text small', onclick: () => { uploadExpiry.value = ''; } }, 'Clear')),
+    picker, uploads, listArea,
   );
   await attempt(() => load());
   // While a file's shape is still being checked, look again every few seconds.
@@ -678,6 +793,7 @@ async function pagePlaylist(page, id) {
           thumb(it.type, it.orientation, i + 1),
           el('div', { class: 'grow' },
             el('div', { class: 'name' }, it.filename),
+            it.expires_at != null ? el('div', {}, expiryChip(it.expires_at)) : null,
             mismatch(it) ? el('div', { class: 'warn' }, `${SHAPES[it.orientation]} file · plays with black bars here`) : null,
             it.type === 'video'
               ? el('div', { class: 'meta' }, 'Video · plays to the end')
@@ -752,12 +868,12 @@ async function pagePlaylist(page, id) {
       addable.length === 0 ? el('p', { class: 'meta' }, 'Everything in the library is already in this playlist.') : null,
       el('div', { class: 'list', style: 'max-height:50vh;overflow:auto' }, addable.map((m) => el('div', { class: 'list-row' },
         thumb(m.type, m.orientation),
-        el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta' }, mediaMeta(m)),
+        el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta row', style: 'gap:8px' }, mediaMeta(m), expiryChip(m.expires_at)),
           m.orientation && m.orientation !== detail.orientation ? el('div', { class: 'warn' }, `${SHAPES[m.orientation]} file · plays with black bars here`) : null),
         el('button', {
           class: 'btn tonal small',
           onclick: (e) => {
-            items.push({ media_id: m.id, filename: m.filename, type: m.type, orientation: m.orientation, image_seconds: 10, start_at: null, end_at: null, schedule_enabled: false });
+            items.push({ media_id: m.id, filename: m.filename, type: m.type, orientation: m.orientation, expires_at: m.expires_at, image_seconds: 10, start_at: null, end_at: null, schedule_enabled: false });
             e.target.closest('.list-row').remove();
             draw();
           },

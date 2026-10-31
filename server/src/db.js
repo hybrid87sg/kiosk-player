@@ -116,6 +116,11 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'playlist_items', 'end_at', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'model', 'TEXT'); // e.g. "Xiaomi MIBOX4", shown while waiting to be added
   addColumnIfMissing(db, 'devices', 'site', 'TEXT'); // which site (Home Assistant) the TV is at
+  // File expiry, and files taken out of Kiosk (expired or removed). The row is
+  // kept, so the next Drive sync doesn't bring the file back; Drive is untouched.
+  addColumnIfMissing(db, 'media', 'expires_at', 'INTEGER'); // unix ms; empty = never expires
+  addColumnIfMissing(db, 'media', 'removed_at', 'INTEGER'); // unix ms; empty = in the library
+  addColumnIfMissing(db, 'media', 'removed_reason', 'TEXT'); // 'expired' or 'removed'
 
   return db;
 }

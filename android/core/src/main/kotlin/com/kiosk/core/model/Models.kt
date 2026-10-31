@@ -67,13 +67,32 @@ data class Media(
     /** null while Drive is still working out the file's size. */
     val orientation: ScreenShape? = null,
     @SerialName("created_at") val createdAt: Long = 0,
+    /** When the file leaves Kiosk and every screen (unix ms); null = never. Google Drive keeps it. */
+    @SerialName("expires_at") val expiresAt: Long? = null,
 )
+
+/** A file taken out of Kiosk (it expired, or someone removed it). It's still in Google Drive. */
+@Serializable
+data class RemovedMedia(
+    val id: Long,
+    val filename: String,
+    val type: MediaType,
+    val size: Long = 0,
+    val orientation: ScreenShape? = null,
+    @SerialName("removed_at") val removedAt: Long,
+    /** "expired" or "removed". */
+    @SerialName("removed_reason") val removedReason: String,
+) {
+    val expired: Boolean get() = removedReason == "expired"
+}
 
 @Serializable
 data class Library(
     val items: List<Media>,
     @SerialName("synced_at") val syncedAt: Long? = null,
     @SerialName("sync_error") val syncError: String? = null,
+    /** "Expired and removed": can be restored. */
+    val removed: List<RemovedMedia> = emptyList(),
 )
 
 @Serializable
@@ -101,6 +120,8 @@ data class PlaylistItem(
     val orientation: ScreenShape? = null,
     @SerialName("start_at") val startAt: Long? = null,
     @SerialName("end_at") val endAt: Long? = null,
+    /** The file's own expiry (see [Media.expiresAt]). */
+    @SerialName("expires_at") val expiresAt: Long? = null,
 )
 
 @Serializable

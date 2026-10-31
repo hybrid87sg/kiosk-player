@@ -246,6 +246,12 @@ What's on it:
   updated every 10 seconds and grouped by site and location. New TVs appear under **New screens waiting**;
   click **Add**. **Add by code** is there too.
 - **Library:** drag files from your computer onto the page to upload them.
+  - **Expiry dates:** click a file's calendar button (or pick a date before uploading) to choose the last day
+    it shows. After that day it leaves Kiosk, every playlist and every screen by itself.
+  - **Remove** takes a file out of Kiosk straight away.
+  - Expired and removed files wait under **Expired and removed**, where **Restore** brings them back.
+  - **Kiosk never deletes anything from Google Drive.** Removed and expired files stay in the shared drive;
+    tidy it up there yourself whenever you like.
 - **Playlists:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
   Dates use the browser's local timezone; players include files only during that window.
 - **Settings** (Spongebob): change the Drive folder and test the connection, switch local copies on or off
@@ -319,6 +325,7 @@ connect with Tailscale, and sign in with Google.
 | Web page says sign-in "isn't set up" | Fill in the web sign-in client ID and secret (Part 1, step 9), or use the Home Assistant sidebar page. |
 | Phone: "… is not allowed in yet" | Sign in with the Spongebob account, or ask Spongebob to invite you. |
 | Library says "Could not reach Google Drive" | Check the Drive folder ID, and that the service account is a **Content manager** on the shared drive. |
+| A file disappeared from the library or the screens | It probably expired or was removed: see **Library → Expired and removed**, and **Restore** it. |
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |
 | TV says "No server found" | Is the Kiosk add-on running, and is the TV on the same network as Home Assistant (not a guest Wi-Fi)? Or choose **Type the address**. |
 | TV shows "Can't reach the server" | If you typed an address, it must be the **home-network** one, not the Tailscale one. The TV also searches again by itself after 2 minutes. |
