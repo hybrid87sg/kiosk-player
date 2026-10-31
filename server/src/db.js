@@ -112,8 +112,34 @@ function openDatabase(dataDir) {
   // unlike a SCHEMA_VERSION bump, which starts the database again.
   addColumnIfMissing(db, 'devices', 'download_done', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'download_total', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'decoder_caps', 'TEXT'); // JSON: screen size and what the TV can decode
+  addColumnIfMissing(db, 'devices', 'playback_error', 'TEXT');
   addColumnIfMissing(db, 'playlist_items', 'start_at', 'INTEGER');
   addColumnIfMissing(db, 'playlist_items', 'end_at', 'INTEGER');
+  addColumnIfMissing(db, 'media', 'source_codec', 'TEXT');
+  addColumnIfMissing(db, 'media', 'source_profile', 'TEXT');
+  addColumnIfMissing(db, 'media', 'source_level', 'INTEGER');
+  addColumnIfMissing(db, 'media', 'source_fps', 'REAL');
+  addColumnIfMissing(db, 'media', 'source_pix_fmt', 'TEXT');
+  addColumnIfMissing(db, 'media', 'source_vfr', 'INTEGER');
+
+  // Playback copies made on this server. The original in Google Drive is untouched.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS renditions (
+      media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+      profile    TEXT NOT NULL CHECK (profile IN ('h264_1080', 'h264_720', 'hevc_2160')),
+      status     TEXT NOT NULL CHECK (status IN ('pending', 'running', 'ready', 'failed', 'skipped')),
+      width      INTEGER,
+      height     INTEGER,
+      fps        REAL,
+      size       INTEGER,
+      md5        TEXT,
+      source_md5 TEXT,
+      error      TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (media_id, profile)
+    );
+  `);
 
   return db;
 }

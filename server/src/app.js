@@ -8,10 +8,11 @@
 //   /api/playlists...  named playlists (landscape or portrait) and their items
 //   /api/devices...    pair (QR code or PIN), set up, remove TV players
 //   /api/player/...    TV players: register, check pairing, get playlist, heartbeat
-//   /media/:id         download a file (streamed from Drive)
+//   /media/:id         download a file (streamed from Drive, or a playback copy)
 
 const express = require('express');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -19,6 +20,8 @@ const http = require('node:http');
 const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting } = require('./db');
 const auth = require('./auth');
 const { MediaCache } = require('./media-cache');
+const { createTranscoder } = require('./transcode');
+const { chooseRendition, playbackWarning, normalizeDecoderCaps, PROFILE_IDS } = require('./renditions');
 
 // File types the player can show, by MIME type and by file extension.
 const TYPE_BY_MIME = { 'video/mp4': 'video', 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image' };
@@ -58,6 +61,8 @@ function createApp({
   cacheMedia = true, // whether to keep them, until changed on the web Settings page
   maxUploadBytes = 8 * 1024 ** 3,
   syncIntervalMs = 5 * 60 * 1000,
+  // Playback copies. Omit it and copies stay off (tests). The real server turns them on.
+  transcode = null,
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
@@ -66,6 +71,43 @@ function createApp({
   const pruneCache = () => {
     if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media`).all());
   };
+  const transcodeOptions = transcode && typeof transcode === 'object' ? transcode : {};
+  const renditionDir = transcodeOptions.dir || path.join(dataDir, 'renditions');
+
+  // A copy of the original for ffmpeg to read. The Drive file and the cache file are not written.
+  async function fetchOriginal(media) {
+    const cache = cacheOn() ? cacheStore : null;
+    if (cache && cache.has(media)) return { path: cache.pathFor(media), temporary: false };
+    fs.mkdirSync(renditionDir, { recursive: true });
+    const dest = path.join(renditionDir, `.src-${media.id}-${media.md5}${path.extname(media.filename).toLowerCase() || '.bin'}`);
+    const download = await google.downloadStream(media.drive_file_id);
+    const hash = crypto.createHash('md5');
+    await pipeline(download.stream, new Transform({
+      transform(chunk, encoding, callback) {
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    }), fs.createWriteStream(dest));
+    if (hash.digest('hex') !== media.md5) {
+      fs.rmSync(dest, { force: true });
+      throw new Error('Downloaded file did not match its fingerprint');
+    }
+    return { path: dest, temporary: true };
+  }
+
+  const transcoder = createTranscoder({
+    db,
+    dir: renditionDir,
+    downloadOriginal: fetchOriginal,
+    enabledDefault: Boolean(transcodeOptions.enabled),
+    hevc4kDefault: Boolean(transcodeOptions.hevc4k),
+    inline: Boolean(transcodeOptions.inline),
+    probe: transcodeOptions.probe || null,
+    runFfmpeg: transcodeOptions.run || null,
+    log,
+    getSetting: (key) => getSetting(db, key),
+  });
+  transcoder.resume();
   // A Drive folder chosen on the web Settings page wins over the start-up setting.
   const savedFolder = getSetting(db, 'drive_folder_id');
   if (savedFolder && google.setFolderId) google.setFolderId(savedFolder);
@@ -234,7 +276,9 @@ function createApp({
       // The content changed, so players showing it must download it again.
       if (existing.md5 !== file.md5Checksum) bumpPlaylistVersions(db, playlistsUsingMedia(db, existing.id));
     }
-    return db.prepare(`SELECT ${mediaColumns} FROM media WHERE drive_file_id = ?`).get(file.id);
+    const row = db.prepare(`SELECT ${mediaColumns} FROM media WHERE drive_file_id = ?`).get(file.id);
+    if (row && row.type === 'video') transcoder.schedule(row);
+    return row;
   }
 
   // Makes our catalogue match the Drive folder: new files are added to the
@@ -246,24 +290,42 @@ function createApp({
       syncInFlight = (async () => {
         const files = await google.listFolder();
         const seen = new Set();
+        const removed = [];
         db.transaction(() => {
           for (const file of files) if (upsertMedia(file)) seen.add(file.id);
           for (const row of db.prepare(`SELECT id, drive_file_id FROM media`).all()) {
             if (seen.has(row.drive_file_id)) continue;
             bumpPlaylistVersions(db, playlistsUsingMedia(db, row.id));
+            removed.push(row.id);
             db.prepare(`DELETE FROM media WHERE id = ?`).run(row.id);
           }
         })();
+        for (const id of removed) transcoder.forget(id);
         lastSyncAt = Date.now();
         pruneCache();
+        await transcoder.idle();
       })().finally(() => (syncInFlight = null));
     }
     return syncInFlight;
   }
 
+  const mediaPublic = mediaColumns.split(',').map((name) => name.trim());
+
+  function presentMedia(row) {
+    if (!row) return null;
+    const full = db.prepare(`SELECT * FROM media WHERE id = ?`).get(row.id) || row;
+    const out = {};
+    for (const key of mediaPublic) out[key] = full[key];
+    out.playback_warning = playbackWarning(full, transcoder.list(full.id), {
+      transcodeEnabled: transcoder.requested(),
+      ffmpegAvailable: transcoder.ffmpegAvailable(),
+    });
+    return out;
+  }
+
   function libraryResponse(syncError) {
     const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
-    return { items, synced_at: lastSyncAt || null, sync_error: syncError };
+    return { items: items.map(presentMedia), synced_at: lastSyncAt || null, sync_error: syncError };
   }
 
   // Lists the library. Re-reads Drive first if it's been more than a minute,
@@ -333,7 +395,9 @@ function createApp({
       await google.deleteFile(file.id).catch(log);
       return res.status(400).json({ error: meter.errored ? 'Upload failed: ' + meter.errored.message : 'File is empty' });
     }
-    res.status(201).json(upsertMedia(file));
+    const row = upsertMedia(file);
+    await transcoder.idle();
+    res.status(201).json(presentMedia(row));
   });
 
   app.delete('/api/media/:id', requireContent, async (req, res) => {
@@ -351,6 +415,7 @@ function createApp({
       bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
       db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from every playlist
     })();
+    transcoder.forget(media.id);
     pruneCache();
     res.json({ ok: true });
   });
@@ -361,6 +426,16 @@ function createApp({
   app.get('/media/:id', auth.requireUserOrDevice(db), async (req, res) => {
     const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
+    // A playback copy, when the playlist asked for one. The original is still at /media/:id.
+    if (req.query.rendition !== undefined) {
+      const profile = String(req.query.rendition);
+      if (!PROFILE_IDS.includes(profile)) return res.status(404).json({ error: 'Unknown rendition' });
+      const rendition = transcoder.get(media.id, profile);
+      if (!rendition || rendition.status !== 'ready') return res.status(404).json({ error: 'That copy is not ready' });
+      return res.sendFile(transcoder.pathFor(media.id, profile), {
+        headers: { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' },
+      });
+    }
     const cache = cacheOn() ? cacheStore : null;
     if (cache && cache.has(media)) {
       return res.sendFile(cache.pathFor(media), { headers: { 'Content-Type': media.mime } });
@@ -378,11 +453,18 @@ function createApp({
     res.status(download.status);
     res.set({ 'Content-Type': media.mime, 'Accept-Ranges': 'bytes' });
     for (const [name, value] of Object.entries(download.headers)) if (value) res.set(name, value);
-    // Only a whole-file download can become the cached copy.
+    // Only a whole-file download can become the cached copy. Copy each chunk
+    // as it passes, instead of listening for "data" beside the pipeline —
+    // those two readers can drop bytes when the machine is busy.
     const recorder = cache && download.status === 200 ? cache.startRecording(media) : null;
-    if (recorder) download.stream.on('data', (chunk) => recorder.write(chunk));
+    const pass = new Transform({
+      transform(chunk, encoding, callback) {
+        if (recorder) recorder.write(chunk);
+        callback(null, chunk);
+      },
+    });
     try {
-      await pipeline(download.stream, res);
+      await pipeline(download.stream, pass, res);
       if (recorder) await recorder.finish();
     } catch (err) {
       // Usually the TV disconnected mid-download; it will resume later.
@@ -524,6 +606,8 @@ function createApp({
       current_filename: current ? current.filename : null,
       free_bytes: d.free_bytes,
       app_version: d.app_version,
+      playback_error: d.playback_error || null,
+      decoders: deviceCaps(d),
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
@@ -608,12 +692,18 @@ function createApp({
         : { available: false, enabled: false, files: 0, bytes: 0 },
       sign_in: { phone_app: Boolean(googleWebClientId), web_code: Boolean(google.deviceSignInAvailable) },
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media`).get(),
+      transcode: {
+        ffmpeg: transcoder.ffmpegAvailable(),
+        enabled: transcoder.requested(),
+        hevc_4k: transcoder.hevc4k(),
+        active: transcoder.enabled(),
+      },
     };
   }
 
   app.get('/api/settings', requireUsers, (req, res) => res.json(settingsView()));
 
-  app.patch('/api/settings', requireUsers, (req, res) => {
+  app.patch('/api/settings', requireUsers, async (req, res) => {
     const body = req.body || {};
     if (body.drive_folder_id !== undefined) {
       const id = String(body.drive_folder_id || '').trim();
@@ -626,6 +716,15 @@ function createApp({
       if (typeof body.cache_media !== 'boolean') return res.status(400).json({ error: 'cache_media must be true or false' });
       setSetting(db, 'cache_media', body.cache_media);
     }
+    if (body.transcode_videos !== undefined) {
+      if (typeof body.transcode_videos !== 'boolean') return res.status(400).json({ error: 'transcode_videos must be true or false' });
+      setSetting(db, 'transcode_videos', body.transcode_videos);
+    }
+    if (body.transcode_4k_hevc !== undefined) {
+      if (typeof body.transcode_4k_hevc !== 'boolean') return res.status(400).json({ error: 'transcode_4k_hevc must be true or false' });
+      setSetting(db, 'transcode_4k_hevc', body.transcode_4k_hevc);
+    }
+    if (body.transcode_videos === true || body.transcode_4k_hevc === true) await transcoder.resume();
     res.json(settingsView());
   });
 
@@ -652,13 +751,14 @@ function createApp({
   app.post('/api/player/register', (req, res) => {
     const token = auth.newToken();
     const appVersion = (req.body && req.body.app_version) || null;
+    const caps = normalizeDecoderCaps(req.body && req.body.decoders);
     const insert = db.prepare(
-      `INSERT INTO devices (token, pairing_code, app_version, created_at) VALUES (?, ?, ?, ?)`
+      `INSERT INTO devices (token, pairing_code, app_version, decoder_caps, created_at) VALUES (?, ?, ?, ?, ?)`
     );
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = randomPairingCode();
       try {
-        insert.run(token, code, appVersion, Date.now());
+        insert.run(token, code, appVersion, caps ? JSON.stringify(caps) : null, Date.now());
         return res.status(201).json({ token, pairing_code: code, qr_payload: `kiosk-pair:${code}` });
       } catch (err) {
         if (err.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err; // otherwise: code taken, try another
@@ -678,27 +778,55 @@ function createApp({
   });
 
   // What this TV should play, and how to turn the picture for its screen.
-  // "version" changes whenever the playlist, its files or this TV's settings change.
+  // "version" changes whenever the playlist, its files, the chosen copy, or this TV's settings change.
+  function deviceCaps(device) {
+    if (!device.decoder_caps) return null;
+    try {
+      const parsed = JSON.parse(device.decoder_caps);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Older apps never send decoder info: they get the 1080p copy, or the original
+  // if that copy does not exist yet. Newer apps get the copy that fits.
+  function fileForPlayer(item, device) {
+    const chosen = item.type === 'video' ? chooseRendition(transcoder.list(item.media_id), deviceCaps(device)) : null;
+    if (!chosen) {
+      return { url: `/media/${item.media_id}`, md5: item.md5, size: item.size, rendition: null };
+    }
+    return {
+      url: `/media/${item.media_id}?rendition=${chosen.profile}`,
+      md5: chosen.md5,
+      size: chosen.size,
+      rendition: chosen.profile,
+    };
+  }
+
   function playerPlaylist(device) {
     const playlist = device.playlist_id ? findPlaylist(device.playlist_id) : null;
     const now = Date.now();
     const items = playlist ? playlistItems(playlist.id).filter((item) =>
       (item.start_at == null || item.start_at <= now) && (item.end_at == null || now < item.end_at)
     ) : [];
+    const files = items.map((item) => fileForPlayer(item, device));
+    const tags = files.map((file, i) => (file.rendition ? `${items[i].media_id}:${file.rendition}` : `${items[i].media_id}:orig`)).join(',');
     return {
-      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${items.map((item) => item.media_id).join(',')}`,
+      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${tags}.${items.map((item) => item.media_id).join(',')}`,
       name: device.name,
       orientation: device.orientation,
       playlist_name: playlist ? playlist.name : null,
-      items: items.map((r) => ({
+      items: items.map((r, i) => ({
         id: r.media_id,
         type: r.type,
         filename: r.filename,
-        url: `/media/${r.media_id}`,
-        md5: r.md5,
-        size: r.size,
+        url: files[i].url,
+        md5: files[i].md5,
+        size: files[i].size,
         orientation: r.orientation,
         duration_seconds: r.type === 'image' ? r.image_seconds : null,
+        rendition: files[i].rendition,
       })),
     };
   }
@@ -709,19 +837,36 @@ function createApp({
 
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
     const body = req.body || {};
-    db.prepare(
-      `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ?,
-       download_done = ?, download_total = ? WHERE id = ?`
-    ).run(
+    const caps = normalizeDecoderCaps(body.decoders);
+    let playbackError;
+    if (Object.prototype.hasOwnProperty.call(body, 'playback_error')) {
+      const raw = body.playback_error;
+      playbackError = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 500) : null;
+    }
+    const sets = [
+      'last_seen = ?', 'current_media_id = ?', 'free_bytes = ?', 'app_version = ?',
+      'download_done = ?', 'download_total = ?',
+    ];
+    const params = [
       Date.now(),
       Number.isInteger(body.current_media_id) ? body.current_media_id : null,
       Number.isInteger(body.free_bytes) ? body.free_bytes : null,
       typeof body.app_version === 'string' ? body.app_version : req.device.app_version,
       Number.isInteger(body.download_done) ? body.download_done : null,
       Number.isInteger(body.download_total) ? body.download_total : null,
-      req.device.id
-    );
-    res.json({ ok: true, version: playerPlaylist(req.device).version });
+    ];
+    if (caps) {
+      sets.push('decoder_caps = ?');
+      params.push(JSON.stringify(caps));
+    }
+    if (playbackError !== undefined) {
+      sets.push('playback_error = ?');
+      params.push(playbackError);
+    }
+    params.push(req.device.id);
+    db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.device.id);
+    res.json({ ok: true, version: playerPlaylist(device).version });
   });
 
   // Anything that throws ends up here, so the apps always get JSON back.

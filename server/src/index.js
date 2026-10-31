@@ -9,6 +9,8 @@
 //   GOOGLE_SERVICE_ACCOUNT_FILE  path to the service account's JSON key
 //   DRIVE_FOLDER_ID              the Drive folder holding the signage content
 //   MEDIA_CACHE                  "on" to keep a local copy of each file for the TVs
+//   TRANSCODE                    "off" to skip playback copies (1080p H.264 and 720p)
+//   TRANSCODE_4K_HEVC            "on" to also make an optional 4K HEVC copy
 //   GOOGLE_DEVICE_CLIENT_ID      optional: "TVs and Limited Input devices" client, for
 //   GOOGLE_DEVICE_CLIENT_SECRET    signing in to the web page with a google.com/device code
 //   INGRESS_PORT                 optional: port for Home Assistant's sidebar page
@@ -36,6 +38,8 @@ function loadSettings() {
       folderId: o.drive_folder_id,
       serviceAccountFile: o.service_account_file ? path.resolve(configDir, o.service_account_file) : '',
       cache: o.cache_media !== false,
+      transcodeVideos: o.transcode_videos !== false,
+      transcode4kHevc: Boolean(o.transcode_4k_hevc),
       deviceClientId: o.google_device_client_id || '',
       deviceClientSecret: o.google_device_client_secret || '',
       ingressPort: Number(env.INGRESS_PORT) || 8099,
@@ -50,6 +54,8 @@ function loadSettings() {
     folderId: env.DRIVE_FOLDER_ID,
     serviceAccountFile: env.GOOGLE_SERVICE_ACCOUNT_FILE,
     cache: env.MEDIA_CACHE === 'on',
+    transcodeVideos: env.TRANSCODE !== 'off',
+    transcode4kHevc: env.TRANSCODE_4K_HEVC === 'on',
     deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',
     deviceClientSecret: env.GOOGLE_DEVICE_CLIENT_SECRET || '',
     ingressPort: Number(env.INGRESS_PORT) || null,
@@ -80,6 +86,11 @@ const app = createApp({
   googleWebClientId: settings.webClientId,
   mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
   cacheMedia: settings.cache,
+  transcode: {
+    enabled: settings.transcodeVideos,
+    hevc4k: settings.transcode4kHevc,
+    dir: path.join(settings.dataDir, 'renditions'),
+  },
   google: createGoogle({
     webClientId: settings.webClientId,
     deviceClientId: settings.deviceClientId,
@@ -91,7 +102,10 @@ const app = createApp({
 
 // "0.0.0.0" means: accept connections from other devices too, not just this computer.
 app.listen(settings.port, '0.0.0.0', () => {
-  console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'})`);
+  const copies = settings.transcodeVideos
+    ? `on${settings.transcode4kHevc ? ', with 4K HEVC' : ''}`
+    : 'off';
+  console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'}, playback copies ${copies})`);
 });
 
 // Home Assistant's sidebar page talks to the server on its own private port.
