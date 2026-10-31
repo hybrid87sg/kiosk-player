@@ -34,6 +34,18 @@ class PlaybackPolicyTest {
         assertEquals(60_000L, playbackRetryDelayMs(8))
     }
 
+    @Test fun roundsNearlyStandardFrameRates() {
+        assertEquals(23.976f, roundFrameRate(23.98f), 0.001f)
+        assertEquals(29.97f, roundFrameRate(29.9701f), 0.001f)
+        assertEquals(60f, roundFrameRate(59.99f), 0.001f)
+    }
+
+    @Test fun switchesRefreshRateOnlyWhenThePanelCanDoItSeamlessly() {
+        assertTrue(seamlessRefreshSwitch(60f, floatArrayOf(30f, 24f), 30f))
+        assertFalse(seamlessRefreshSwitch(60f, floatArrayOf(), 30f))
+        assertFalse(seamlessRefreshSwitch(60f, floatArrayOf(30f), 60f))
+    }
+
     @Test fun readsAndroidH264Levels() {
         assertEquals(41, avcLevelNumber(0x1000))
         assertEquals(31, avcLevelNumber(0x200))

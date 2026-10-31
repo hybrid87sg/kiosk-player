@@ -6,17 +6,37 @@ import kotlin.math.round
 /** One refresh rate the TV panel can switch to. */
 data class RefreshMode(val id: Int, val width: Int, val height: Int, val refreshRate: Float)
 
+/** Snap 23.98 to 23.976 and 59.94-ish values onto the rate panels actually advertise. */
+fun roundFrameRate(fps: Float): Float {
+    if (fps <= 0f) return fps
+    val common = floatArrayOf(23.976f, 24f, 25f, 29.97f, 30f, 50f, 59.94f, 60f)
+    val nearest = common.minBy { abs(it - fps) }
+    return if (abs(nearest - fps) < 0.05f) nearest else fps
+}
+
+/**
+ * A panel mode change blanks HDMI unless the target refresh is one the current
+ * mode can switch to seamlessly. Already being on that rate needs no change.
+ */
+fun seamlessRefreshSwitch(currentRefresh: Float, alternativeRefreshes: FloatArray, targetRefresh: Float): Boolean {
+    val target = roundFrameRate(targetRefresh)
+    if (target < 1f) return false
+    if (abs(currentRefresh - target) < 1f) return false
+    return alternativeRefreshes.any { abs(it - target) < 1f }
+}
+
 /**
  * Picks a panel mode whose refresh rate is the content frame rate, or a whole
  * multiple of it (30fps on a 60Hz panel). Returns null when nothing is close,
  * so the player leaves the panel alone.
  */
 fun chooseDisplayMode(modes: List<RefreshMode>, width: Int, height: Int, frameRate: Float): Int? {
-    if (frameRate < 1f || width <= 0 || height <= 0) return null
+    val fps = roundFrameRate(frameRate)
+    if (fps < 1f || width <= 0 || height <= 0) return null
     val sameSize = modes.filter { it.width == width && it.height == height }
     if (sameSize.isEmpty()) return null
     fun multipleError(rate: Float): Float {
-        val ratio = rate / frameRate
+        val ratio = rate / fps
         val nearest = round(ratio).toInt().coerceAtLeast(1)
         return abs(ratio - nearest)
     }

@@ -85,6 +85,17 @@ class ContentSyncTest {
         }
     }
 
+    @Test fun freesOldFilesBeforeCheckingThereIsRoom() = runTest {
+        val stale = java.io.File(tmp.root, "old-file.mp4")
+        stale.writeBytes(ByteArray(32))
+        val sync = ContentSync(OkHttpClient(), server.url("/").toString(), tmp.root) {
+            if (stale.exists()) 0L else Long.MAX_VALUE
+        }
+        sync.sync(PlayerPlaylist("1", items = listOf(item)))
+        assertTrue(sync.isReady(item))
+        assertFalse(stale.exists())
+    }
+
     @Test fun doesNotStartADownloadThatWouldFillTheDisk() = runTest {
         val sync = ContentSync(OkHttpClient(), server.url("/").toString(), tmp.root) { 1024 }
         try {

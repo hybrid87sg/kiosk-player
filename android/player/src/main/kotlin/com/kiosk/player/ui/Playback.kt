@@ -53,14 +53,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import coil.compose.AsyncImage
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.Mounting
@@ -68,6 +71,7 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.player.RefreshMode
 import com.kiosk.core.player.chooseDisplayMode
 import com.kiosk.core.player.playbackRetryDelayMs
+import com.kiosk.core.player.seamlessRefreshSwitch
 import com.kiosk.player.PlayItem
 import com.kiosk.player.PlayerUi
 import kotlinx.coroutines.Job
@@ -92,49 +96,95 @@ fun PlaybackScreen(
     val items = state.items
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-    // Real files share one player for the whole playlist. Demo slides are drawn
-    // one at a time because they are not files.
-    val continuous = items.isNotEmpty() && items.all { it.demoColor == null && it.file != null }
+    // Pictures stay on the image loader. Media3 1.5 draws an image only when
+    // something calls setImageOutput, and nothing here does, so an image in
+    // ExoPlayer is a black slide. Consecutive videos still share one player.
+    val segments = remember(items) { segmentPlaylist(items) }
 
     Box(Modifier.fillMaxSize().background(Color.Black).openSettingsOnOk(onOpenSettings, focus)) {
         MountedScreen(state.mounting) {
-            if (continuous) {
-                ContinuousPlaylist(items, state.mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy)
+            val onlyVideos = segments.singleOrNull() as? Segment.Videos
+            if (onlyVideos != null) {
+                ContinuousPlaylist(
+                    onlyVideos.items, state.mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy,
+                    repeat = true, onFinished = {},
+                )
             } else {
-                SteppedPlaylist(items, state.mounting, onNowPlaying)
+                MixedPlaylist(segments, state.mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy)
             }
             state.badge?.let { Badge(it, Modifier.align(Alignment.TopEnd)) }
         }
     }
 }
 
-/** Demo mode: coloured slides, one after another. */
-@Composable
-private fun SteppedPlaylist(items: List<PlayItem>, mounting: Mounting, onNowPlaying: (Long?) -> Unit) {
-    var position by remember(items) { mutableIntStateOf(0) }
-    var plays by remember(items) { mutableIntStateOf(0) }
-    val item = items[position % items.size]
-    val next: () -> Unit = {
-        position = (position + 1) % items.size
-        plays++
+private sealed interface Segment {
+    data class Videos(val items: List<PlayItem>) : Segment
+    data class Picture(val item: PlayItem) : Segment
+}
+
+private fun segmentPlaylist(items: List<PlayItem>): List<Segment> {
+    val out = mutableListOf<Segment>()
+    val run = mutableListOf<PlayItem>()
+    fun flush() {
+        if (run.isNotEmpty()) {
+            out += Segment.Videos(run.toList())
+            run.clear()
+        }
     }
-    LaunchedEffect(item.id, plays) { onNowPlaying(item.id) }
-    when {
-        item.demoColor != null -> {
-            LaunchedEffect(plays) { delay(item.seconds * 1000L); next() }
-            Fitted(item.shape, mounting) { DemoSlide(item) }
+    for (item in items) {
+        if (item.demoColor == null && item.type == MediaType.VIDEO && item.file != null) run += item
+        else {
+            flush()
+            out += Segment.Picture(item)
         }
-        item.type == MediaType.IMAGE -> {
-            LaunchedEffect(plays) { delay(item.seconds * 1000L); next() }
-            AsyncImage(
-                model = item.file,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-                onError = { next() },
-            )
+    }
+    flush()
+    return out
+}
+
+/** Pictures and demo slides between video runs. A video run plays gaplessly, once. */
+@Composable
+private fun MixedPlaylist(
+    segments: List<Segment>,
+    mounting: Mounting,
+    onNowPlaying: (Long?) -> Unit,
+    onPlaybackProblem: (Long?, String) -> Unit,
+    onPlaybackHealthy: () -> Unit,
+) {
+    var index by remember(segments) { mutableIntStateOf(0) }
+    var plays by remember(segments) { mutableIntStateOf(0) }
+    if (segments.isEmpty()) return
+    val segment = segments[index % segments.size]
+    val stepped = remember(index, plays) { booleanArrayOf(false) }
+    val advance = {
+        if (!stepped[0]) {
+            stepped[0] = true
+            index = (index + 1) % segments.size
+            plays++
         }
-        else -> SingleVideo(item, plays, onEnded = next)
+    }
+    when (segment) {
+        is Segment.Videos -> ContinuousPlaylist(
+            segment.items, mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy,
+            repeat = false, onFinished = advance,
+        )
+        is Segment.Picture -> {
+            val item = segment.item
+            LaunchedEffect(item.id, plays) { onNowPlaying(item.id) }
+            if (item.demoColor != null) {
+                LaunchedEffect(plays) { delay(item.seconds * 1000L); advance() }
+                Fitted(item.shape, mounting) { DemoSlide(item) }
+            } else {
+                LaunchedEffect(plays) { delay(item.seconds.coerceAtLeast(1) * 1000L); advance() }
+                AsyncImage(
+                    model = item.file,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                    onError = { advance() },
+                )
+            }
+        }
     }
 }
 
@@ -149,6 +199,8 @@ private fun ContinuousPlaylist(
     onNowPlaying: (Long?) -> Unit,
     onPlaybackProblem: (Long?, String) -> Unit,
     onPlaybackHealthy: () -> Unit,
+    repeat: Boolean,
+    onFinished: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -156,6 +208,8 @@ private fun ContinuousPlaylist(
     val reportNow by rememberUpdatedState(onNowPlaying)
     val reportProblem by rememberUpdatedState(onPlaybackProblem)
     val reportHealthy by rememberUpdatedState(onPlaybackHealthy)
+    val reportFinished by rememberUpdatedState(onFinished)
+    val finished = remember { booleanArrayOf(false) }
     val failures = remember { intArrayOf(0) }
     val released = remember { booleanArrayOf(false) }
     val retry = remember { arrayOfNulls<Job>(1) }
@@ -172,7 +226,7 @@ private fun ContinuousPlaylist(
             .setLoadControl(loadControl)
             .build()
             .apply {
-                repeatMode = Player.REPEAT_MODE_ALL
+                repeatMode = if (repeat) Player.REPEAT_MODE_ALL else Player.REPEAT_MODE_OFF
                 videoChangeFrameRateStrategy = C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
                 playWhenReady = true
             }
@@ -189,8 +243,10 @@ private fun ContinuousPlaylist(
                 failures[0] = 0
                 problem = null
                 reportHealthy()
-                val fps = player.videoFormat?.frameRate ?: return
-                if (fps > 1f) matchDisplayFrameRate(context, fps)
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) finishRun()
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -213,7 +269,19 @@ private fun ContinuousPlaylist(
                 retry[0] = scope.launch {
                     delay(wait)
                     if (released[0] || player.mediaItemCount <= 0) return@launch
-                    val next = (player.currentMediaItemIndex + 1) % player.mediaItemCount
+                    val next = player.currentMediaItemIndex + 1
+                    if (next >= player.mediaItemCount) {
+                        if (repeat) {
+                            runCatching {
+                                player.seekTo(0, 0L)
+                                player.prepare()
+                                player.playWhenReady = true
+                            }.onFailure { Log.e(TAG, "Could not move on after a playback error", it) }
+                        } else {
+                            finishRun()
+                        }
+                        return@launch
+                    }
                     runCatching {
                         player.seekTo(next, 0L)
                         player.prepare()
@@ -221,13 +289,33 @@ private fun ContinuousPlaylist(
                     }.onFailure { Log.e(TAG, "Could not move on after a playback error", it) }
                 }
             }
+
+            fun finishRun() {
+                if (repeat || finished[0]) return
+                finished[0] = true
+                reportFinished()
+            }
+        }
+        val analytics = object : AnalyticsListener {
+            override fun onVideoInputFormatChanged(
+                eventTime: AnalyticsListener.EventTime,
+                format: Format,
+                decoderReuseEvaluation: DecoderReuseEvaluation?,
+            ) {
+                // Only at the start of an item. A switch after frames are showing blanks HDMI.
+                if (eventTime.eventPlaybackPositionMs > 400) return
+                if (format.frameRate > 1f) matchDisplayFrameRate(context, format.frameRate)
+            }
         }
         player.addListener(listener)
+        player.addAnalyticsListener(analytics)
         onDispose {
             released[0] = true
             retry[0]?.cancel()
             player.removeListener(listener)
+            player.removeAnalyticsListener(analytics)
             player.clearVideoSurface()
+            clearDisplayMode(context)
             player.release()
         }
     }
@@ -287,6 +375,12 @@ internal fun matchDisplayFrameRate(context: Context, frameRate: Float) {
         RefreshMode(it.modeId, it.physicalWidth, it.physicalHeight, it.refreshRate)
     }
     val chosen = chooseDisplayMode(modes, current.physicalWidth, current.physicalHeight, frameRate) ?: return
+    if (chosen == current.modeId) return
+    val chosenMode = display.supportedModes.firstOrNull { it.modeId == chosen } ?: return
+    // preferredDisplayModeId blanks HDMI. Only do it when this panel can change
+    // refresh rate without a mode switch. Otherwise ExoPlayer's seamless-only
+    // surface frame rate is left to decide.
+    if (!seamlessRefreshSwitch(current.refreshRate, current.alternativeRefreshRates, chosenMode.refreshRate)) return
     runCatching {
         val attrs = activity.window.attributes
         if (attrs.preferredDisplayModeId == chosen) return
@@ -294,6 +388,16 @@ internal fun matchDisplayFrameRate(context: Context, frameRate: Float) {
         activity.window.attributes = attrs
         Log.i(TAG, "Matched the display to ${frameRate}fps (mode $chosen)")
     }.onFailure { Log.w(TAG, "Couldn't match the display frame rate", it) }
+}
+
+internal fun clearDisplayMode(context: Context) {
+    val activity = context.findActivity() ?: return
+    runCatching {
+        val attrs = activity.window.attributes
+        if (attrs.preferredDisplayModeId == 0) return
+        attrs.preferredDisplayModeId = 0
+        activity.window.attributes = attrs
+    }.onFailure { Log.w(TAG, "Couldn't restore the display mode", it) }
 }
 
 private fun Context.findActivity(): Activity? {
@@ -310,18 +414,8 @@ private fun PlayItem.toMediaItem(): MediaItem {
     return MediaItem.Builder()
         .setUri(android.net.Uri.fromFile(file))
         .setMediaId(id.toString())
-        .setMimeType(mimeType())
-        .apply {
-            if (type == MediaType.IMAGE) setImageDurationMs(seconds.coerceAtLeast(1) * 1000L)
-        }
+        .setMimeType(MimeTypes.VIDEO_MP4)
         .build()
-}
-
-private fun PlayItem.mimeType(): String = when (file?.extension?.lowercase()) {
-    "png" -> MimeTypes.IMAGE_PNG
-    "webp" -> MimeTypes.IMAGE_WEBP
-    "jpg", "jpeg" -> MimeTypes.IMAGE_JPEG
-    else -> MimeTypes.VIDEO_MP4
 }
 
 /**
@@ -374,56 +468,6 @@ private fun DemoSlide(item: PlayItem) {
         Text(
             "Demo ${if (item.type == MediaType.VIDEO) "video" else "picture"} · ${item.shape?.label ?: ""} · ${item.seconds} s",
             fontSize = 24.sp, color = Color.White.copy(alpha = 0.9f),
-        )
-    }
-}
-
-/** One file at a time. Used only when the playlist is not a list of real files. */
-@Composable
-private fun SingleVideo(item: PlayItem, plays: Int, onEnded: () -> Unit) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val currentOnEnded by rememberUpdatedState(onEnded)
-    var aspect by remember { mutableFloatStateOf(16f / 9f) }
-    val player = remember { ExoPlayer.Builder(context).build() }
-
-    DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED) currentOnEnded()
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "Playback failed for ${item.name}: ${error.errorCodeName}: ${error.message}", error)
-                scope.launch {
-                    delay(playbackRetryDelayMs(1))
-                    currentOnEnded()
-                }
-            }
-            override fun onVideoSizeChanged(videoSize: VideoSize) {
-                if (videoSize.width > 0 && videoSize.height > 0) {
-                    aspect = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
-                }
-            }
-        }
-        player.addListener(listener)
-        onDispose {
-            player.removeListener(listener)
-            player.release()
-        }
-    }
-
-    LaunchedEffect(item.id, plays) {
-        val file = item.file
-        if (file == null) { currentOnEnded(); return@LaunchedEffect }
-        player.setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
-        player.prepare()
-        player.playWhenReady = true
-    }
-
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        AndroidView(
-            factory = { ctx -> TextureView(ctx).also { player.setVideoTextureView(it) } },
-            modifier = Modifier.aspectRatio(aspect),
         )
     }
 }

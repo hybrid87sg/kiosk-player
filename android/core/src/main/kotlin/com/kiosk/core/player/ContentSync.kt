@@ -40,6 +40,9 @@ class ContentSync(
      */
     suspend fun sync(playlist: PlayerPlaylist, onProgress: (Int, Int) -> Unit = { _, _ -> }) {
         val items = playlist.items.distinctBy { it.id to it.md5 }
+        // Drop files the playlist no longer uses before downloading, so a nearly
+        // full box can make room instead of failing and keeping the old files.
+        removeUnused(items)
         var done = items.count { isReady(it) }
         onProgress(done, items.size)
         for (item in items) {
@@ -48,7 +51,6 @@ class ContentSync(
             done++
             onProgress(done, items.size)
         }
-        removeUnused(items)
     }
 
     /** Deletes finished and partial files that aren't in [keep]. */
