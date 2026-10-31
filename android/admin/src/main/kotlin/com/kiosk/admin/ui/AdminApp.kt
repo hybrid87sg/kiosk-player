@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
@@ -49,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kiosk.admin.AdminSession
 import com.kiosk.admin.KioskAdminApplication
@@ -156,8 +158,8 @@ private fun AccountSheet(session: AdminSession, onSwitchRole: (Role) -> Unit, on
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Avatar(session.email, 48)
-            Column {
-                Text(session.email, style = MaterialTheme.typography.titleMedium)
+            Column(Modifier.weight(1f)) {
+                Text(session.email, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     session.role.label + if (session.isDemo) " · Demo mode" else "",
                     style = MaterialTheme.typography.bodyMedium,
@@ -201,8 +203,8 @@ fun Avatar(email: String, sizeDp: Int, highlighted: Boolean = true) {
 fun AccountButton(ctx: ScreenContext) {
     AssistChip(
         onClick = ctx.openAccount,
-        label = { Text(ctx.session.role.label + if (ctx.session.isDemo) " · Demo" else "") },
+        label = { Text(ctx.session.role.label + if (ctx.session.isDemo) " · Demo" else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
         leadingIcon = { Avatar(ctx.session.email, 24) },
-        modifier = Modifier.padding(end = 8.dp),
+        modifier = Modifier.padding(end = 8.dp).widthIn(max = 168.dp),
     )
 }
