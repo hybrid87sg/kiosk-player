@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -130,7 +132,7 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else {
             Column(
-                Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 32.dp),
+                Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
@@ -367,7 +369,7 @@ private fun AddFromLibrarySheet(
         .filter { it.id !in inPlaylist }
         .sortedBy { if (it.orientation == shape || it.orientation == null) 0 else 1 }
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp).verticalScroll(rememberScrollState()),
+        Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text("Add to $playlistName", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
