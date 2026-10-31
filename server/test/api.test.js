@@ -16,6 +16,16 @@ const { createFakeGoogle } = require('./fake-google');
 
 const BOSS = 'boss@example.com';
 
+// A downloaded file's local copy is saved just after its last byte goes out,
+// so a test that checks for the copy waits a moment for it.
+async function untilCopied(dir, count = 1) {
+  for (let i = 0; i < 200; i++) {
+    if (fs.readdirSync(dir).filter((name) => !name.includes('.part-')).length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`No local copy appeared in ${dir}`);
+}
+
 async function startServer(t, extra = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-test-'));
   const google = createFakeGoogle();
@@ -379,6 +389,7 @@ test('media cache: the first download comes from Drive, later ones from the loca
   const first = await call('GET', `/media/${video.id}`, { token: tv.token });
   assert.ok(Buffer.from(await first.arrayBuffer()).equals(bytes));
   assert.equal(google.downloadCount(), 1);
+  await untilCopied(cacheDir);
 
   // Second TV download, and a resumed (Range) one: both from the local copy.
   const second = await call('GET', `/media/${video.id}`, { token: tv.token });
@@ -477,6 +488,7 @@ test('settings page: Drive folder, cache switch, connection test, download progr
   const bytes = crypto.randomBytes(5000);
   const video = await (await upload(boss, 'v.mp4', bytes, 'video/mp4')).json();
   await (await call('GET', `/media/${video.id}`, { token: boss })).arrayBuffer();
+  await untilCopied(cacheDir);
   settings = await (await call('GET', '/api/settings', { token: boss })).json();
   assert.equal(settings.cache.files, 1);
   await call('PATCH', '/api/settings', { token: boss, json: { cache_media: false } });
@@ -585,6 +597,7 @@ test('another site: TVs reach the main server through a relay that keeps copies 
   assert.equal(first.status, 200);
   assert.deepEqual(Buffer.from(await first.arrayBuffer()), data);
   await relayApp.locals.waitForCopies();
+  await untilCopied(path.join(relayDir, 'media-cache'));
   const again = await viaRelay(list.items[0].url, { token: tv.token });
   assert.deepEqual(Buffer.from(await again.arrayBuffer()), data);
   const part = await viaRelay(list.items[0].url, { token: tv.token, headers: { range: 'bytes=4000-' } });
