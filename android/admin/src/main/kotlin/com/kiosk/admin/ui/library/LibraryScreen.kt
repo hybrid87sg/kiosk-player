@@ -221,6 +221,9 @@ private fun MediaRow(m: Media, onDelete: () -> Unit) {
                 if (m.orientation == null) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                 Text(mediaMeta(m), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            m.playbackWarning?.let { warning ->
+                Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
         }
         IconButton(onClick = onDelete) {
             Icon(Icons.Outlined.Delete, contentDescription = "Delete ${m.filename}", tint = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -16,6 +16,14 @@ class DemoAdminRepositoryTest {
     private var clock = 1_000_000L
     private val repo = DemoAdminRepository(now = { clock }, latencyMs = 0)
 
+    @Test fun oversizedVideosWarnThatSomeTvsMayNotPlayThem() = runTest {
+        val items = repo.library().items.associateBy { it.filename }
+        assertTrue(items.getValue("Lobby promo.mp4").playbackWarning!!.contains("3840×2160"))
+        assertTrue(items.getValue("Welcome vertical.mp4").playbackWarning!!.contains("2160×3840"))
+        assertNull(items.getValue("Opening hours.png").playbackWarning)
+        assertNull(items.getValue("Summer menu.jpg").playbackWarning)
+    }
+
     @Test fun libraryIsSortedIntoShapes() = runTest {
         val shapes = repo.library().items.associate { it.filename to it.orientation }
         assertEquals(ScreenShape.LANDSCAPE, shapes["Lobby promo.mp4"])

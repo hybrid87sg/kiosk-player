@@ -16,6 +16,7 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
 import com.kiosk.core.network.ApiException
+import com.kiosk.core.player.heavyVideoWarning
 import kotlinx.coroutines.delay
 
 /**
@@ -63,7 +64,10 @@ class DemoAdminRepository(
 
     private fun demoFile(id: Long, name: String, type: MediaType, size: Long, w: Int, h: Int, knownAt: Long = 0) =
         DemoMedia(
-            Media(id, name, type, if (type == MediaType.VIDEO) "video/mp4" else "image/jpeg", size, "demo$id", w, h, shapeOf(w, h), start - id * 1000),
+            Media(
+                id, name, type, if (type == MediaType.VIDEO) "video/mp4" else "image/jpeg", size, "demo$id", w, h,
+                shapeOf(w, h), start - id * 1000, heavyVideoWarning(type == MediaType.VIDEO, w, h),
+            ),
             knownAt,
         )
 
@@ -104,7 +108,11 @@ class DemoAdminRepository(
         }
         for (step in 1..20) { delay(120); onProgress(step / 20f) }
         val item = DemoMedia(
-            Media(nextId++, file.name, type, file.mime, file.size, "demo-upload", file.width, file.height, shapeOf(file.width, file.height) ?: ScreenShape.LANDSCAPE, now()),
+            Media(
+                nextId++, file.name, type, file.mime, file.size, "demo-upload", file.width, file.height,
+                shapeOf(file.width, file.height) ?: ScreenShape.LANDSCAPE, now(),
+                heavyVideoWarning(type == MediaType.VIDEO, file.width, file.height),
+            ),
             shapeKnownAt = now() + 3000,
         )
         media += item

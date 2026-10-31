@@ -245,6 +245,18 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
             d.freeBytes?.let {
                 Text("Storage: ${formatBytes(it)} free", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            d.decoders?.takeIf { it.displayWidth > 0 }?.let { caps ->
+                val level = caps.h264Level?.let { " · H.264 level ${it / 10}.${it % 10}" }.orEmpty()
+                val hevc = if (caps.hevc) " · HEVC" else ""
+                Text(
+                    "Screen ${caps.displayWidth}×${caps.displayHeight}$level$hevc",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            d.playbackError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Row {
                 TextButton(onClick = onEdit) { Text("Edit") }
                 TextButton(onClick = onRemove) { Text("Remove", color = MaterialTheme.colorScheme.error) }
