@@ -14,6 +14,12 @@ configuration:
   cache_media:
     name: Keep a local copy of each file
     description: Each file is downloaded from Google Drive once, then sent to every TV from this machine. Uses disk space here.
+  transcode_videos:
+    name: Make playback copies
+    description: After a video arrives, make a 1080p H.264 copy and a 720p fallback so weak TV boxes can play it smoothly. The original in Google Drive is left as it is. Turn this off on a slow machine such as a Raspberry Pi if the add-on becomes unresponsive.
+  transcode_4k_hevc:
+    name: Also make a 4K HEVC copy
+    description: Optional extra copy for a TV box that can decode HEVC and has a 4K screen. This is the slowest copy to make. Leave it off on a Raspberry Pi.
   google_device_client_id:
     name: Web sign-in client ID (optional)
     description: The "TVs and Limited Input devices" OAuth client ID. Lets people sign in to the web page at http://<address>:3000 with a code from google.com/device.

@@ -29,6 +29,8 @@ options:
   drive_folder_id: ""
   service_account_file: service-account.json
   cache_media: true
+  transcode_videos: true
+  transcode_4k_hevc: false
   google_device_client_id: ""
   google_device_client_secret: ""
 schema:
@@ -37,5 +39,7 @@ schema:
   drive_folder_id: str
   service_account_file: str
   cache_media: bool
+  transcode_videos: bool
+  transcode_4k_hevc: bool
   google_device_client_id: str?
   google_device_client_secret: password?

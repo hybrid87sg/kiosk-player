@@ -334,6 +334,11 @@ function screenCard(d, playlists, devices, redraw) {
         d.online ? 'Online' : `Offline · ${timeAgo(d.last_seen)}`)),
     el('div', { class: 'row meta' }, shapeIcon(mount.shape), `${mount.label} · ${d.playlist_name || 'No playlist'}`),
     el('div', {}, d.current_filename ? `Now playing: ${d.current_filename}` : 'Waiting for content'),
+    d.playback_error ? el('div', { class: 'error' }, d.playback_error) : null,
+    d.decoders && d.decoders.display_width ? el('div', { class: 'meta' },
+      `Screen ${d.decoders.display_width}×${d.decoders.display_height}`
+      + (d.decoders.h264_level ? ` · H.264 level ${(d.decoders.h264_level / 10).toFixed(1)}` : '')
+      + (d.decoders.hevc ? ' · HEVC' : '')) : null,
     d.download ? el('div', {},
       el('div', { class: 'warn' }, `Downloading ${Math.min(d.download.done + 1, d.download.total)} of ${d.download.total} new files`),
       el('div', { class: 'progress', style: 'margin-top:6px' }, el('div', { style: `width:${Math.round((d.download.done / d.download.total) * 100)}%` }))) : null,
@@ -471,7 +476,10 @@ async function pageLibrary(page) {
         el('div', { class: 'section-label' }, `${title} · ${list.length}`),
         el('div', { class: 'list' }, list.map((m) => el('div', { class: 'list-row' },
           thumb(m.type, m.orientation),
-          el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta' }, mediaMeta(m))),
+          el('div', { class: 'grow' },
+            el('div', { class: 'name' }, m.filename),
+            el('div', { class: 'meta' }, mediaMeta(m)),
+            m.playback_warning ? el('div', { class: 'error' }, m.playback_warning) : null),
           el('button', {
             class: 'btn icon', 'aria-label': `Delete ${m.filename}`, title: 'Delete',
             onclick: () => confirmDialog(`Delete ${m.filename}?`, 'It goes to the Google Drive trash and leaves every playlist. Screens stop showing it after their next update.', 'Delete',
@@ -844,6 +852,31 @@ async function pageSettings(page) {
               }, 'Clear')),
           ]
           : el('p', { class: 'meta' }, 'Not available on this server.')),
+
+      el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
+        el('h2', {}, 'Playback copies'),
+        el('p', { class: 'meta', style: 'margin:0' }, 'Heavy 4K videos are hard for some TV boxes. The server can make a 1080p H.264 copy (and a smaller 720p one) after each video arrives. The original in Google Drive is left as it is. Turn this off on a slow machine, such as a Raspberry Pi, if the add-on becomes unresponsive.'),
+        el('label', { class: 'row', style: 'font-weight:600' },
+          el('input', {
+            type: 'checkbox', checked: s.transcode.enabled, style: 'width:20px;height:20px;accent-color:var(--primary)',
+            onchange: (e) => attempt(async () => {
+              await api('PATCH', 'api/settings', { transcode_videos: e.target.checked });
+              toast(e.target.checked ? 'Playback copies on' : 'Playback copies off');
+              draw();
+            }),
+          }),
+          'Make a 1080p and a 720p copy of each video'),
+        el('label', { class: 'row', style: 'font-weight:600' },
+          el('input', {
+            type: 'checkbox', checked: s.transcode.hevc_4k, disabled: !s.transcode.enabled, style: 'width:20px;height:20px;accent-color:var(--primary)',
+            onchange: (e) => attempt(async () => {
+              await api('PATCH', 'api/settings', { transcode_4k_hevc: e.target.checked });
+              toast(e.target.checked ? '4K HEVC copies on' : '4K HEVC copies off');
+              draw();
+            }),
+          }),
+          'Also make a 4K HEVC copy for boxes that can play it'),
+        s.transcode.ffmpeg ? null : el('p', { class: 'error', style: 'margin:0' }, 'ffmpeg is not installed on this server, so copies cannot be made.')),
 
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px;margin-top:16px' },
         el('h2', {}, 'Signing in'),

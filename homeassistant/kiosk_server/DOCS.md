@@ -53,6 +53,27 @@ Your phone needs a way into your home network. The simplest is the **Tailscale**
 add-on plus the Tailscale app on your phone. Then use the Home Assistant
 machine's Tailscale address in Kiosk Admin.
 
+## Playback copies
+
+Videos are often 4K. Weak Android TV boxes play 1080p H.264 smoothly and struggle
+with anything heavier. With **Make playback copies** on (the default), the
+add-on uses ffmpeg to make:
+
+- a **1080p H.264** copy (High profile, level 4.1, constant frame rate), which
+  is what most boxes download
+- a **720p** copy, for a box that reports it cannot decode 1080p
+- optionally a **4K HEVC** copy (8-bit), only for a box with a 4K screen that
+  says it can decode HEVC
+
+The original file in Google Drive is not changed. Kiosk Player tells the server
+what it can decode, and downloads the copy that fits. An older player app gets
+the 1080p copy, or the original until that copy is ready.
+
+Making copies uses a lot of processor time. On a Raspberry Pi, turn **Make
+playback copies** off in the add-on's Configuration tab (or on the web Settings
+page) if Home Assistant becomes unresponsive. Leave **Also make a 4K HEVC copy**
+off unless this machine is a faster computer.
+
 ## Keep a local copy of each file
 
 With **Keep a local copy of each file** on, each file is downloaded from Google
