@@ -85,17 +85,27 @@ function audioSummary(audio) {
   };
 }
 
-// Snap to a common rate at or under the cap, so 23.976 becomes 24 and 60 becomes 30.
-function targetFps(fps, maxFps) {
-  const raw = !fps || fps <= 0 ? maxFps : Math.min(fps, maxFps);
-  // Keep film and NTSC rates exact. Snapping 23.976 to 24 makes the picture judder.
+function snapFps(raw) {
   for (const ntsc of [23.976, 29.97, 59.94]) {
-    if (Math.abs(raw - ntsc) < 0.02 && ntsc <= maxFps + 0.01) return ntsc;
+    if (Math.abs(raw - ntsc) < 0.02) return ntsc;
   }
   for (const common of [24, 25, 30, 50, 60]) {
     if (Math.abs(raw - common) < 0.05) return common;
   }
   return Math.round(raw * 1000) / 1000;
+}
+
+// Keep film and NTSC rates. When the source is faster than the profile allows,
+// halve it (50 -> 25, 59.94 -> 29.97) instead of clamping to 30.
+function targetFps(fps, maxFps) {
+  let raw = !fps || fps <= 0 ? maxFps : fps;
+  let guard = 0;
+  while (raw > maxFps + 0.05 && guard < 6) {
+    raw /= 2;
+    guard += 1;
+  }
+  const snapped = snapFps(raw);
+  return snapped <= maxFps + 0.05 ? snapped : maxFps;
 }
 
 // ffmpeg's fps filter wants a fraction for the repeating NTSC rates.
@@ -179,7 +189,7 @@ function scaleFilter(profileId) {
 
 function ffmpegArgs(job, input, output, options = {}) {
   const threads = Math.max(1, Number(options.threads) || 1);
-  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', input];
+  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-protocol_whitelist', 'file,crypto,data', '-f', 'mov', '-i', input];
   const audioNone = Boolean(job.audio && job.audio.none);
   const audioCopy = Boolean(job.audio && job.audio.copy);
   if (job.video.copy && (audioCopy || audioNone)) {
@@ -263,14 +273,18 @@ function chooseRendition(renditions, caps, sourceMd5) {
   const displayLong = Math.max(caps.display_width || 0, caps.display_height || 0);
   const displayShort = Math.min(caps.display_width || 0, caps.display_height || 0);
   const hevc = ready.get('hevc_2160');
-  if (hevc && hevcCanPlay(caps, hevc) && (displayLong === 0 || displayLong >= 3000)) candidates.push(hevc);
+  // A missing display size is not a 4K screen. Don't send HEVC until we know the panel is 4K.
+  if (hevc && hevcCanPlay(caps, hevc) && displayLong >= 3000) candidates.push(hevc);
   for (const id of ['h264_1080', 'h264_720']) {
     const row = ready.get(id);
     if (row && h264CanPlay(caps, row)) candidates.push(row);
   }
   if (!candidates.length) {
-    const any = [...ready.values()];
-    return any.length ? byPixels(any, 1) : null;
+    // Fall back only to a copy this box can decode. HEVC is not a safe guess.
+    const h264 = ['h264_720', 'h264_1080'].map((id) => ready.get(id)).filter(Boolean);
+    if (h264.length) return byPixels(h264, 1);
+    if (caps.hevc && hevc) return hevc;
+    return null;
   }
   if (displayLong > 0 && displayShort > 0) {
     const fitting = candidates.filter((r) => fitsBox(displayLong, displayShort, r.width, r.height));

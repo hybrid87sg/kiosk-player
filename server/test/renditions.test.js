@@ -83,6 +83,16 @@ test('a file that is already 1080p H.264 is remuxed, and a small file is not ups
   assert.deepEqual(plannedSize({ width: 3840, height: 2160 }, 'h264_720'), { width: 1280, height: 720 });
 });
 
+test('frame rates above the cap are halved instead of clamped to 30', () => {
+  const over = (fps) => planRenditions({
+    video: { codec: 'h264', profile: 'High', level: 51, width: 1920, height: 1080, pixFmt: 'yuv420p', fps, variableFrameRate: false },
+    audio: null,
+  })[0].fps;
+  assert.equal(over(50), 25);
+  assert.equal(over(59.94), 29.97);
+  assert.equal(over(60), 30);
+});
+
 test('a 720p source only needs the baseline copy', () => {
   const probe = {
     video: { codec: 'h264', profile: 'High', level: 31, width: 1280, height: 720, pixFmt: 'yuv420p', fps: 30, variableFrameRate: false },
@@ -117,6 +127,11 @@ test('the best copy is the largest one the screen and the decoder can both take'
   assert.equal(chooseRendition(renditions, only720).profile, 'h264_720');
   // Only the 1080p copy exists. Sending it is safer than sending the 4K original.
   assert.equal(chooseRendition([ready('h264_1080', 1920, 1080)], only720).profile, 'h264_1080');
+  assert.equal(chooseRendition([ready('hevc_2160', 3840, 2160)], only720), null);
+  const fullHdNoHevc = { display_width: 1920, display_height: 1080, h264_level: 41, h264_max_long: 1920, h264_max_short: 1088, hevc: false };
+  assert.equal(chooseRendition([ready('hevc_2160', 3840, 2160)], fullHdNoHevc), null);
+  const unknownDisplay = { display_width: 0, display_height: 0, h264_level: 51, hevc: true, hevc_max_long: 3840, hevc_max_short: 2160 };
+  assert.equal(chooseRendition([ready('hevc_2160', 3840, 2160), ready('h264_1080', 1920, 1080)], unknownDisplay).profile, 'h264_1080');
   const stale = [ready('h264_1080', 1920, 1080, { source_md5: 'old-file' })];
   assert.equal(chooseRendition(stale, null, 'new-file'), null);
   assert.equal(chooseRendition(stale, fullHd, 'new-file'), null);

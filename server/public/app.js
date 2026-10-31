@@ -337,7 +337,7 @@ function screenCard(d, playlists, devices, redraw) {
     d.playback_error ? el('div', { class: 'error' }, d.playback_error) : null,
     d.decoders && d.decoders.display_width ? el('div', { class: 'meta' },
       `Screen ${d.decoders.display_width}×${d.decoders.display_height}`
-      + (d.decoders.h264_level ? ` · H.264 level ${(d.decoders.h264_level / 10).toFixed(1)}` : '')
+      + (d.decoders.h264_level ? ` · H.264 level ${d.decoders.h264_level === 9 ? '1b' : (d.decoders.h264_level / 10).toFixed(1)}` : '')
       + (d.decoders.hevc ? ' · HEVC' : '')) : null,
     d.download ? el('div', {},
       el('div', { class: 'warn' }, `Downloading ${Math.min(d.download.done + 1, d.download.total)} of ${d.download.total} new files`),

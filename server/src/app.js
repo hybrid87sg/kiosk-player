@@ -75,22 +75,45 @@ function createApp({
   const renditionDir = transcodeOptions.dir || path.join(dataDir, 'renditions');
 
   // A copy of the original for ffmpeg to read. The Drive file and the cache file are not written.
+  function freeBytes(dir) {
+    try {
+      const stats = fs.statfsSync(dir);
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  }
+
   async function fetchOriginal(media) {
     const cache = cacheOn() ? cacheStore : null;
     if (cache && cache.has(media)) return { path: cache.pathFor(media), temporary: false };
     fs.mkdirSync(renditionDir, { recursive: true });
+    if (freeBytes(renditionDir) < media.size + 64 * 1024 * 1024) {
+      throw new Error('Not enough free space to make a playback copy');
+    }
     const dest = path.join(renditionDir, `.src-${media.id}-${media.md5}${path.extname(media.filename).toLowerCase() || '.bin'}`);
     const download = await google.downloadStream(media.drive_file_id);
     const hash = crypto.createHash('md5');
-    await pipeline(download.stream, new Transform({
-      transform(chunk, encoding, callback) {
-        hash.update(chunk);
-        callback(null, chunk);
-      },
-    }), fs.createWriteStream(dest));
+    const timer = setTimeout(() => download.stream.destroy(new Error('timed out reading the original')), 10 * 60 * 1000);
+    try {
+      await pipeline(download.stream, new Transform({
+        transform(chunk, encoding, callback) {
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+      }), fs.createWriteStream(dest));
+    } finally {
+      clearTimeout(timer);
+    }
     if (hash.digest('hex') !== media.md5) {
       fs.rmSync(dest, { force: true });
       throw new Error('Downloaded file did not match its fingerprint');
+    }
+    // Keep the download in the local cache so the TVs don't fetch it from Drive again.
+    if (cache) {
+      const cached = cache.pathFor(media);
+      fs.renameSync(dest, cached);
+      return { path: cached, temporary: false };
     }
     return { path: dest, temporary: true };
   }
@@ -330,9 +353,36 @@ function createApp({
     return out;
   }
 
+  function presentMany(rows) {
+    if (!rows.length) return [];
+    const ids = rows.map((row) => row.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const fullRows = db.prepare(`SELECT * FROM media WHERE id IN (${placeholders})`).all(...ids);
+    const renditionRows = db.prepare(
+      `SELECT media_id, profile, status, width, height, fps, size, md5, source_md5, error FROM renditions WHERE media_id IN (${placeholders})`
+    ).all(...ids);
+    const byId = new Map(fullRows.map((row) => [row.id, row]));
+    const grouped = new Map();
+    for (const rendition of renditionRows) {
+      const list = grouped.get(rendition.media_id) || [];
+      list.push(rendition);
+      grouped.set(rendition.media_id, list);
+    }
+    const transcodeEnabled = transcoder.requested();
+    const ffmpegAvailable = transcoder.ffmpegAvailable();
+    return ids.map((id) => {
+      const full = byId.get(id);
+      if (!full) return null;
+      const out = {};
+      for (const key of mediaPublic) out[key] = full[key];
+      out.playback_warning = playbackWarning(full, grouped.get(id) || [], { transcodeEnabled, ffmpegAvailable });
+      return out;
+    }).filter(Boolean);
+  }
+
   function libraryResponse(syncError) {
-    const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
-    return { items: items.map(presentMedia), synced_at: lastSyncAt || null, sync_error: syncError };
+    const items = db.prepare(`SELECT id FROM media ORDER BY created_at DESC`).all();
+    return { items: presentMany(items), synced_at: lastSyncAt || null, sync_error: syncError };
   }
 
   // Lists the library. Re-reads Drive first if it's been more than a minute,
@@ -734,7 +784,8 @@ function createApp({
       if (typeof body.transcode_4k_hevc !== 'boolean') return res.status(400).json({ error: 'transcode_4k_hevc must be true or false' });
       setSetting(db, 'transcode_4k_hevc', body.transcode_4k_hevc);
     }
-    if (body.transcode_videos === true || body.transcode_4k_hevc === true) await transcoder.resume();
+    if (body.transcode_videos === false) transcoder.shutdown();
+    else if (body.transcode_videos === true || body.transcode_4k_hevc === true) await transcoder.resume();
     res.json(settingsView());
   });
 
@@ -823,9 +874,11 @@ function createApp({
       (item.start_at == null || item.start_at <= now) && (item.end_at == null || now < item.end_at)
     ) : [];
     const files = items.map((item) => fileForPlayer(item, device));
-    const tags = files.map((file, i) => (file.rendition ? `${items[i].media_id}:${file.rendition}` : `${items[i].media_id}:orig`)).join(',');
+    // Only the copy we are actually sending. A later, unused copy finishing does not
+    // change this, and the media ids are not repeated inside the rendition tag.
+    const choices = files.map((file) => file.rendition || 'orig').join(',');
     return {
-      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${tags}.${items.map((item) => item.media_id).join(',')}`,
+      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${choices}.${items.map((item) => item.media_id).join(',')}`,
       name: device.name,
       orientation: device.orientation,
       playlist_name: playlist ? playlist.name : null,

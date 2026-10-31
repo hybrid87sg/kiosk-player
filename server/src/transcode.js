@@ -182,11 +182,22 @@ function createTranscoder({
     });
   }
 
-  function markUnsettled(mediaId, status, error) {
+  function markUnsettled(mediaId, status, error, sourceMd5) {
     for (const profile of PROFILE_IDS) {
       const current = get(mediaId, profile);
       if (current && current.status === 'ready') continue;
-      save(mediaId, profile, { status, error, source_md5: current && current.source_md5 });
+      save(mediaId, profile, { status, error, source_md5: sourceMd5 || (current && current.source_md5) });
+    }
+  }
+
+  // Every profile that isn't already a good copy of this file becomes failed,
+  // so a timeout cannot leave a hole that the next Drive sync fills by starting again.
+  function failOpenProfiles(media, message) {
+    log(`${media.filename}: ${message}`);
+    for (const profile of desiredProfiles(media)) {
+      const existing = get(media.id, profile);
+      if (existing && existing.status === 'ready' && existing.source_md5 === media.md5 && existing.size > 0) continue;
+      saveQuietly(media.id, profile, { status: 'failed', error: message, source_md5: media.md5 });
     }
   }
 
@@ -204,8 +215,8 @@ function createTranscoder({
     return ids;
   }
 
-  // Ready or failed for this exact original counts as done, so a bad file is
-  // not encoded again on every Drive sync. A failed copy is retried on startup.
+  // Ready or failed for this exact original counts as done. A failed copy stays
+  // failed across Drive syncs; only the in-process retry (a few attempts) starts it again.
   function isSettled(media) {
     const rows = list(media.id);
     return desiredProfiles(media).every((profile) => rows.some((row) =>
@@ -264,7 +275,8 @@ function createTranscoder({
   async function inspect(file) {
     if (probe) return probe(file);
     const json = await runCommand('ffprobe', [
-      '-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', file,
+      '-v', 'error', '-protocol_whitelist', 'file,crypto,data', '-f', 'mov',
+      '-print_format', 'json', '-show_streams', '-show_format', file,
     ]);
     return summarizeProbe(JSON.parse(json));
   }
@@ -346,7 +358,7 @@ function createTranscoder({
         if (!wanted.has(profile)) save(fresh.id, profile, { status: 'skipped', error: null, source_md5: fresh.md5 });
       }
       if (!jobs.length) {
-        markUnsettled(fresh.id, 'failed', 'No video stream found');
+        markUnsettled(fresh.id, 'failed', 'No video stream found', fresh.md5);
         return;
       }
       for (const job of jobs) {
@@ -384,7 +396,7 @@ function createTranscoder({
           fs.rmSync(part, { force: true });
           if (signal && signal.aborted) return;
           if (err.cancelled) {
-            saveQuietly(fresh.id, job.profile, { status: 'failed', error: 'encode timed out', source_md5: fresh.md5 });
+            failOpenProfiles(fresh, 'encode timed out');
             return;
           }
           const message = String(err.message || err).slice(0, 300);
@@ -413,37 +425,52 @@ function createTranscoder({
     // Already queued or encoding. A Drive sync must not download the original again.
     if (controllers.has(media.id)) return Promise.resolve();
     if (!enabled()) {
-      markUnsettled(media.id, 'skipped', requested() ? 'ffmpeg is not installed' : 'Playback copies are turned off');
+      markUnsettled(media.id, 'skipped', requested() ? 'ffmpeg is not installed' : 'Playback copies are turned off', media.md5);
       return Promise.resolve();
     }
     if (isSettled(media)) return Promise.resolve();
     const controller = new AbortController();
     controllers.set(media.id, controller);
-    const job = tail.then(async () => {
-      await sleep(delayMs, controller.signal);
-      if (controller.signal.aborted) return;
-      const fresh = db.prepare(`SELECT * FROM media WHERE id = ?`).get(media.id);
-      if (!fresh || isSettled(fresh)) return;
-      await process(fresh, controller.signal);
-    }).finally(() => {
-      if (controllers.get(media.id) === controller) controllers.delete(media.id);
-    });
-    tail = job.then(() => {}, (err) => log(err));
+    const joinQueue = () => {
+      if (controller.signal.aborted) {
+        if (controllers.get(media.id) === controller) controllers.delete(media.id);
+        return Promise.resolve();
+      }
+      const job = tail.then(async () => {
+        if (controller.signal.aborted) return;
+        const fresh = db.prepare(`SELECT * FROM media WHERE id = ?`).get(media.id);
+        if (!fresh || isSettled(fresh)) return;
+        await process(fresh, controller.signal);
+      }).finally(() => {
+        if (controllers.get(media.id) === controller) controllers.delete(media.id);
+      });
+      tail = job.then(() => {}, (err) => log(err));
+      return job;
+    };
+    // The wait happens before the job joins the encode queue, and it is the same
+    // length for every backlog video. New uploads (no delay) are not stuck behind
+    // a delay that grows with the size of the library.
+    if (delayMs > 0) {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        joinQueue();
+      }, delayMs);
+      timer.unref?.();
+      timers.add(timer);
+      return Promise.resolve();
+    }
+    const job = joinQueue();
     return inline ? job : Promise.resolve();
   }
 
   function resume() {
     if (!enabled()) return Promise.resolve();
-    // A copy left "running" by a crash, and earlier failures, are tried again.
-    // The first one waits, and each later file waits a bit more, so a Pi is not
-    // pegged the moment Home Assistant starts.
-    db.prepare(`UPDATE renditions SET status = 'pending', error = NULL WHERE status IN ('failed', 'running')`).run();
+    // Failed copies stay failed. A row left "running" by a crash is not settled,
+    // so it is picked up here. Each backlog video waits the same gap, outside the queue.
     const videos = db.prepare(`SELECT * FROM media WHERE type = 'video' AND width IS NOT NULL AND height IS NOT NULL`).all();
-    let delay = backlogDelayMs;
     for (const media of videos) {
       if (isSettled(media) || controllers.has(media.id)) continue;
-      schedule(media, { delayMs: delay });
-      delay += backlogGapMs;
+      schedule(media, { delayMs: backlogGapMs });
     }
     return idle();
   }
@@ -470,4 +497,10 @@ function createTranscoder({
   };
 }
 
-module.exports = { createTranscoder };
+// Missing or any other value stays off, so an upgraded install does not start encoding
+// until someone turns the option on.
+function transcodeOptIn(value) {
+  return value === true || value === 'on';
+}
+
+module.exports = { createTranscoder, transcodeOptIn };

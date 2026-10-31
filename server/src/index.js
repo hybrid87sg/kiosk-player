@@ -9,7 +9,8 @@
 //   GOOGLE_SERVICE_ACCOUNT_FILE  path to the service account's JSON key
 //   DRIVE_FOLDER_ID              the Drive folder holding the signage content
 //   MEDIA_CACHE                  "on" to keep a local copy of each file for the TVs
-//   TRANSCODE                    "off" to skip playback copies (1080p H.264 and 720p)
+//   TRANSCODE                    "on" to make playback copies. Off unless set, so an
+//                                upgraded install does not start encoding by itself.
 //   TRANSCODE_4K_HEVC            "on" to also make an optional 4K HEVC copy
 //   GOOGLE_DEVICE_CLIENT_ID      optional: "TVs and Limited Input devices" client, for
 //   GOOGLE_DEVICE_CLIENT_SECRET    signing in to the web page with a google.com/device code
@@ -18,6 +19,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createApp, createIngressServer } = require('./app');
+const { transcodeOptIn } = require('./transcode');
 const { createGoogle } = require('./google');
 
 function loadSettings() {
@@ -38,7 +40,7 @@ function loadSettings() {
       folderId: o.drive_folder_id,
       serviceAccountFile: o.service_account_file ? path.resolve(configDir, o.service_account_file) : '',
       cache: o.cache_media !== false,
-      transcodeVideos: o.transcode_videos !== false,
+      transcodeVideos: transcodeOptIn(o.transcode_videos),
       transcode4kHevc: Boolean(o.transcode_4k_hevc),
       transcodeThreads: Math.min(4, Math.max(1, Number(o.transcode_threads) || 1)),
       deviceClientId: o.google_device_client_id || '',
@@ -55,7 +57,7 @@ function loadSettings() {
     folderId: env.DRIVE_FOLDER_ID,
     serviceAccountFile: env.GOOGLE_SERVICE_ACCOUNT_FILE,
     cache: env.MEDIA_CACHE === 'on',
-    transcodeVideos: env.TRANSCODE !== 'off',
+    transcodeVideos: transcodeOptIn(env.TRANSCODE),
     transcode4kHevc: env.TRANSCODE_4K_HEVC === 'on',
     transcodeThreads: Math.min(4, Math.max(1, Number(env.TRANSCODE_THREADS) || 1)),
     deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',

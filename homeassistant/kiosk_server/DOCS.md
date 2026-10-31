@@ -56,7 +56,8 @@ machine's Tailscale address in Kiosk Admin.
 ## Playback copies
 
 Videos are often 4K. Weak Android TV boxes play 1080p H.264 smoothly and struggle
-with anything heavier. With **Make playback copies** on (the default), the
+with anything heavier. **Make playback copies** stays off until you turn it on,
+so installing an update does not start encoding the videos you already have. Once it is on, the
 add-on uses ffmpeg to make:
 
 - a **1080p H.264** copy (High profile, level 4.1, constant frame rate), which

@@ -29,7 +29,7 @@ options:
   drive_folder_id: ""
   service_account_file: service-account.json
   cache_media: true
-  transcode_videos: true
+  transcode_videos: false
   transcode_4k_hevc: false
   transcode_threads: 1
   google_device_client_id: ""
