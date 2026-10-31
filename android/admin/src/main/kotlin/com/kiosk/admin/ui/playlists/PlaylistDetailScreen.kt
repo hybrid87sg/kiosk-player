@@ -6,16 +6,20 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -116,12 +120,13 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
                             Surface(color = LocalKioskColors.current.attention, shape = RoundedCornerShape(4.dp), modifier = Modifier.fillMaxSize()) {}
                         }
                         Text(
-                            "  Unsaved changes", Modifier.weight(1f),
+                            "Unsaved changes", Modifier.weight(1f),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
                             color = LocalKioskColors.current.attention, style = MaterialTheme.typography.labelLarge,
                         )
                         TextButton(onClick = vm::undo) { Text("Undo") }
                         Button(onClick = vm::save, enabled = !state.saving, modifier = Modifier.height(48.dp)) {
-                            if (state.saving) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Save playlist")
+                            if (state.saving) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Save")
                         }
                     }
                 }
@@ -298,15 +303,15 @@ private fun PlaylistRow(
 ) {
     var menu by remember { mutableStateOf(false) }
     Surface(
-        modifier = modifier.fillMaxWidth().height(RowHeight),
+        modifier = modifier.fillMaxWidth().heightIn(min = RowHeight),
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(if (dragging) 2.dp else 1.dp, if (dragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
         shadowElevation = if (dragging) 10.dp else 0.dp,
     ) {
-        Row(Modifier.padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(end = 4.dp).height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
             Box(
-                handleModifier.width(44.dp).fillMaxSize().semantics { contentDescription = "Drag to reorder ${item.filename}" },
+                handleModifier.width(44.dp).fillMaxHeight().semantics { contentDescription = "Drag to reorder ${item.filename}" },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Outlined.DragIndicator, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -321,7 +326,7 @@ private fun PlaylistRow(
                         )
                         Text(" ")
                     }
-                    Text(item.filename, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(item.filename, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (item.type == MediaType.VIDEO) {
                     Text("Video · plays to the end", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -331,7 +336,8 @@ private fun PlaylistRow(
                             Text("−", style = MaterialTheme.typography.titleMedium)
                         }
                         Text(
-                            "${item.seconds} s", Modifier.width(48.dp),
+                            "${item.seconds} s", Modifier.widthIn(min = 48.dp),
+                            maxLines = 1, softWrap = false,
                             style = MaterialTheme.typography.titleSmall,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )

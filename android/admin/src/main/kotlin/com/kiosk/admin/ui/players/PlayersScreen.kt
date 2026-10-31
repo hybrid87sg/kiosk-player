@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -55,6 +56,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -264,8 +266,11 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
     val extra = LocalKioskColors.current
     KioskCard {
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(d.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    d.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = if (d.online) extra.successContainer else MaterialTheme.colorScheme.surfaceVariant,
@@ -280,17 +285,22 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                                 else -> "  Offline · ${timeAgo(d.lastSeen)}"
                             },
                             style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1, softWrap = false,
                         )
                     }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ShapeIcon(d.orientation.shape, 18.dp, MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${d.orientation.label} · ${d.playlistName ?: "No playlist"}", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "${d.orientation.label} · ${d.playlistName ?: "No playlist"}", Modifier.weight(1f, fill = false),
+                    style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
             }
             Text(
                 d.currentFilename?.let { "Now playing: $it" } ?: "Waiting for content",
                 style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             d.freeBytes?.let {
                 Text("Storage: ${formatBytes(it)} free", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -378,7 +388,7 @@ private fun PlayerSetupForm(
                 Surface(
                     selected = mounting == m,
                     onClick = { mounting = m },
-                    modifier = Modifier.weight(1f).height(100.dp),
+                    modifier = Modifier.weight(1f).heightIn(min = 100.dp),
                     shape = RoundedCornerShape(16.dp),
                     color = if (mounting == m) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                     border = BorderStroke(if (mounting == m) 2.dp else 1.dp, if (mounting == m) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
@@ -412,7 +422,7 @@ private fun PlayerSetupForm(
                 Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = playlistId == p.id, onClick = null)
                     Column(Modifier.padding(start = 4.dp)) {
-                        Text(p.name, style = MaterialTheme.typography.titleSmall)
+                        Text(p.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${p.orientation.label} · ${p.itemCount} items", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
