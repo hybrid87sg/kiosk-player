@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.core.model.ScreenShape
 import java.util.Locale
 
@@ -62,7 +63,7 @@ fun ShapeIcon(shape: ScreenShape, size: Dp, color: Color, modifier: Modifier = M
 fun KioskCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = KioskShapes.Large,
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
@@ -87,7 +88,7 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 fun EmptyState(title: String, text: String) {
     Surface(
         Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = KioskShapes.Large,
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {

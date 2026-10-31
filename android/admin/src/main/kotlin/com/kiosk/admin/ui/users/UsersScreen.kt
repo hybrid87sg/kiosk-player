@@ -66,6 +66,7 @@ import com.kiosk.admin.ui.common.KioskCard
 import com.kiosk.admin.ui.common.KioskViewModel
 import com.kiosk.admin.ui.common.SectionLabel
 import com.kiosk.admin.ui.common.ShowMessage
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.core.data.AdminRepository
 import com.kiosk.core.model.Role
 import com.kiosk.core.model.User
@@ -115,7 +116,7 @@ fun UsersRoute(ctx: ScreenContext) {
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Users", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Users") }, actions = { AccountButton(ctx) }) },
     ) { padding ->
         LazyColumn(
             Modifier.padding(padding),
@@ -146,7 +147,7 @@ fun UsersRoute(ctx: ScreenContext) {
                 }
             }
             item {
-                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(shape = KioskShapes.Large, color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionLabel("What each role can do")
                         Role.entries.forEach { r ->
@@ -212,7 +213,7 @@ private fun InviteForm(onInvite: (String, Role) -> Unit, onCancel: () -> Unit) {
         Text("Role", style = MaterialTheme.typography.labelLarge)
         Role.entries.forEach { r ->
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = KioskShapes.Medium,
                 color = if (role == r) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(if (role == r) 2.dp else 1.dp, if (role == r) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth().selectable(selected = role == r, role = SemanticsRole.RadioButton) { role = r },
