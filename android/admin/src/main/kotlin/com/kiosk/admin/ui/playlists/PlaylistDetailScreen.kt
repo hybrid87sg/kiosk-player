@@ -2,12 +2,14 @@ package com.kiosk.admin.ui.playlists
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -116,9 +119,7 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
             if (state.dirty) {
                 Surface(color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 6.dp) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(8.dp).padding(0.dp)) {
-                            Surface(color = LocalKioskColors.current.attention, shape = RoundedCornerShape(4.dp), modifier = Modifier.fillMaxSize()) {}
-                        }
+                        Box(Modifier.padding(end = 8.dp).size(8.dp).background(LocalKioskColors.current.attention, CircleShape))
                         Text(
                             "Unsaved changes", Modifier.weight(1f),
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -324,7 +325,7 @@ private fun PlaylistRow(
                             Icons.Outlined.Warning, contentDescription = "Different shape from this playlist",
                             tint = LocalKioskColors.current.attention, modifier = Modifier.size(16.dp),
                         )
-                        Text(" ")
+                        Spacer(Modifier.width(4.dp))
                     }
                     Text(item.filename, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -332,7 +333,7 @@ private fun PlaylistRow(
                     Text("Video · plays to the end", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedIconButton(onClick = { onSeconds(item.seconds - 1) }, modifier = Modifier.size(40.dp)) {
+                        OutlinedIconButton(onClick = { onSeconds(item.seconds - 1) }, modifier = Modifier.size(48.dp)) {
                             Text("−", style = MaterialTheme.typography.titleMedium)
                         }
                         Text(
@@ -341,7 +342,7 @@ private fun PlaylistRow(
                             style = MaterialTheme.typography.titleSmall,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )
-                        OutlinedIconButton(onClick = { onSeconds(item.seconds + 1) }, modifier = Modifier.size(40.dp)) {
+                        OutlinedIconButton(onClick = { onSeconds(item.seconds + 1) }, modifier = Modifier.size(48.dp)) {
                             Text("+", style = MaterialTheme.typography.titleMedium)
                         }
                     }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -130,7 +133,8 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                         ) {
                             Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
-                            Text("  Scan QR code")
+                            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                            Text("Scan QR code")
                         }
                         TextButton(onClick = { showPin = true }, modifier = Modifier.fillMaxWidth()) { Text("Enter code instead") }
                         if (ctx.session.isDemo) {
@@ -232,10 +236,14 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                     color = if (d.online) extra.successContainer else MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = if (d.online) extra.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 ) {
-                    Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         Box(Modifier.size(8.dp).background(if (d.online) extra.success else MaterialTheme.colorScheme.onSurfaceVariant, CircleShape))
                         Text(
-                            if (d.online) "  Online" else "  Offline · ${timeAgo(d.lastSeen)}",
+                            if (d.online) "Online" else "Offline · ${timeAgo(d.lastSeen)}",
                             style = MaterialTheme.typography.labelMedium,
                             maxLines = 1, softWrap = false,
                         )
@@ -258,8 +266,8 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                 Text("Storage: ${formatBytes(it)} free", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row {
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onRemove) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = onEdit, modifier = Modifier.heightIn(min = 48.dp)) { Text("Edit") }
+                TextButton(onClick = onRemove, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             }
         }
     }
