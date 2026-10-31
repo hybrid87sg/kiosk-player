@@ -78,6 +78,7 @@ import com.kiosk.admin.ui.common.ShapeIcon
 import com.kiosk.admin.ui.common.ShowMessage
 import com.kiosk.admin.ui.library.MediaThumb
 import com.kiosk.admin.ui.library.mediaMeta
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.ScreenShape
@@ -107,7 +108,7 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
         topBar = {
             TopAppBar(
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to playlists") } },
-                title = { Text(saved?.name ?: "", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text(saved?.name ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 actions = {
                     IconButton(onClick = { showSettings = true }, enabled = saved != null) {
                         Icon(Icons.Outlined.Edit, contentDescription = "Playlist settings")
@@ -141,10 +142,10 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
                 Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(shape = KioskShapes.Large, color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                            Surface(shape = KioskShapes.Small, color = MaterialTheme.colorScheme.primaryContainer) {
                                 Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     ShapeIcon(saved.orientation, 16.dp, MaterialTheme.colorScheme.onPrimaryContainer)
                                     Text(
@@ -176,7 +177,7 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
                 }
                 ReorderableItems(state.items, saved.orientation, vm)
                 if (state.items.any { it.orientation != null && it.orientation != saved.orientation }) {
-                    Surface(shape = RoundedCornerShape(14.dp), color = LocalKioskColors.current.attentionContainer) {
+                    Surface(shape = KioskShapes.Medium, color = LocalKioskColors.current.attentionContainer) {
                         Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Icon(Icons.Outlined.Warning, contentDescription = null, tint = LocalKioskColors.current.onAttentionContainer)
                             Text(
@@ -305,7 +306,7 @@ private fun PlaylistRow(
     var menu by remember { mutableStateOf(false) }
     Surface(
         modifier = modifier.fillMaxWidth().heightIn(min = RowHeight),
-        shape = RoundedCornerShape(18.dp),
+        shape = KioskShapes.Large,
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(if (dragging) 2.dp else 1.dp, if (dragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
         shadowElevation = if (dragging) 10.dp else 0.dp,

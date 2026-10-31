@@ -74,6 +74,8 @@ import com.kiosk.admin.ui.common.ShapeIcon
 import com.kiosk.admin.ui.common.ShowMessage
 import com.kiosk.admin.ui.common.formatBytes
 import com.kiosk.admin.ui.common.timeAgo
+import com.kiosk.admin.ui.theme.CardPadding
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.Device
 import com.kiosk.core.model.formatH264Level
@@ -112,7 +114,7 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Players", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Players") }, actions = { AccountButton(ctx) }) },
     ) { padding ->
         LazyColumn(
             Modifier.padding(padding),
@@ -121,7 +123,7 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
         ) {
             item {
                 KioskCard {
-                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.padding(CardPadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Add a player", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
                             "Open Kiosk Player on the TV and let it find the server; it then appears under New TVs waiting. " +
@@ -269,14 +271,14 @@ private fun WaitingCard(w: WaitingDevice, showSite: Boolean, onAdd: () -> Unit) 
 private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
     val extra = LocalKioskColors.current
     KioskCard {
-        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(start = CardPadding, end = CardPadding, top = CardPadding, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    d.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                    d.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = KioskShapes.Small,
                     color = if (d.online) extra.successContainer else MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = if (d.online) extra.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 ) {
@@ -397,7 +399,7 @@ private fun PlayerSetupForm(
                     selected = mounting == m,
                     onClick = { mounting = m },
                     modifier = Modifier.weight(1f).heightIn(min = 100.dp),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = KioskShapes.Medium,
                     color = if (mounting == m) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                     border = BorderStroke(if (mounting == m) 2.dp else 1.dp, if (mounting == m) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
                 ) {
@@ -422,7 +424,7 @@ private fun PlayerSetupForm(
         }
         playlists.forEach { p ->
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = KioskShapes.Medium,
                 color = if (playlistId == p.id) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(if (playlistId == p.id) 2.dp else 1.dp, if (playlistId == p.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth().selectable(selected = playlistId == p.id, role = Role.RadioButton) { playlistId = p.id },
@@ -437,7 +439,7 @@ private fun PlayerSetupForm(
             }
         }
         if (chosen != null && chosen.orientation != mounting.shape) {
-            Surface(shape = RoundedCornerShape(12.dp), color = LocalKioskColors.current.attentionContainer) {
+            Surface(shape = KioskShapes.Small, color = LocalKioskColors.current.attentionContainer) {
                 Text(
                     "${chosen.name} is made for ${chosen.orientation.label.lowercase()} screens, but this screen is " +
                         "${mounting.shape.label.lowercase()}. Its files will play with black bars.",

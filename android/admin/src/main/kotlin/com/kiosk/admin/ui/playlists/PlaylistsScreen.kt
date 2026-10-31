@@ -54,6 +54,7 @@ import com.kiosk.admin.ui.common.EmptyState
 import com.kiosk.admin.ui.common.KioskCard
 import com.kiosk.admin.ui.common.ShapeIcon
 import com.kiosk.admin.ui.common.ShowMessage
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.core.model.PlaylistSummary
 import com.kiosk.core.model.ScreenShape
 
@@ -79,7 +80,7 @@ fun PlaylistsScreen(
     var showNew by remember { mutableStateOf(false) }
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Playlists", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Playlists") }, actions = { AccountButton(ctx) }) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { showNew = true },
@@ -210,7 +211,7 @@ fun ShapeChoice(
         selected = selected,
         onClick = onClick,
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
+        shape = KioskShapes.Medium,
         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
     ) {
