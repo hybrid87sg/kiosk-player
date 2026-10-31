@@ -31,6 +31,7 @@ options:
   cache_media: true
   transcode_videos: true
   transcode_4k_hevc: false
+  transcode_threads: 1
   google_device_client_id: ""
   google_device_client_secret: ""
 schema:
@@ -41,5 +42,6 @@ schema:
   cache_media: bool
   transcode_videos: bool
   transcode_4k_hevc: bool
+  transcode_threads: int(1,4)?
   google_device_client_id: str?
   google_device_client_secret: password?

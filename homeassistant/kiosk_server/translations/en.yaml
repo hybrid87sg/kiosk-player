@@ -20,6 +20,9 @@ configuration:
   transcode_4k_hevc:
     name: Also make a 4K HEVC copy
     description: Optional extra copy for a TV box that can decode HEVC and has a 4K screen. This is the slowest copy to make. Leave it off on a Raspberry Pi.
+  transcode_threads:
+    name: Encoder threads
+    description: How many processor cores one copy may use. Leave this at 1 on a Raspberry Pi so Home Assistant stays responsive.
   google_device_client_id:
     name: Web sign-in client ID (optional)
     description: The "TVs and Limited Input devices" OAuth client ID. Lets people sign in to the web page at http://<address>:3000 with a code from google.com/device.

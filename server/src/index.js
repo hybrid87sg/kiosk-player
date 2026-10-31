@@ -40,6 +40,7 @@ function loadSettings() {
       cache: o.cache_media !== false,
       transcodeVideos: o.transcode_videos !== false,
       transcode4kHevc: Boolean(o.transcode_4k_hevc),
+      transcodeThreads: Math.min(4, Math.max(1, Number(o.transcode_threads) || 1)),
       deviceClientId: o.google_device_client_id || '',
       deviceClientSecret: o.google_device_client_secret || '',
       ingressPort: Number(env.INGRESS_PORT) || 8099,
@@ -56,6 +57,7 @@ function loadSettings() {
     cache: env.MEDIA_CACHE === 'on',
     transcodeVideos: env.TRANSCODE !== 'off',
     transcode4kHevc: env.TRANSCODE_4K_HEVC === 'on',
+    transcodeThreads: Math.min(4, Math.max(1, Number(env.TRANSCODE_THREADS) || 1)),
     deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',
     deviceClientSecret: env.GOOGLE_DEVICE_CLIENT_SECRET || '',
     ingressPort: Number(env.INGRESS_PORT) || null,
@@ -90,6 +92,7 @@ const app = createApp({
     enabled: settings.transcodeVideos,
     hevc4k: settings.transcode4kHevc,
     dir: path.join(settings.dataDir, 'renditions'),
+    threads: settings.transcodeThreads,
   },
   google: createGoogle({
     webClientId: settings.webClientId,
@@ -101,12 +104,21 @@ const app = createApp({
 });
 
 // "0.0.0.0" means: accept connections from other devices too, not just this computer.
-app.listen(settings.port, '0.0.0.0', () => {
+const server = app.listen(settings.port, '0.0.0.0', () => {
   const copies = settings.transcodeVideos
     ? `on${settings.transcode4kHevc ? ', with 4K HEVC' : ''}`
     : 'off';
-  console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'}, playback copies ${copies})`);
+  console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'}, playback copies ${copies}, ${settings.transcodeThreads} encode thread${settings.transcodeThreads === 1 ? '' : 's'})`);
 });
+
+// Home Assistant stops the add-on with SIGTERM. Kill ffmpeg so it cannot keep the CPU.
+function stop() {
+  if (app.locals.transcoder) app.locals.transcoder.shutdown();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
 
 // Home Assistant's sidebar page talks to the server on its own private port.
 if (settings.ingressPort) {

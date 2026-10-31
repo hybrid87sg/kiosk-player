@@ -115,7 +115,12 @@ test('the best copy is the largest one the screen and the decoder can both take'
 
   const only720 = { display_width: 1280, display_height: 720, h264_level: 31, h264_max_long: 1280, h264_max_short: 720, hevc: false };
   assert.equal(chooseRendition(renditions, only720).profile, 'h264_720');
-  assert.equal(chooseRendition([ready('h264_1080', 1920, 1080)], only720), null);
+  // Only the 1080p copy exists. Sending it is safer than sending the 4K original.
+  assert.equal(chooseRendition([ready('h264_1080', 1920, 1080)], only720).profile, 'h264_1080');
+  const stale = [ready('h264_1080', 1920, 1080, { source_md5: 'old-file' })];
+  assert.equal(chooseRendition(stale, null, 'new-file'), null);
+  assert.equal(chooseRendition(stale, fullHd, 'new-file'), null);
+  assert.equal(chooseRendition(stale, fullHd, 'old-file').profile, 'h264_1080');
 });
 
 test('the library warns only while a heavy video has no 1080p copy', () => {
@@ -125,7 +130,10 @@ test('the library warns only while a heavy video has no 1080p copy', () => {
   assert.match(playbackWarning(big, [], { transcodeEnabled: false }), /turned off/);
   assert.match(playbackWarning(big, [{ profile: 'h264_1080', status: 'pending' }], { transcodeEnabled: true }), /being prepared/);
   assert.match(playbackWarning(big, [{ profile: 'h264_1080', status: 'failed', error: 'ffmpeg exploded' }], { transcodeEnabled: true }), /could not be made/);
-  assert.equal(playbackWarning(big, [{ profile: 'h264_1080', status: 'ready' }], { transcodeEnabled: true }), null);
+  assert.equal(playbackWarning(big, [{ profile: 'h264_1080', status: 'ready', md5: 'x', size: 1 }], { transcodeEnabled: true }), null);
+  const replaced = { ...big, md5: 'new-file' };
+  assert.match(playbackWarning(replaced, [{ profile: 'h264_1080', status: 'ready', source_md5: 'old-file', md5: 'x', size: 1 }], { transcodeEnabled: true }), /being prepared/);
+  assert.equal(playbackWarning(replaced, [{ profile: 'h264_1080', status: 'ready', source_md5: 'new-file', md5: 'x', size: 1 }], { transcodeEnabled: true }), null);
   assert.match(playbackWarning({ type: 'video', width: 1920, height: 1080, source_codec: 'hevc' }, [], { transcodeEnabled: true }), /being prepared/);
   assert.match(playbackWarning(big, [], { transcodeEnabled: true, ffmpegAvailable: false }), /ffmpeg is not installed/);
 });

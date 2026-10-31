@@ -69,10 +69,14 @@ The original file in Google Drive is not changed. Kiosk Player tells the server
 what it can decode, and downloads the copy that fits. An older player app gets
 the 1080p copy, or the original until that copy is ready.
 
-Making copies uses a lot of processor time. On a Raspberry Pi, turn **Make
-playback copies** off in the add-on's Configuration tab (or on the web Settings
-page) if Home Assistant becomes unresponsive. Leave **Also make a 4K HEVC copy**
-off unless this machine is a faster computer.
+Making copies uses a lot of processor time. Each copy runs at low priority, on
+one core by default (**Encoder threads**), and is stopped if it runs longer
+than two hours. After a restart, copies of videos already in the library start
+one at a time, with a short pause between them, so a Raspberry Pi can finish
+booting. On a slow machine, turn **Make playback copies** off in the add-on's
+Configuration tab (or on the web Settings page) if Home Assistant becomes
+unresponsive. Leave **Also make a 4K HEVC copy** off unless this machine is a
+faster computer.
 
 ## Keep a local copy of each file
 

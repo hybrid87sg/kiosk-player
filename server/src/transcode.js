@@ -19,21 +19,65 @@ function commandWorks(name) {
   }
 }
 
-function runCommand(cmd, args) {
+function cancelledError() {
+  return Object.assign(new Error('cancelled'), { cancelled: true });
+}
+
+function runCommand(cmd, args, { signal, timeoutMs, children } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) {
+      reject(cancelledError());
+      return;
+    }
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    if (children) children.add(child);
     const out = [];
     const err = [];
+    let killed = false;
+    const timer = timeoutMs
+      ? setTimeout(() => {
+        killed = true;
+        child.kill('SIGKILL');
+      }, timeoutMs)
+      : null;
+    const stop = () => {
+      killed = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 1500).unref?.();
+    };
+    if (signal) signal.addEventListener('abort', stop, { once: true });
     child.stdout.on('data', (chunk) => out.push(chunk));
     child.stderr.on('data', (chunk) => {
       err.push(chunk);
       if (Buffer.concat(err).length > 8000) err.shift();
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      if (timer) clearTimeout(timer);
+      if (children) children.delete(child);
+      reject(error);
+    });
     child.on('close', (code) => {
-      if (code === 0) resolve(Buffer.concat(out).toString('utf8'));
+      if (timer) clearTimeout(timer);
+      if (children) children.delete(child);
+      if (signal) signal.removeEventListener('abort', stop);
+      if (killed || (signal && signal.aborted)) reject(cancelledError());
+      else if (code === 0) resolve(Buffer.concat(out).toString('utf8'));
       else reject(new Error(`${cmd} exited ${code}: ${Buffer.concat(err).toString('utf8').slice(-400)}`));
     });
+  });
+}
+
+function sleep(ms, signal) {
+  if (!ms || ms < 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+    const stop = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
   });
 }
 
@@ -58,10 +102,25 @@ function createTranscoder({
   runFfmpeg = null,
   log = () => {},
   getSetting,
+  threads = 1,
+  timeoutMs = 2 * 60 * 60 * 1000,
+  niceLevel = 19,
+  // Backlog copies (an existing library on a Pi) wait, then start one at a time.
+  backlogDelayMs = 20_000,
+  backlogGapMs = 10_000,
+  retryDelayMs = 60_000,
+  maxAttempts = 3,
 }) {
   fs.mkdirSync(dir, { recursive: true });
   const ffmpegAvailable = Boolean(runFfmpeg && probe) || (commandWorks('ffmpeg') && commandWorks('ffprobe'));
+  const useNice = niceLevel > 0 && commandWorks('nice');
   let tail = Promise.resolve();
+  // media id -> AbortController, set for the whole time a job is queued or running.
+  const controllers = new Map();
+  const attempts = new Map();
+  const children = new Set();
+  const timers = new Set();
+  const threadCount = Math.max(1, Number(threads) || 1);
 
   const upsertRow = db.prepare(`
     INSERT INTO renditions (media_id, profile, status, width, height, fps, size, md5, source_md5, error, updated_at)
@@ -155,18 +214,51 @@ function createTranscoder({
     ));
   }
 
-  function forget(mediaId) {
-    db.prepare(`DELETE FROM renditions WHERE media_id = ?`).run(mediaId);
+  function mediaStillThere(mediaId) {
+    return Boolean(db.prepare(`SELECT 1 FROM media WHERE id = ?`).get(mediaId));
+  }
+
+  function removeFilesFor(mediaId) {
     if (!fs.existsSync(dir)) return;
+    const prefix = String(mediaId);
     for (const name of fs.readdirSync(dir)) {
       if (
-        name.startsWith(`${mediaId}-`)
-        || name.startsWith(`.part-${mediaId}-`)
-        || name.startsWith(`.src-${mediaId}-`)
+        name.startsWith(`${prefix}-`)
+        || name.startsWith(`.part-${prefix}-`)
+        || name.startsWith(`.src-${prefix}-`)
       ) {
         fs.rmSync(path.join(dir, name), { force: true });
       }
     }
+  }
+
+  // Drop half-written files whose video is gone (a delete during an encode, or a crash).
+  function sweepOrphans() {
+    if (!fs.existsSync(dir)) return;
+    const ids = new Set(db.prepare(`SELECT id FROM media`).all().map((row) => String(row.id)));
+    for (const name of fs.readdirSync(dir)) {
+      const match = /^(?:\.part-|\.src-)?(\d+)-/.exec(name);
+      if (match && !ids.has(match[1])) fs.rmSync(path.join(dir, name), { force: true });
+    }
+  }
+
+  function forget(mediaId) {
+    const controller = controllers.get(mediaId);
+    if (controller) controller.abort();
+    attempts.delete(mediaId);
+    try {
+      db.prepare(`DELETE FROM renditions WHERE media_id = ?`).run(mediaId);
+    } catch (err) {
+      log(err);
+    }
+    removeFilesFor(mediaId);
+  }
+
+  function shutdown() {
+    for (const controller of controllers.values()) controller.abort();
+    for (const child of children) child.kill('SIGTERM');
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
   }
 
   async function inspect(file) {
@@ -177,14 +269,56 @@ function createTranscoder({
     return summarizeProbe(JSON.parse(json));
   }
 
-  async function encode(args) {
-    if (runFfmpeg) return runFfmpeg(args);
-    return runCommand('ffmpeg', args);
+  async function encode(args, signal) {
+    if (signal && signal.aborted) throw cancelledError();
+    if (runFfmpeg) return runFfmpeg(args, signal);
+    if (useNice) {
+      return runCommand('nice', ['-n', String(niceLevel), 'ffmpeg', ...args], { signal, timeoutMs, children });
+    }
+    return runCommand('ffmpeg', args, { signal, timeoutMs, children });
   }
 
-  async function process(media) {
+  function rememberRetry(media) {
+    if (!mediaStillThere(media.id)) return;
+    const failed = desiredProfiles(media).some((profile) => {
+      const row = get(media.id, profile);
+      return row && row.status === 'failed' && row.source_md5 === media.md5;
+    });
+    if (!failed) {
+      attempts.delete(media.id);
+      return;
+    }
+    const count = (attempts.get(media.id) || 0) + 1;
+    attempts.set(media.id, count);
+    if (count >= maxAttempts) return;
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      const row = db.prepare(`SELECT * FROM media WHERE id = ?`).get(media.id);
+      if (!row || controllers.has(row.id)) return;
+      db.prepare(
+        `UPDATE renditions SET status = 'pending', error = NULL WHERE media_id = ? AND status = 'failed' AND source_md5 = ?`
+      ).run(row.id, row.md5);
+      schedule(row);
+    }, retryDelayMs * count);
+    timer.unref?.();
+    timers.add(timer);
+  }
+
+  function saveQuietly(mediaId, profile, fields) {
+    if (!mediaStillThere(mediaId)) return false;
+    try {
+      save(mediaId, profile, fields);
+      return true;
+    } catch (err) {
+      if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') return false;
+      throw err;
+    }
+  }
+
+  async function process(media, signal) {
     const fresh = db.prepare(`SELECT * FROM media WHERE id = ?`).get(media.id);
     if (!fresh || fresh.type !== 'video' || !fresh.width || !fresh.height) return;
+    if (signal && signal.aborted) return;
     if (!enabled()) {
       markUnsettled(fresh.id, 'skipped', requested() ? 'ffmpeg is not installed' : 'Playback copies are turned off');
       return;
@@ -192,6 +326,7 @@ function createTranscoder({
     let source = null;
     try {
       source = await downloadOriginal(fresh);
+      if ((signal && signal.aborted) || !mediaStillThere(fresh.id)) return;
       const info = await inspect(source.path);
       const video = info && info.video;
       db.prepare(
@@ -215,8 +350,9 @@ function createTranscoder({
         return;
       }
       for (const job of jobs) {
+        if ((signal && signal.aborted) || !mediaStillThere(fresh.id)) return;
         if (!enabled()) {
-          save(fresh.id, job.profile, { status: 'skipped', error: 'Playback copies are turned off', source_md5: fresh.md5 });
+          saveQuietly(fresh.id, job.profile, { status: 'skipped', error: 'Playback copies are turned off', source_md5: fresh.md5 });
           continue;
         }
         const existing = get(fresh.id, job.profile);
@@ -225,58 +361,89 @@ function createTranscoder({
           && existing.size > 0 && fs.existsSync(pathFor(fresh.id, job.profile))
         ) continue;
         const part = path.join(dir, `.part-${fresh.id}-${job.profile}.mp4`);
-        save(fresh.id, job.profile, { status: 'running', error: null, source_md5: fresh.md5, width: job.width, height: job.height, fps: job.fps });
+        saveQuietly(fresh.id, job.profile, { status: 'running', error: null, source_md5: fresh.md5, width: job.width, height: job.height, fps: job.fps });
         try {
           log(`Making a ${job.profile} copy of ${fresh.filename}`);
-          await encode(ffmpegArgs(job, source.path, part));
+          await encode(ffmpegArgs(job, source.path, part, { threads: threadCount }), signal);
+          if ((signal && signal.aborted) || !mediaStillThere(fresh.id)) {
+            fs.rmSync(part, { force: true });
+            return;
+          }
           const size = fs.statSync(part).size;
           if (size <= 0) throw new Error('empty output');
           const md5 = await md5File(part);
-          fs.renameSync(part, pathFor(fresh.id, job.profile));
-          save(fresh.id, job.profile, {
+          const finalPath = pathFor(fresh.id, job.profile);
+          fs.renameSync(part, finalPath);
+          const saved = saveQuietly(fresh.id, job.profile, {
             status: 'ready', width: job.width, height: job.height, fps: job.fps,
             size, md5, source_md5: fresh.md5, error: null,
           });
-          log(`Ready ${job.profile} copy of ${fresh.filename}`);
+          if (!saved) fs.rmSync(finalPath, { force: true });
+          else log(`Ready ${job.profile} copy of ${fresh.filename}`);
         } catch (err) {
           fs.rmSync(part, { force: true });
+          if (signal && signal.aborted) return;
+          if (err.cancelled) {
+            saveQuietly(fresh.id, job.profile, { status: 'failed', error: 'encode timed out', source_md5: fresh.md5 });
+            return;
+          }
           const message = String(err.message || err).slice(0, 300);
           log(`Could not make a ${job.profile} copy of ${fresh.filename}: ${message}`);
-          save(fresh.id, job.profile, { status: 'failed', error: message, source_md5: fresh.md5 });
+          saveQuietly(fresh.id, job.profile, { status: 'failed', error: message, source_md5: fresh.md5 });
         }
       }
     } catch (err) {
+      if ((signal && signal.aborted) || err.cancelled) return;
       const message = String(err.message || err).slice(0, 300);
       log(`Could not prepare copies of ${fresh.filename}: ${message}`);
       for (const profile of desiredProfiles(fresh)) {
         const existing = get(fresh.id, profile);
         if (!existing || existing.status !== 'ready') {
-          save(fresh.id, profile, { status: 'failed', error: message, source_md5: fresh.md5 });
+          saveQuietly(fresh.id, profile, { status: 'failed', error: message, source_md5: fresh.md5 });
         }
       }
     } finally {
       if (source && source.temporary) fs.rmSync(source.path, { force: true });
+      if (signal && !signal.aborted) rememberRetry(fresh);
     }
   }
 
-  function schedule(media) {
+  function schedule(media, { delayMs = 0 } = {}) {
     if (!media || media.type !== 'video' || !media.width || !media.height) return Promise.resolve();
+    // Already queued or encoding. A Drive sync must not download the original again.
+    if (controllers.has(media.id)) return Promise.resolve();
     if (!enabled()) {
       markUnsettled(media.id, 'skipped', requested() ? 'ffmpeg is not installed' : 'Playback copies are turned off');
       return Promise.resolve();
     }
     if (isSettled(media)) return Promise.resolve();
-    const job = tail.then(() => process(media));
+    const controller = new AbortController();
+    controllers.set(media.id, controller);
+    const job = tail.then(async () => {
+      await sleep(delayMs, controller.signal);
+      if (controller.signal.aborted) return;
+      const fresh = db.prepare(`SELECT * FROM media WHERE id = ?`).get(media.id);
+      if (!fresh || isSettled(fresh)) return;
+      await process(fresh, controller.signal);
+    }).finally(() => {
+      if (controllers.get(media.id) === controller) controllers.delete(media.id);
+    });
     tail = job.then(() => {}, (err) => log(err));
     return inline ? job : Promise.resolve();
   }
 
   function resume() {
     if (!enabled()) return Promise.resolve();
+    // A copy left "running" by a crash, and earlier failures, are tried again.
+    // The first one waits, and each later file waits a bit more, so a Pi is not
+    // pegged the moment Home Assistant starts.
+    db.prepare(`UPDATE renditions SET status = 'pending', error = NULL WHERE status IN ('failed', 'running')`).run();
     const videos = db.prepare(`SELECT * FROM media WHERE type = 'video' AND width IS NOT NULL AND height IS NOT NULL`).all();
+    let delay = backlogDelayMs;
     for (const media of videos) {
-      db.prepare(`UPDATE renditions SET status = 'pending', error = NULL WHERE media_id = ? AND status = 'failed'`).run(media.id);
-      schedule(media);
+      if (isSettled(media) || controllers.has(media.id)) continue;
+      schedule(media, { delayMs: delay });
+      delay += backlogGapMs;
     }
     return idle();
   }
@@ -284,6 +451,8 @@ function createTranscoder({
   function idle() {
     return inline ? tail : Promise.resolve();
   }
+
+  sweepOrphans();
 
   return {
     schedule,
@@ -293,6 +462,7 @@ function createTranscoder({
     get,
     pathFor,
     forget,
+    shutdown,
     requested,
     hevc4k,
     enabled,

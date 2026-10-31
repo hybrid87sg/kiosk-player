@@ -88,10 +88,22 @@ function audioSummary(audio) {
 // Snap to a common rate at or under the cap, so 23.976 becomes 24 and 60 becomes 30.
 function targetFps(fps, maxFps) {
   const raw = !fps || fps <= 0 ? maxFps : Math.min(fps, maxFps);
+  // Keep film and NTSC rates exact. Snapping 23.976 to 24 makes the picture judder.
+  for (const ntsc of [23.976, 29.97, 59.94]) {
+    if (Math.abs(raw - ntsc) < 0.02 && ntsc <= maxFps + 0.01) return ntsc;
+  }
   for (const common of [24, 25, 30, 50, 60]) {
     if (Math.abs(raw - common) < 0.05) return common;
   }
   return Math.round(raw * 1000) / 1000;
+}
+
+// ffmpeg's fps filter wants a fraction for the repeating NTSC rates.
+function fpsFilterValue(fps) {
+  if (Math.abs(fps - 23.976) < 0.02) return '24000/1001';
+  if (Math.abs(fps - 29.97) < 0.02) return '30000/1001';
+  if (Math.abs(fps - 59.94) < 0.02) return '60000/1001';
+  return String(fps);
 }
 
 // Output size for a profile. Never upscales, and both sides stay even (required by yuv420p).
@@ -165,7 +177,8 @@ function scaleFilter(profileId) {
   return `scale=w=${w}:h=${h}:force_original_aspect_ratio=decrease:force_divisible_by=2`;
 }
 
-function ffmpegArgs(job, input, output) {
+function ffmpegArgs(job, input, output, options = {}) {
+  const threads = Math.max(1, Number(options.threads) || 1);
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', input];
   const audioNone = Boolean(job.audio && job.audio.none);
   const audioCopy = Boolean(job.audio && job.audio.copy);
@@ -180,7 +193,7 @@ function ffmpegArgs(job, input, output) {
     args.push('-c:v', 'copy');
   } else {
     const profile = PROFILES[job.profile];
-    args.push('-vf', `${scaleFilter(job.profile)},fps=${job.fps}`, '-fps_mode', 'cfr');
+    args.push('-vf', `${scaleFilter(job.profile)},fps=${fpsFilterValue(job.fps)}`, '-fps_mode', 'cfr', '-threads', String(threads));
     if (profile.codec === 'h264') {
       args.push(
         '-c:v', 'libx264', '-profile:v', 'high', '-level:v', profile.level, '-pix_fmt', 'yuv420p',
@@ -204,6 +217,13 @@ function pixels(rendition) {
   return (rendition.width || 0) * (rendition.height || 0);
 }
 
+// A ready copy of this file. A copy made from an older Drive upload (different md5) is not usable.
+function usableRendition(rendition, sourceMd5) {
+  if (!rendition || rendition.status !== 'ready' || !rendition.md5 || !rendition.size) return false;
+  if (sourceMd5 && rendition.source_md5 !== sourceMd5) return false;
+  return true;
+}
+
 function h264CanPlay(caps, rendition) {
   const long = Math.max(rendition.width || 0, rendition.height || 0);
   const short = Math.min(rendition.width || 0, rendition.height || 0);
@@ -224,15 +244,19 @@ function hevcCanPlay(caps, rendition) {
 }
 
 // The copy a player should download.
+// [sourceMd5] is the file's current fingerprint. Copies of an older upload are ignored.
 // No capability report (an older app): the 1080p copy, or null to mean "send the original".
 // A newer app: the largest copy that fits the screen and the decoder.
 // 4K HEVC is only chosen for a 4K screen that can decode it.
-function chooseRendition(renditions, caps) {
+// If nothing fits (a 720p box, and only the 1080p copy exists), the smallest copy is
+// still sent. That is safer than the original 4K file.
+function chooseRendition(renditions, caps, sourceMd5) {
   const ready = new Map(
     (renditions || [])
-      .filter((r) => r.status === 'ready' && r.md5 && r.size)
+      .filter((r) => usableRendition(r, sourceMd5))
       .map((r) => [r.profile, r]),
   );
+  const byPixels = (list, direction) => [...list].sort((a, b) => direction * (pixels(a) - pixels(b)))[0];
   if (!caps) return ready.get('h264_1080') || null;
 
   const candidates = [];
@@ -244,9 +268,10 @@ function chooseRendition(renditions, caps) {
     const row = ready.get(id);
     if (row && h264CanPlay(caps, row)) candidates.push(row);
   }
-  if (!candidates.length) return null;
-
-  const byPixels = (list, direction) => [...list].sort((a, b) => direction * (pixels(a) - pixels(b)))[0];
+  if (!candidates.length) {
+    const any = [...ready.values()];
+    return any.length ? byPixels(any, 1) : null;
+  }
   if (displayLong > 0 && displayShort > 0) {
     const fitting = candidates.filter((r) => fitsBox(displayLong, displayShort, r.width, r.height));
     if (fitting.length) return byPixels(fitting, -1);
@@ -270,8 +295,8 @@ function playbackWarning(media, renditions, { transcodeEnabled = false, ffmpegAv
   if (!media || media.type !== 'video') return null;
   const oversize = Boolean(media.width && media.height && largerThan(media.width, media.height, PROFILES.h264_1080));
   if (!oversize && safeSource(media)) return null;
-  const baseline = (renditions || []).find((r) => r.profile === 'h264_1080');
-  if (baseline && baseline.status === 'ready') return null;
+  const baseline = (renditions || []).find((r) => r.profile === 'h264_1080' && (!media.md5 || r.source_md5 === media.md5));
+  if (baseline && baseline.status === 'ready' && baseline.md5 && baseline.size) return null;
   const dims = media.width && media.height ? `${media.width}×${media.height}` : 'this file';
   if (!transcodeEnabled) {
     return `This video is ${dims}. Playback copies are turned off, so some TV boxes may not play it smoothly.`;

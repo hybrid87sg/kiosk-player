@@ -106,6 +106,12 @@ function createApp({
     runFfmpeg: transcodeOptions.run || null,
     log,
     getSetting: (key) => getSetting(db, key),
+    threads: transcodeOptions.threads,
+    timeoutMs: transcodeOptions.timeoutMs,
+    backlogDelayMs: transcodeOptions.backlogDelayMs,
+    backlogGapMs: transcodeOptions.backlogGapMs,
+    retryDelayMs: transcodeOptions.retryDelayMs,
+    maxAttempts: transcodeOptions.maxAttempts,
   });
   transcoder.resume();
   // A Drive folder chosen on the web Settings page wins over the start-up setting.
@@ -295,6 +301,7 @@ function createApp({
           for (const file of files) if (upsertMedia(file)) seen.add(file.id);
           for (const row of db.prepare(`SELECT id, drive_file_id FROM media`).all()) {
             if (seen.has(row.drive_file_id)) continue;
+            transcoder.forget(row.id);
             bumpPlaylistVersions(db, playlistsUsingMedia(db, row.id));
             removed.push(row.id);
             db.prepare(`DELETE FROM media WHERE id = ?`).run(row.id);
@@ -411,11 +418,11 @@ function createApp({
         return res.status(502).json({ error: 'Could not delete the file in Google Drive' });
       }
     }
+    transcoder.forget(media.id); // stop an encode before the row disappears, so it cannot insert a copy
     db.transaction(() => {
       bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
       db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from every playlist
     })();
-    transcoder.forget(media.id);
     pruneCache();
     res.json({ ok: true });
   });
@@ -431,7 +438,10 @@ function createApp({
       const profile = String(req.query.rendition);
       if (!PROFILE_IDS.includes(profile)) return res.status(404).json({ error: 'Unknown rendition' });
       const rendition = transcoder.get(media.id, profile);
-      if (!rendition || rendition.status !== 'ready') return res.status(404).json({ error: 'That copy is not ready' });
+      // source_md5 must be this upload. A copy of the previous file is not served.
+      if (!rendition || rendition.status !== 'ready' || rendition.source_md5 !== media.md5) {
+        return res.status(404).json({ error: 'That copy is not ready' });
+      }
       return res.sendFile(transcoder.pathFor(media.id, profile), {
         headers: { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' },
       });
@@ -792,7 +802,9 @@ function createApp({
   // Older apps never send decoder info: they get the 1080p copy, or the original
   // if that copy does not exist yet. Newer apps get the copy that fits.
   function fileForPlayer(item, device) {
-    const chosen = item.type === 'video' ? chooseRendition(transcoder.list(item.media_id), deviceCaps(device)) : null;
+    const chosen = item.type === 'video'
+      ? chooseRendition(transcoder.list(item.media_id), deviceCaps(device), item.md5)
+      : null;
     if (!chosen) {
       return { url: `/media/${item.media_id}`, md5: item.md5, size: item.size, rendition: null };
     }
@@ -883,6 +895,7 @@ function createApp({
 
   app.locals.db = db;
   app.locals.syncDriveFolder = syncDriveFolder;
+  app.locals.transcoder = transcoder;
   return app;
 }
 

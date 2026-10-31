@@ -506,7 +506,7 @@ test('playback copies: weak TVs get 1080p, capable ones get 4K, the original sta
     },
     audio: { codec: 'ac3', channels: 6, profile: null },
   };
-  const { call, signIn, upload, google } = await startServer(t, {
+  const { call, signIn, upload, google, app } = await startServer(t, {
     transcode: {
       enabled: true,
       hevc4k: true,
@@ -545,6 +545,13 @@ test('playback copies: weak TVs get 1080p, capable ones get 4K, the original sta
   const oldTv = await claim('Old box');
   const oldList = await (await call('GET', '/api/player/playlist', { token: oldTv.token })).json();
   assert.equal(oldList.items[0].rendition, 'h264_1080');
+  // A copy of an older upload must not be served after the file in Drive changes.
+  app.locals.db.prepare(`UPDATE renditions SET source_md5 = 'replaced' WHERE media_id = ?`).run(video.id);
+  const staleList = await (await call('GET', '/api/player/playlist', { token: oldTv.token })).json();
+  assert.equal(staleList.items[0].rendition, null);
+  assert.equal(staleList.items[0].md5, video.md5);
+  assert.equal((await call('GET', `/media/${video.id}?rendition=h264_1080`, { token: oldTv.token })).status, 404);
+  app.locals.db.prepare(`UPDATE renditions SET source_md5 = ? WHERE media_id = ?`).run(video.md5, video.id);
   assert.equal(oldList.items[0].url, `/media/${video.id}?rendition=h264_1080`);
   const copy = Buffer.from(await (await call('GET', oldList.items[0].url, { token: oldTv.token })).arrayBuffer());
   assert.equal(copy.toString(), 'rendition:h264_1080');
