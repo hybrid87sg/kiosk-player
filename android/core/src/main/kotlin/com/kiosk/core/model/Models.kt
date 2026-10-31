@@ -67,6 +67,8 @@ data class Media(
     /** null while Drive is still working out the file's size. */
     val orientation: ScreenShape? = null,
     @SerialName("created_at") val createdAt: Long = 0,
+    /** When the file starts showing on screens (unix ms); null = straight away. */
+    @SerialName("starts_at") val startsAt: Long? = null,
     /** When the file leaves Kiosk and every screen (unix ms); null = never. Google Drive keeps it. */
     @SerialName("expires_at") val expiresAt: Long? = null,
 )
@@ -120,7 +122,8 @@ data class PlaylistItem(
     val orientation: ScreenShape? = null,
     @SerialName("start_at") val startAt: Long? = null,
     @SerialName("end_at") val endAt: Long? = null,
-    /** The file's own expiry (see [Media.expiresAt]). */
+    /** The file's own dates (see [Media.startsAt] and [Media.expiresAt]). */
+    @SerialName("starts_at") val startsAt: Long? = null,
     @SerialName("expires_at") val expiresAt: Long? = null,
 )
 
@@ -152,6 +155,13 @@ data class Device(
     val model: String? = null,
     /** Which site (Home Assistant) the TV is at, when there are several. */
     val site: String? = null,
+    @SerialName("location_id") val locationId: Long? = null,
+    /** The location's working hours, e.g. "Mon–Fri 08:00–18:00". */
+    @SerialName("hours_summary") val hoursSummary: String? = null,
+    /** False outside working hours (the screen is dark then). */
+    @SerialName("open_now") val openNow: Boolean = true,
+    /** What the TV does after hours: "black" or "standby". */
+    @SerialName("after_hours") val afterHours: String? = null,
 )
 
 /** A TV showing its pairing code right now, waiting to be added. */
@@ -224,4 +234,12 @@ data class PlayerPlaylist(
     val orientation: Mounting = Mounting.LANDSCAPE,
     @SerialName("playlist_name") val playlistName: String? = null,
     val items: List<PlayerItem> = emptyList(),
+    /** Files starting within a day: download them ahead, but don't play them yet. */
+    val upcoming: List<PlayerItem> = emptyList(),
+    /** The location's working hours ("mon"…"sun"); null = always on. */
+    val hours: Map<String, DayHours?>? = null,
 )
+
+/** Opening and closing time on one day, e.g. "08:00" and "18:00". */
+@Serializable
+data class DayHours(val open: String, val close: String)

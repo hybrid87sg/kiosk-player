@@ -47,7 +47,7 @@ class DemoAdminRepositoryTest {
         val library = repo.library()
         assertTrue(library.items.none { it.id == 1L })
         assertEquals("removed", library.removed.first().removedReason)
-        repo.restoreMedia(1, null)
+        repo.restoreMedia(1, null, null)
         assertTrue(repo.library().items.any { it.id == 1L })
     }
 

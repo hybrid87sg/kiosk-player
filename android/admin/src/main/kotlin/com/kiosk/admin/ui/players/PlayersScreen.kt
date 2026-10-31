@@ -162,6 +162,15 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                     item(key = "loc-$location") {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             SectionLabel("$location · ${group.size}")
+                            // The location's working hours (changed on the web page).
+                            group.first().hoursSummary?.takeIf { group.first().locationId != null }?.let { hours ->
+                                Text(
+                                    "Working hours: $hours",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                )
+                            }
                             group.forEach { d ->
                                 DeviceCard(d, onEdit = { form = PlayerForm.Edit(d) }, onRemove = { confirmRemove = d })
                             }
@@ -261,7 +270,11 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                     Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(8.dp).background(if (d.online) extra.success else MaterialTheme.colorScheme.onSurfaceVariant, CircleShape))
                         Text(
-                            if (d.online) "  Online" else "  Offline · ${timeAgo(d.lastSeen)}",
+                            when {
+                                !d.openNow -> if (d.afterHours == "standby") "  After hours · standby" else "  After hours"
+                                d.online -> "  Online"
+                                else -> "  Offline · ${timeAgo(d.lastSeen)}"
+                            },
                             style = MaterialTheme.typography.labelMedium,
                         )
                     }

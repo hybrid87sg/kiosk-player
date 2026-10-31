@@ -660,3 +660,204 @@ test('file expiry: an expired file leaves Kiosk and every screen, but stays in G
   google.removeFile(google.findByName('offer.jpg').id);
   assert.deepEqual((await (await call('POST', '/api/media/sync', { token: boss })).json()).removed, []);
 });
+
+test('file start dates: not on screens before the start, but downloaded a day ahead', async (t) => {
+  const { call, signIn, upload } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const hour = 60 * 60 * 1000;
+  const now = await (await upload(boss, 'now.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const soon = await (await call('POST', '/api/media', {
+    token: boss, body: crypto.randomBytes(200), headers: { 'content-type': 'image/jpeg', 'x-filename': 'soon.jpg', 'x-starts-at': String(Date.now() + 2 * hour) },
+  })).json();
+  const later = await (await upload(boss, 'later.jpg', crypto.randomBytes(300), 'image/jpeg')).json();
+  assert.ok(soon.starts_at > Date.now());
+  // Start in 3 days, end in 5: allowed. End before start: refused.
+  assert.equal((await call('PATCH', `/api/media/${later.id}`, { token: boss, json: { starts_at: Date.now() + 3 * 24 * hour, expires_at: Date.now() + 5 * 24 * hour } })).status, 200);
+  assert.equal((await call('PATCH', `/api/media/${later.id}`, { token: boss, json: { expires_at: Date.now() + 24 * hour } })).status, 400);
+
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape' } })).json();
+  await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [now, soon, later].map((m) => ({ media_id: m.id })) } });
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Lobby TV', playlist_id: playlist.id } });
+  const list = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.deepEqual(list.items.map((i) => i.id), [now.id]);
+  assert.deepEqual(list.upcoming.map((i) => i.id), [soon.id]); // later.jpg is more than a day away
+
+  // Once its start passes, it plays (and the version changes, so the TV updates).
+  await call('PATCH', `/api/media/${soon.id}`, { token: boss, json: { starts_at: null } });
+  const after = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.deepEqual(after.items.map((i) => i.id), [now.id, soon.id]);
+  assert.notEqual(after.version, list.version);
+});
+
+test('locations: add, rename, working hours to the TV, and delete only when empty with the name typed', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  await call('POST', '/api/users', { token: boss, json: { email: 'up@example.com', role: 'content_uploader' } });
+  const uploader = await signIn('up@example.com');
+
+  const lobby = await (await call('POST', '/api/locations', { token: boss, json: { name: 'Main lobby' } })).json();
+  assert.equal(lobby.hours_summary, 'Always on');
+  assert.equal((await call('POST', '/api/locations', { token: boss, json: { name: 'Main lobby' } })).status, 409);
+  assert.equal((await call('POST', '/api/locations', { token: boss, json: { name: ' ' } })).status, 400);
+  assert.equal((await call('POST', '/api/locations', { token: uploader, json: { name: 'Back office' } })).status, 403);
+
+  // A TV set up in the lobby gets the lobby's hours with its playlist.
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Lobby TV', location: 'Main lobby' } });
+  const before = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.equal(before.hours, null);
+  const weekdays = { open: '08:00', close: '18:00' };
+  const hours = { mon: weekdays, tue: weekdays, wed: weekdays, thu: weekdays, fri: weekdays, sat: { open: '10:00', close: '16:00' }, sun: null };
+  assert.equal((await call('PATCH', `/api/locations/${lobby.id}`, { token: boss, json: { hours: { ...hours, mon: { open: '8am', close: '6pm' } } } })).status, 400);
+  const saved = await (await call('PATCH', `/api/locations/${lobby.id}`, { token: boss, json: { hours } })).json();
+  assert.equal(saved.hours_summary, 'Mon–Fri 08:00–18:00 · Sat 10:00–16:00 · Sun closed');
+  const after = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
+  assert.deepEqual(after.hours, hours);
+  assert.notEqual(after.version, before.version);
+
+  // Renaming moves its screens along; a location typed in the phone app is added automatically.
+  await call('PATCH', `/api/locations/${lobby.id}`, { token: boss, json: { name: 'Lobby' } });
+  const [screen] = await (await call('GET', '/api/devices', { token: boss })).json();
+  assert.equal(screen.location, 'Lobby');
+  assert.equal(screen.location_id, lobby.id);
+  assert.equal(screen.hours_summary, saved.hours_summary);
+  await call('PATCH', `/api/devices/${screen.id}`, { token: boss, json: { location: 'Café' } });
+  const all = await (await call('GET', '/api/locations', { token: boss })).json();
+  assert.deepEqual(all.locations.map((l) => [l.name, l.screens.length]), [['Café', 1], ['Lobby', 0]]);
+
+  // Deleting needs the exact name, and an empty location.
+  const cafe = all.locations.find((l) => l.name === 'Café');
+  assert.equal((await call('DELETE', `/api/locations/${cafe.id}`, { token: boss, json: { confirm_name: 'cafe' } })).status, 400);
+  const busy = await call('DELETE', `/api/locations/${cafe.id}`, { token: boss, json: { confirm_name: 'Café' } });
+  assert.equal(busy.status, 409);
+  assert.match((await busy.json()).error, /Lobby TV/);
+  assert.equal((await call('DELETE', `/api/locations/${lobby.id}`, { token: boss, json: { confirm_name: 'Lobby' } })).status, 200);
+  assert.equal((await call('GET', `/api/locations/${lobby.id}`, { token: boss })).status, 404);
+});
+
+test('working hours: open, closed, and past midnight', () => {
+  const { isOpenAt, summarizeHours, checkHours } = require('../src/hours');
+  const at = (iso) => Date.parse(iso);
+  const day = { open: '08:00', close: '18:00' };
+  const hours = { mon: day, tue: day, wed: day, thu: day, fri: { open: '18:00', close: '02:00' }, sat: null, sun: null };
+  assert.equal(isOpenAt(null, at('2026-11-02T03:00:00Z'), 'UTC'), true); // always on
+  assert.equal(isOpenAt(hours, at('2026-11-02T10:00:00Z'), 'UTC'), true); // Monday 10:00
+  assert.equal(isOpenAt(hours, at('2026-11-02T18:00:00Z'), 'UTC'), false); // closes at 18:00
+  assert.equal(isOpenAt(hours, at('2026-11-02T10:00:00Z'), 'Asia/Singapore'), false); // 18:00 in Singapore
+  assert.equal(isOpenAt(hours, at('2026-11-07T01:30:00Z'), 'UTC'), true); // Friday night runs into Saturday
+  assert.equal(isOpenAt(hours, at('2026-11-07T03:00:00Z'), 'UTC'), false);
+  assert.equal(isOpenAt(hours, at('2026-11-08T12:00:00Z'), 'UTC'), false); // Sunday closed
+  assert.equal(summarizeHours(hours), 'Mon–Thu 08:00–18:00 · Fri 18:00–02:00 · Sat–Sun closed');
+  assert.match(checkHours({ mon: { open: '09:00', close: '09:00' } }).error, /same/);
+});
+
+test('notifications: Home Assistant hears when a screen is offline during working hours', async (t) => {
+  const sent = [];
+  let failing = false;
+  const homeAssistant = {
+    async listTargets() { return [{ id: 'mobile_app_pixel', name: 'Phone or tablet: pixel' }, { id: 'persistent_notification', name: 'bell' }]; },
+    async send(target, message) { if (failing) throw new Error('down'); sent.push({ target, ...message }); },
+  };
+  const { call, signIn, app } = await startServer(t, { homeAssistant, monitorIntervalMs: 0 });
+  const boss = await signIn(BOSS);
+  const db = app.locals.db;
+  const monday10 = Date.parse('2026-11-02T10:00:00Z');
+  const minute = 60 * 1000;
+
+  // Settings: pick the phone, and send a test.
+  assert.deepEqual((await (await call('GET', '/api/settings/notify-targets', { token: boss })).json()).targets.map((x) => x.id), ['mobile_app_pixel', 'persistent_notification']);
+  assert.equal((await call('POST', '/api/settings/test-notification', { token: boss })).status, 400); // nothing ticked yet
+  assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { notify_targets: ['not valid!'] } })).status, 400);
+  const settings = await (await call('PATCH', '/api/settings', { token: boss, json: { notify_targets: ['mobile_app_pixel'] } })).json();
+  assert.deepEqual(settings.notifications, { available: true, targets: ['mobile_app_pixel'] });
+  assert.equal((await call('POST', '/api/settings/test-notification', { token: boss })).status, 200);
+  assert.equal(sent.pop().target, 'mobile_app_pixel');
+
+  // Two lobby screens, open Monday–Friday 08:00–18:00 (UTC TVs).
+  const lobby = await (await call('POST', '/api/locations', { token: boss, json: { name: 'Main lobby' } })).json();
+  const day = { open: '08:00', close: '18:00' };
+  await call('PATCH', `/api/locations/${lobby.id}`, { token: boss, json: { hours: { mon: day, tue: day, wed: day, thu: day, fri: day, sat: null, sun: null } } });
+  const screens = [];
+  for (const name of ['Back wall', 'Front window']) {
+    const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name, location: 'Main lobby' } });
+    await call('POST', '/api/player/heartbeat', { token: tv.token, json: { app_version: '0.4.0', time_zone: 'UTC', after_hours: 'standby' } });
+    screens.push(tv);
+  }
+  const lastSeen = (name, ms) => db.prepare(`UPDATE devices SET last_seen = ? WHERE name = ?`).run(ms, name);
+  lastSeen('Back wall', monday10);
+  lastSeen('Front window', monday10);
+
+  // 3 minutes of silence: nothing yet. 6 minutes: one notification.
+  await app.locals.checkScreens(monday10 + 3 * minute);
+  assert.equal(sent.length, 0);
+  await app.locals.checkScreens(monday10 + 6 * minute);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].title, '2 screens are offline');
+  assert.match(sent[0].message, /Back wall \(Main lobby\): last seen 10:00/);
+  assert.equal(sent[0].data.url, '/hassio/ingress/local_kiosk_server');
+  // It isn't repeated every minute.
+  await app.locals.checkScreens(monday10 + 7 * minute);
+  assert.equal(sent.length, 1);
+
+  // One comes back.
+  lastSeen('Back wall', monday10 + 8 * minute);
+  await app.locals.checkScreens(monday10 + 8 * minute);
+  assert.equal(sent[1].title, 'Back wall is back online');
+  assert.equal(sent[1].data.tag, `kiosk-screen-${db.prepare(`SELECT id FROM devices WHERE name = 'Back wall'`).get().id}`);
+
+  // Outside working hours (Monday 20:00, or Saturday), going quiet is expected.
+  lastSeen('Back wall', monday10 + 9 * 60 * minute);
+  await app.locals.checkScreens(monday10 + 10 * 60 * minute);
+  assert.equal(sent.length, 2);
+  // A screen that doesn't wake at Tuesday 08:00 is reported at 08:05, not at 08:00.
+  const tuesday8 = Date.parse('2026-11-03T08:00:00Z');
+  await app.locals.checkScreens(tuesday8 + minute);
+  assert.equal(sent.length, 2);
+  await app.locals.checkScreens(tuesday8 + 6 * minute);
+  assert.equal(sent[2].title, 'Back wall is offline');
+
+  // If Home Assistant can't be reached, it tries again next minute.
+  lastSeen('Back wall', tuesday8 + 7 * minute);
+  failing = true;
+  await app.locals.checkScreens(tuesday8 + 7 * minute);
+  failing = false;
+  await app.locals.checkScreens(tuesday8 + 8 * minute);
+  assert.equal(sent[3].title, 'Back wall is back online');
+});
+
+test('notifications: a whole site going quiet is reported as the site, not screen by screen', async (t) => {
+  const sent = [];
+  const homeAssistant = { async listTargets() { return []; }, async send(target, message) { sent.push(message); } };
+  const { call, signIn, app } = await startServer(t, { homeAssistant, monitorIntervalMs: 0, siteName: 'Head office' });
+  const boss = await signIn(BOSS);
+  await call('PATCH', '/api/settings', { token: boss, json: { notify_targets: ['mobile_app_pixel'] } });
+  for (const name of ['Branch 1', 'Branch 2']) {
+    const tv = await (await call('POST', '/api/player/register', { json: {}, headers: { 'x-kiosk-site': 'Orchard branch' } })).json();
+    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name } });
+  }
+  app.locals.db.prepare(`UPDATE devices SET last_seen = ?`).run(Date.now() - 10 * 60 * 1000);
+  await app.locals.checkScreens();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].message, /Orchard branch: all 2 screens are offline/);
+});
+
+test('Home Assistant notify services are read from its API', async () => {
+  const { createHomeAssistant } = require('../src/notify');
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([init.method, url, init.headers.authorization, init.body]);
+    return new Response(JSON.stringify(url.endsWith('/services')
+      ? [{ domain: 'light', services: { turn_on: {} } }, { domain: 'notify', services: { send_message: {}, mobile_app_pixel_8: {}, persistent_notification: {} } }]
+      : []), { status: 200 });
+  };
+  const ha = createHomeAssistant({ baseUrl: 'http://supervisor/core/api', token: 'secret', fetchImpl });
+  assert.deepEqual(await ha.listTargets(), [
+    { id: 'mobile_app_pixel_8', name: 'Phone or tablet: pixel 8' },
+    { id: 'persistent_notification', name: 'Home Assistant notifications (the bell in the sidebar)' },
+  ]);
+  await ha.send('mobile_app_pixel_8', { title: 'Hi', message: 'There' });
+  assert.deepEqual(calls[1].slice(0, 3), ['POST', 'http://supervisor/core/api/services/notify/mobile_app_pixel_8', 'Bearer secret']);
+  await assert.rejects(ha.send('../../config', { title: 'x', message: 'y' }));
+});

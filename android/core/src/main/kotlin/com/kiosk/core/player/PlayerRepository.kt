@@ -20,8 +20,16 @@ interface PlayerRepository {
     /**
      * Reports "I'm alive"; returns the server's current playlist version.
      * [download] is (files done, total) while new files are downloading.
+     * [timeZone] and [afterHours] ("black" or "standby") help the server judge working hours.
      */
-    suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String, download: Pair<Int, Int>? = null): String?
+    suspend fun heartbeat(
+        currentMediaId: Long?,
+        freeBytes: Long?,
+        appVersion: String,
+        download: Pair<Int, Int>? = null,
+        timeZone: String? = null,
+        afterHours: String? = null,
+    ): String?
 }
 
 /** The real server. [token] is the TV's saved secret, null before registering. */
@@ -42,6 +50,13 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     override suspend fun status(): PlayerStatus = apiCall { api.status() }
     override suspend fun playlist(): PlayerPlaylist = apiCall { api.playlist() }
 
-    override suspend fun heartbeat(currentMediaId: Long?, freeBytes: Long?, appVersion: String, download: Pair<Int, Int>?): String? =
-        apiCall { api.heartbeat(HeartbeatBody(currentMediaId, freeBytes, appVersion, download?.first, download?.second)) }.version
+    override suspend fun heartbeat(
+        currentMediaId: Long?,
+        freeBytes: Long?,
+        appVersion: String,
+        download: Pair<Int, Int>?,
+        timeZone: String?,
+        afterHours: String?,
+    ): String? =
+        apiCall { api.heartbeat(HeartbeatBody(currentMediaId, freeBytes, appVersion, download?.first, download?.second, timeZone, afterHours)) }.version
 }

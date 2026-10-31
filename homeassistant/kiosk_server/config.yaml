@@ -15,6 +15,9 @@ ingress_port: 8099
 panel_icon: mdi:television-play
 panel_title: Kiosk Signage
 panel_admin: true
+# Lets the add-on ask Home Assistant to send notifications (e.g. to your phone's
+# Home Assistant app) when a screen goes offline.
+homeassistant_api: true
 # "Open web UI" button on the add-on's page, for the web interface on port 3000.
 webui: "http://[HOST]:[PORT:3000]"
 ports:

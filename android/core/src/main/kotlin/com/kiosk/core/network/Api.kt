@@ -19,6 +19,9 @@ import com.kiosk.core.model.User
 import com.kiosk.core.model.WaitingDevice
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.RequestBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
@@ -38,12 +41,13 @@ internal interface AdminApi {
     @POST("api/media/sync") suspend fun syncLibrary(): Library
     @POST("api/media") suspend fun upload(
         @Header("X-Filename") encodedName: String,
-        @Header("X-Expires-At") expiresAt: String?, // left out when null
+        @Header("X-Starts-At") startsAt: String?, // left out when null
+        @Header("X-Expires-At") expiresAt: String?,
         @Body file: RequestBody,
     ): Media
-    @PATCH("api/media/{id}") suspend fun setExpiry(@Path("id") id: Long, @Body body: ExpiryBody): Media
+    @PATCH("api/media/{id}") suspend fun setSchedule(@Path("id") id: Long, @Body body: JsonObject): Media
     @DELETE("api/media/{id}") suspend fun deleteMedia(@Path("id") id: Long): OkReply
-    @POST("api/media/{id}/restore") suspend fun restoreMedia(@Path("id") id: Long, @Body body: ExpiryBody): Media
+    @POST("api/media/{id}/restore") suspend fun restoreMedia(@Path("id") id: Long, @Body body: JsonObject): Media
 
     @GET("api/playlists") suspend fun playlists(): List<PlaylistSummary>
     @GET("api/playlists/{id}") suspend fun playlist(@Path("id") id: Long): PlaylistDetail
@@ -75,8 +79,14 @@ internal interface PlayerApi {
 // ---------- Request and reply bodies ----------
 
 @Serializable internal data class OkReply(val ok: Boolean = true)
-/** null (left out) means "no expiry". */
-@Serializable internal data class ExpiryBody(@SerialName("expires_at") val expiresAt: Long? = null)
+/**
+ * A file's dates. Built by hand so an empty date is sent as null ("no date"),
+ * which the server treats differently from leaving it out ("keep as it is").
+ */
+internal fun scheduleBody(startsAt: Long?, expiresAt: Long?): JsonObject = buildJsonObject {
+    put("starts_at", startsAt)
+    put("expires_at", expiresAt)
+}
 @Serializable internal data class GoogleSignInBody(@SerialName("id_token") val idToken: String)
 @Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape)
 @Serializable
@@ -113,6 +123,10 @@ internal data class HeartbeatBody(
     /** While new files download: how many are done, out of how many. */
     @SerialName("download_done") val downloadDone: Int? = null,
     @SerialName("download_total") val downloadTotal: Int? = null,
+    /** This TV's time zone, so the server knows when its location is open for it. */
+    @SerialName("time_zone") val timeZone: String? = null,
+    /** What it does after hours: "black" or "standby". */
+    @SerialName("after_hours") val afterHours: String? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

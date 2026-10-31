@@ -50,21 +50,21 @@ class LibraryViewModel(private val repo: AdminRepository, onSignedOut: () -> Uni
         }
     }
 
-    /** [expiresAt]: when it should leave Kiosk, or null for never. */
-    fun upload(file: UploadSource, expiresAt: Long?) {
+    /** [startsAt]/[expiresAt]: when it starts showing and leaves Kiosk, or null for no limit. */
+    fun upload(file: UploadSource, startsAt: Long?, expiresAt: Long?) {
         if (_state.value.upload != null) return say("Wait for the current upload to finish")
         _state.update { it.copy(upload = Upload(file.name, 0f)) }
         launchSafely(onError = { _state.update { s -> s.copy(upload = null) } }) {
-            repo.upload(file, expiresAt) { p -> _state.update { it.copy(upload = it.upload?.copy(progress = p)) } }
+            repo.upload(file, startsAt, expiresAt) { p -> _state.update { it.copy(upload = it.upload?.copy(progress = p)) } }
             _state.update { it.copy(upload = null, library = repo.library()) }
             say("${file.name} saved to Google Drive")
         }
     }
 
-    fun setExpiry(m: Media, expiresAt: Long?) = launchSafely {
-        repo.setMediaExpiry(m.id, expiresAt)
+    fun setSchedule(m: Media, startsAt: Long?, expiresAt: Long?) = launchSafely {
+        repo.setMediaSchedule(m.id, startsAt, expiresAt)
         _state.update { it.copy(library = repo.library()) }
-        say(if (expiresAt == null) "${m.filename} no longer expires" else "${m.filename}: ${showsUntil(expiresAt).lowercase()}")
+        say(if (startsAt == null && expiresAt == null) "${m.filename} shows with no date limits" else "${m.filename}: dates saved")
     }
 
     /** "Remove from Kiosk". Google Drive keeps the file. */
@@ -74,8 +74,8 @@ class LibraryViewModel(private val repo: AdminRepository, onSignedOut: () -> Uni
         say("${m.filename} removed from Kiosk. Google Drive still has it.")
     }
 
-    fun restore(r: RemovedMedia, expiresAt: Long?) = launchSafely {
-        repo.restoreMedia(r.id, expiresAt)
+    fun restore(r: RemovedMedia, startsAt: Long?, expiresAt: Long?) = launchSafely {
+        repo.restoreMedia(r.id, startsAt, expiresAt)
         _state.update { it.copy(library = repo.library()) }
         say("${r.filename} is back in the library. Add it to a playlist to show it.")
     }

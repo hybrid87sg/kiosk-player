@@ -33,12 +33,13 @@ class ContentSync(
     fun isReady(item: PlayerItem): Boolean = fileFor(item).let { it.exists() && it.length() == item.size }
 
     /**
-     * Downloads every missing file of [playlist], one after another, and
-     * deletes files no longer used. [onProgress] gets (files done, total).
+     * Downloads every missing file of [playlist], one after another (files
+     * starting soon too, so they're ready in time), and deletes files no
+     * longer used. [onProgress] gets (files done, total).
      * Throws if a download fails; files already finished are kept.
      */
     suspend fun sync(playlist: PlayerPlaylist, onProgress: (Int, Int) -> Unit = { _, _ -> }) {
-        val items = playlist.items.distinctBy { it.id to it.md5 }
+        val items = (playlist.items + playlist.upcoming).distinctBy { it.id to it.md5 }
         var done = items.count { isReady(it) }
         onProgress(done, items.size)
         for (item in items) {

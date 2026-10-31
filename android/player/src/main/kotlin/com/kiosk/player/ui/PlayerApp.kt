@@ -63,6 +63,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.player.FoundServer
 import com.kiosk.player.BuildConfig
+import com.kiosk.player.AfterHours
 import com.kiosk.player.KeepInFront
 import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
@@ -87,6 +88,7 @@ fun PlayerApp(vm: PlayerViewModel) {
                 is PlayerUi.Pairing -> PairingScreen(state, onSettings = { settingsOpen = true }, onStartDemo = vm::startDemoPlayback)
                 is PlayerUi.Waiting -> CenterMessage(state.name?.uppercase(), state.title, state.detail, state.progress, onSettings = { settingsOpen = true })
                 is PlayerUi.Playing -> PlaybackScreen(state, onNowPlaying = { vm.currentMediaId = it }, onOpenSettings = { settingsOpen = true })
+                is PlayerUi.Closed -> ClosedScreen(onOpenSettings = { settingsOpen = true })
             }
             if (settingsOpen) {
                 SettingsPanel(vm, onClose = { settingsOpen = false })
@@ -313,6 +315,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             )
             Text("Kiosk Player ${BuildConfig.VERSION_NAME}", fontSize = 20.sp, color = Muted)
             KeepInFrontSection()
+            AfterHoursSection()
             if (vm.isDemo) {
                 Text("Demo: how this screen is mounted", fontSize = 22.sp, color = Muted)
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -393,6 +396,51 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
         if (showAdb) {
             Text(
                 "This TV box hides that setting. From a computer on the same network, run:\n${KeepInFront.ADB_COMMAND}",
+                fontSize = 18.sp, color = Color(0xFFFDBA74),
+            )
+        }
+    }
+}
+
+/**
+ * Outside working hours: plain black (nothing to burn into the screen). The
+ * remote's OK button still opens settings.
+ */
+@Composable
+private fun ClosedScreen(onOpenSettings: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Box(Modifier.fillMaxSize().background(Color.Black).openSettingsOnOk(onOpenSettings, focus))
+}
+
+/** The one-time permission that lets the player put the screen into standby after hours. */
+@Composable
+private fun AfterHoursSection(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(AfterHours.canSleep(context)) }
+    var showAdb by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        allowed = AfterHours.canSleep(context)
+        onPauseOrDispose { }
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("After working hours", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text(
+            if (allowed) "Black screen, and standby where this TV allows it. It wakes up at opening time."
+            else "Black screen. Allow “turn the screen off” to also put the TV into standby where it can.",
+            fontSize = 20.sp,
+            color = Muted,
+        )
+        if (!allowed) {
+            TvButton("Allow turning the screen off", {
+                KeepInFront.pauseFor(3) // don't jump back while Android's screen is open
+                val activity = context as? Activity
+                if (activity == null || !AfterHours.openPermissionScreen(activity)) showAdb = true
+            })
+        }
+        if (showAdb) {
+            Text(
+                "This TV hides that setting. From a computer on the same network, run:\n${AfterHours.ADB_COMMAND}",
                 fontSize = 18.sp, color = Color(0xFFFDBA74),
             )
         }

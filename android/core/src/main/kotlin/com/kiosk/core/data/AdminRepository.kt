@@ -25,13 +25,16 @@ interface AdminRepository {
 
     suspend fun library(): Library
     suspend fun syncLibrary(): Library
-    /** [expiresAt]: when the file should leave Kiosk (unix ms), or null for never. */
-    suspend fun upload(file: UploadSource, expiresAt: Long? = null, onProgress: (Float) -> Unit): Media
-    suspend fun setMediaExpiry(id: Long, expiresAt: Long?): Media
+    /**
+     * [startsAt]: when the file starts showing (unix ms), or null for straight away.
+     * [expiresAt]: when it leaves Kiosk, or null for never.
+     */
+    suspend fun upload(file: UploadSource, startsAt: Long? = null, expiresAt: Long? = null, onProgress: (Float) -> Unit): Media
+    suspend fun setMediaSchedule(id: Long, startsAt: Long?, expiresAt: Long?): Media
     /** "Remove from Kiosk": out of the library, playlists and screens. Google Drive keeps the file. */
     suspend fun deleteMedia(id: Long)
     /** Brings an expired or removed file back into the library (not into playlists). */
-    suspend fun restoreMedia(id: Long, expiresAt: Long?): Media
+    suspend fun restoreMedia(id: Long, startsAt: Long?, expiresAt: Long?): Media
 
     suspend fun playlists(): List<PlaylistSummary>
     suspend fun playlist(id: Long): PlaylistDetail

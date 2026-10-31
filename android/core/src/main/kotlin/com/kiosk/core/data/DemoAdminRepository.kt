@@ -53,7 +53,10 @@ class DemoAdminRepository(
         DemoPlaylist(2, "Reception portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(6, 12), PlaylistEntry(7, 10))),
     )
     private val devices = mutableListOf(
-        Device(1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4", freeBytes = 21_400_000_000),
+        Device(
+            1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4",
+            freeBytes = 21_400_000_000, hoursSummary = "Mon–Fri 08:00–18:00 · Sat–Sun closed",
+        ),
         Device(2, "Reception", "Branch office", Mounting.PORTRAIT_RIGHT, 2, online = false, lastSeen = start - 3 * 3_600_000, currentFilename = "Menu board portrait.jpg", freeBytes = 9_800_000_000),
     )
     // A TV that found the server by itself and is waiting to be added.
@@ -99,8 +102,9 @@ class DemoAdminRepository(
         }
     }
 
-    private fun checkExpiry(expiresAt: Long?) {
-        if (expiresAt != null && expiresAt <= now()) throw ApiException("Choose an expiry date in the future", 400)
+    private fun checkSchedule(startsAt: Long?, expiresAt: Long?) {
+        if (expiresAt != null && expiresAt <= now()) throw ApiException("Choose an end date in the future", 400)
+        if (startsAt != null && expiresAt != null && startsAt >= expiresAt) throw ApiException("The end date must be after the start date", 400)
     }
 
     private suspend fun pause() { if (latencyMs > 0) delay(latencyMs) }
@@ -125,8 +129,8 @@ class DemoAdminRepository(
         return library()
     }
 
-    override suspend fun upload(file: UploadSource, expiresAt: Long?, onProgress: (Float) -> Unit): Media {
-        checkExpiry(expiresAt)
+    override suspend fun upload(file: UploadSource, startsAt: Long?, expiresAt: Long?, onProgress: (Float) -> Unit): Media {
+        checkSchedule(startsAt, expiresAt)
         val type = when {
             file.mime.startsWith("video/") || file.name.lowercase().endsWith(".mp4") -> MediaType.VIDEO
             file.mime.startsWith("image/") || Regex("\\.(jpe?g|png|webp)$").containsMatchIn(file.name.lowercase()) -> MediaType.IMAGE
@@ -134,18 +138,18 @@ class DemoAdminRepository(
         }
         for (step in 1..20) { delay(120); onProgress(step / 20f) }
         val item = DemoMedia(
-            Media(nextId++, file.name, type, file.mime, file.size, "demo-upload", file.width, file.height, shapeOf(file.width, file.height) ?: ScreenShape.LANDSCAPE, now(), expiresAt),
+            Media(nextId++, file.name, type, file.mime, file.size, "demo-upload", file.width, file.height, shapeOf(file.width, file.height) ?: ScreenShape.LANDSCAPE, now(), startsAt = startsAt, expiresAt = expiresAt),
             shapeKnownAt = now() + 3000,
         )
         media += item
         return item.visible()
     }
 
-    override suspend fun setMediaExpiry(id: Long, expiresAt: Long?): Media {
+    override suspend fun setMediaSchedule(id: Long, startsAt: Long?, expiresAt: Long?): Media {
         pause()
-        checkExpiry(expiresAt)
+        checkSchedule(startsAt, expiresAt)
         val i = media.indexOfFirst { it.media.id == id }.takeIf { it >= 0 } ?: throw ApiException("Not found", 404)
-        media[i] = media[i].copy(media = media[i].media.copy(expiresAt = expiresAt))
+        media[i] = media[i].copy(media = media[i].media.copy(startsAt = startsAt, expiresAt = expiresAt))
         return media[i].visible()
     }
 
@@ -154,13 +158,16 @@ class DemoAdminRepository(
         retire(id, "removed")
     }
 
-    override suspend fun restoreMedia(id: Long, expiresAt: Long?): Media {
+    override suspend fun restoreMedia(id: Long, startsAt: Long?, expiresAt: Long?): Media {
         pause()
-        checkExpiry(expiresAt)
+        checkSchedule(startsAt, expiresAt)
         val r = removed.firstOrNull { it.id == id } ?: throw ApiException("Not found", 404)
         removed.remove(r)
         val mime = if (r.type == MediaType.VIDEO) "video/mp4" else "image/jpeg"
-        val restored = DemoMedia(Media(r.id, r.filename, r.type, mime, r.size, "demo${r.id}", null, null, r.orientation, now(), expiresAt), 0)
+        val restored = DemoMedia(
+            Media(r.id, r.filename, r.type, mime, r.size, "demo${r.id}", null, null, r.orientation, now(), startsAt = startsAt, expiresAt = expiresAt),
+            0,
+        )
         media += restored
         return restored.visible()
     }
@@ -176,7 +183,10 @@ class DemoAdminRepository(
             s.id, s.name, s.orientation, s.version, s.itemCount, s.devices,
             items.mapNotNull { e ->
                 mediaById(e.mediaId)?.let { m ->
-                    PlaylistItem(m.id, e.imageSeconds, m.filename, m.type, m.mime, m.size, m.md5, m.orientation, e.startAt, e.endAt, m.expiresAt)
+                    PlaylistItem(
+                        m.id, e.imageSeconds, m.filename, m.type, m.mime, m.size, m.md5, m.orientation, e.startAt, e.endAt,
+                        startsAt = m.startsAt, expiresAt = m.expiresAt,
+                    )
                 }
             },
         )

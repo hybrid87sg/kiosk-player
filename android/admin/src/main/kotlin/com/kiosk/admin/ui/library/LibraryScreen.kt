@@ -88,15 +88,17 @@ fun LibraryRoute(ctx: ScreenContext) {
         state = state,
         onRefresh = vm::syncNow,
         onPickFile = { picker.launch(arrayOf("video/mp4", "image/jpeg", "image/png", "image/webp")) },
-        onSetExpiry = vm::setExpiry,
+        onSetSchedule = vm::setSchedule,
         onRemove = vm::remove,
         onRestore = vm::restore,
     )
     pending?.let { file ->
-        ExpiryPicker(
-            current = null,
+        ScheduleDialog(
+            title = "When should ${file.name} show?",
+            startsAt = null,
+            expiresAt = null,
             confirmLabel = "Upload",
-            onPicked = { expiresAt -> pending = null; vm.upload(file, expiresAt) },
+            onSave = { startsAt, expiresAt -> pending = null; vm.upload(file, startsAt, expiresAt) },
             onDismiss = { pending = null },
         )
     }
@@ -109,9 +111,9 @@ fun LibraryScreen(
     state: LibraryUiState,
     onRefresh: () -> Unit,
     onPickFile: () -> Unit,
-    onSetExpiry: (Media, Long?) -> Unit,
+    onSetSchedule: (Media, Long?, Long?) -> Unit,
     onRemove: (Media) -> Unit,
-    onRestore: (RemovedMedia, Long?) -> Unit,
+    onRestore: (RemovedMedia, Long?, Long?) -> Unit,
 ) {
     var showAdd by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<Media?>(null) }
@@ -193,19 +195,23 @@ fun LibraryScreen(
     }
 
     expiryFor?.let { m ->
-        ExpiryPicker(
-            current = m.expiresAt,
+        ScheduleDialog(
+            title = "When should ${m.filename} show?",
+            startsAt = m.startsAt,
+            expiresAt = m.expiresAt,
             confirmLabel = "Save",
-            onPicked = { expiresAt -> expiryFor = null; onSetExpiry(m, expiresAt) },
+            onSave = { startsAt, expiresAt -> expiryFor = null; onSetSchedule(m, startsAt, expiresAt) },
             onDismiss = { expiryFor = null },
         )
     }
 
     restoreFor?.let { r ->
-        ExpiryPicker(
-            current = null,
+        ScheduleDialog(
+            title = "Restore ${r.filename}",
+            startsAt = null,
+            expiresAt = null,
             confirmLabel = "Restore",
-            onPicked = { expiresAt -> restoreFor = null; onRestore(r, expiresAt) },
+            onSave = { startsAt, expiresAt -> restoreFor = null; onRestore(r, startsAt, expiresAt) },
             onDismiss = { restoreFor = null },
         )
     }
@@ -283,6 +289,9 @@ private fun MediaRow(m: Media, onSetExpiry: () -> Unit, onRemove: () -> Unit) {
                 if (m.orientation == null) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                 Text(mediaMeta(m), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            m.startsAt?.takeIf { it > System.currentTimeMillis() }?.let { s ->
+                Text(startsOn(s), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
             m.expiresAt?.let { e ->
                 Text(
                     showsUntil(e),
@@ -296,7 +305,7 @@ private fun MediaRow(m: Media, onSetExpiry: () -> Unit, onRemove: () -> Unit) {
                 Icon(Icons.Outlined.MoreVert, contentDescription = "More for ${m.filename}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text(if (m.expiresAt == null) "Set expiry date" else "Change expiry date") }, onClick = { menu = false; onSetExpiry() })
+                DropdownMenuItem(text = { Text("Show from / until…") }, onClick = { menu = false; onSetExpiry() })
                 DropdownMenuItem(text = { Text("Remove from Kiosk") }, onClick = { menu = false; onRemove() })
             }
         }

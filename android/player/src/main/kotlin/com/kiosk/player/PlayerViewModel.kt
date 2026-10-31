@@ -14,7 +14,9 @@ import com.kiosk.core.network.ApiException
 import com.kiosk.core.network.normaliseBaseUrl
 import com.kiosk.core.player.ContentSync
 import com.kiosk.core.player.DownloadException
+import com.kiosk.core.model.DayHours
 import com.kiosk.core.player.FoundServer
+import com.kiosk.core.player.OpeningHours
 import com.kiosk.core.player.ServerFinder
 import com.kiosk.core.player.RemotePlayerRepository
 import kotlinx.coroutines.Job
@@ -25,6 +27,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import java.net.Inet4Address
+import java.time.Duration
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 
 /** One thing to show: a downloaded file, or (in Demo mode) a coloured slide. */
 data class PlayItem(
@@ -47,6 +53,8 @@ sealed interface PlayerUi {
     data class Pairing(val code: String, val qrPayload: String, val demo: Boolean, val problem: String? = null) : PlayerUi
     data class Waiting(val name: String?, val title: String, val detail: String, val progress: Float? = null) : PlayerUi
     data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null) : PlayerUi
+    /** Outside the location's working hours: a black screen (and standby where allowed). */
+    data class Closed(val opens: String?) : PlayerUi
 }
 
 /** How long the server must be silent before the TV looks for it at a new address. */
@@ -160,8 +168,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val repo = RemotePlayerRepository(url, settings.token)
         val sync = ContentSync(repo.httpClient, repo.baseUrl, mediaDir)
 
-        // After a power cut, start playing what's already on the box straight away.
-        if (settings.token != null) settings.cachedPlaylist?.let { show(it, sync) }
+        // After a power cut, start playing what's already on the box straight away
+        // (or stay dark, if it's outside working hours).
+        if (settings.token != null) settings.cachedPlaylist?.let { show(it, sync); applyHours(it.hours) { show(it, sync) } }
 
         // Remember which server this is, so the TV can find it again if its address changes.
         if (settings.serverId == null) {
@@ -175,13 +184,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             var wait = 60_000L
             try {
                 val playlist = repo.playlist()
-                if (playlist.version != version || playlist.items.any { !sync.isReady(it) }) {
+                if (playlist.version != version || (playlist.items + playlist.upcoming).any { !sync.isReady(it) }) {
                     download(playlist, sync, repo)
                     settings.cachedPlaylist = playlist
                     version = playlist.version
                 }
                 show(playlist, sync)
-                repo.heartbeat(currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME)
+                repo.heartbeat(
+                    currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
+                    timeZone = ZoneId.systemDefault().id, afterHours = AfterHours.mode(getApplication()),
+                )
                 unreachableSince = null
             } catch (e: ApiException) {
                 when (e.status) {
@@ -213,6 +225,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 setBadge("Download problem, retrying…")
                 wait = 15_000
             }
+            // Working hours (from the last playlist, so they hold even while offline).
+            wait = minOf(wait, applyHours(settings.cachedPlaylist?.hours) { settings.cachedPlaylist?.let { show(it, sync) } })
             delay(wait)
         }
     }
@@ -259,14 +273,42 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             val current = _ui.value
             if (current is PlayerUi.Playing) {
                 if (done < total) _ui.value = current.copy(badge = text)
-            } else if (total > 0) {
+            } else if (current !is PlayerUi.Closed && total > 0) { // downloading at night stays dark
                 _ui.value = PlayerUi.Waiting(playlist.name, "Getting content ready", "$text…", done.toFloat() / total)
             }
         }
     }
 
+    // The opening time the device was last put to sleep until, so it's done once per closing.
+    private var sleptUntil: Long? = null
+
+    /**
+     * Outside working hours: a black screen, and standby where allowed, with
+     * an alarm to wake up at opening time. [reopen] shows the playlist again
+     * at opening time. Returns how long until the next opening or closing, so
+     * the loop checks again right then.
+     */
+    private fun applyHours(hours: Map<String, DayHours?>?, reopen: () -> Unit): Long {
+        val now = ZonedDateTime.now()
+        val next = OpeningHours.nextChange(hours, now)
+        if (OpeningHours.isOpen(hours, now)) {
+            sleptUntil = null
+            if (_ui.value is PlayerUi.Closed) reopen()
+        } else {
+            _ui.value = PlayerUi.Closed(next?.format(DateTimeFormatter.ofPattern("EEE HH:mm")))
+            val opensAt = next?.toInstant()?.toEpochMilli()
+            if (sleptUntil != opensAt || opensAt == null) {
+                sleptUntil = opensAt
+                AfterHours.sleepUntil(getApplication(), opensAt)
+            }
+        }
+        return next?.let { (Duration.between(now, it).toMillis() + 1_000).coerceAtLeast(1_000) } ?: Long.MAX_VALUE
+    }
+
     /** Shows the playlist's downloaded files, or "Waiting for content". */
     private fun show(playlist: PlayerPlaylist, sync: ContentSync) {
+        // Stay dark after hours (the loop refreshes every minute, also at night).
+        if (_ui.value is PlayerUi.Closed && !OpeningHours.isOpen(playlist.hours, ZonedDateTime.now())) return
         val items = playlist.items.filter { sync.isReady(it) }.map {
             PlayItem(it.id, it.filename, it.type, sync.fileFor(it), it.durationSeconds ?: 10, it.orientation)
         }
@@ -312,7 +354,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private fun offline(message: String?) {
         val current = _ui.value
         if (current is PlayerUi.Playing) _ui.value = current.copy(badge = "Offline · playing saved files")
-        else if (current !is PlayerUi.Pairing) _ui.value = PlayerUi.Waiting(null, "Can't reach the server", message.orEmpty())
+        else if (current !is PlayerUi.Pairing && current !is PlayerUi.Closed) _ui.value = PlayerUi.Waiting(null, "Can't reach the server", message.orEmpty())
     }
 
     private fun setBadge(text: String) = _ui.update { if (it is PlayerUi.Playing) it.copy(badge = text) else it }

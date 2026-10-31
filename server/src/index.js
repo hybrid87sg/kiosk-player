@@ -22,6 +22,7 @@ const path = require('node:path');
 const { createApp, createIngressServer } = require('./app');
 const { createGoogle } = require('./google');
 const { createRelay } = require('./relay');
+const { createHomeAssistant } = require('./notify');
 
 function loadSettings() {
   const env = process.env;
@@ -121,6 +122,10 @@ const app = createApp({
   mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
   cacheMedia: settings.cache,
   siteName: settings.siteName,
+  // As a Home Assistant add-on, Home Assistant hands us a token for its API (used for notifications).
+  homeAssistant: process.env.SUPERVISOR_TOKEN
+    ? createHomeAssistant({ baseUrl: 'http://supervisor/core/api', token: process.env.SUPERVISOR_TOKEN })
+    : null,
   google: createGoogle({
     webClientId: settings.webClientId,
     deviceClientId: settings.deviceClientId,

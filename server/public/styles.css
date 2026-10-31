@@ -184,3 +184,39 @@ dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column
 .upload-expiry { margin-top: 10px; gap: 8px; }
 .removed { margin-top: 24px; }
 .removed > .btn { padding-left: 4px; }
+
+/* Collapsible side menu, and the Locations part of it */
+.brand { position: relative; }
+.nav-toggle { margin-left: auto; width: 32px; min-height: 32px; }
+.nav-sub { display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px 30px; }
+.nav-sub a { padding: 6px 10px; font-size: 14px; font-weight: 500; justify-content: space-between; }
+.nav-sub .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.nav-site { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px 10px 2px; }
+.nav.collapsed { width: 72px; padding-left: 10px; padding-right: 10px; }
+.nav.collapsed .label, .nav.collapsed .nav-sub, .nav.collapsed .who { display: none; }
+.nav.collapsed .brand { flex-direction: column; padding: 4px 0 14px; gap: 8px; }
+.nav.collapsed .nav-toggle { margin: 0; }
+.nav.collapsed a { justify-content: center; padding: 10px 0; }
+@media (max-width: 760px) {
+  .nav-toggle, .nav-sub { display: none; }
+  .nav.collapsed { width: auto; }
+  .nav.collapsed .label { display: inline; }
+  .nav.collapsed .who { display: block; }
+  .nav.collapsed a { padding: 10px 12px; }
+  .nav.collapsed .brand { flex-direction: row; padding: 4px 10px 8px; }
+}
+
+/* Locations pages and the working-hours editor */
+.link-row { color: var(--ink); text-decoration: none; }
+.link-row:hover { background: var(--card2); }
+.loc-mark { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--primary-container); color: var(--on-primary-container); flex: none; }
+.group-head { gap: 12px; }
+.hours-link { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--primary); text-decoration: none; }
+.hours-grid { display: flex; flex-direction: column; gap: 8px; }
+.hours-row { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto auto; gap: 8px; align-items: center; }
+.hours-row input[type=time]:disabled { opacity: 0.4; }
+@media (max-width: 480px) { .hours-row { grid-template-columns: 1fr auto auto auto; font-size: 14px; } .hours-row .date-input { max-width: 96px; } }
+.brand .label { white-space: nowrap; }
+.nav:not(.collapsed) .brand { font-size: 17px; gap: 8px; padding-right: 0; }
+.meta.row.nowrap { flex-wrap: nowrap; align-items: flex-start; }
+.meta.row.nowrap > span[aria-hidden] { margin-top: 3px; }
