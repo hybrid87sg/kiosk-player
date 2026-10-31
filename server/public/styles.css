@@ -1,26 +1,26 @@
-/* Kiosk Signage web interface. Colours match the phone app's style sheet. */
+/* Kiosk Signage web interface. "Calm Slate" colours, matching the phone app's Theme.kt. */
 :root {
-  --page: #E3ECEA; --bg: #F4F8F7; --card: #FFFFFF; --card2: #EAF2F0;
-  --border: #D3DEDB; --border-strong: #7A8C88;
-  --ink: #10201E; --muted: #4A5C59;
-  --primary: #0F766E; --on-primary: #FFFFFF; --primary-container: #CCFBF1; --on-primary-container: #0B4F4A;
-  --accent: #C2410C; --accent-container: #FFEDD5; --on-accent-container: #7C2D12;
-  --danger: #B91C1C; --on-danger: #FFFFFF;
-  --success: #15803D; --success-container: #DCFCE7; --on-success-container: #14532D;
-  --neutral-container: #E7ECEB; --on-neutral-container: #3B4A47;
-  --shadow: 0 6px 24px rgba(8, 20, 18, 0.12);
+  --page: #ECEAE5; --bg: #F6F5F2; --card: #FFFFFF; --card2: #ECEAE5;
+  --border: #DAD8D2; --border-strong: #8A9099;
+  --ink: #1F2328; --muted: #5A616B;
+  --primary: #35607A; --on-primary: #FFFFFF; --primary-container: #DCE6EC; --on-primary-container: #1E3A4A;
+  --accent: #A0612A; --accent-container: #F3E6D6; --on-accent-container: #5A3712;
+  --danger: #A23B3B; --on-danger: #FFFFFF;
+  --success: #3F7A57; --success-container: #E0EDE4; --on-success-container: #234A33;
+  --neutral-container: #E8E6E1; --on-neutral-container: #454B53;
+  --shadow: 0 6px 24px rgba(20, 24, 28, 0.10);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --page: #070D0C; --bg: #0E1716; --card: #16211F; --card2: #1D2A28;
-    --border: #2C3B38; --border-strong: #6B8580;
-    --ink: #E6F0EE; --muted: #A3B5B1;
-    --primary: #5EEAD4; --on-primary: #042F2C; --primary-container: #134E4A; --on-primary-container: #CCFBF1;
-    --accent: #FDBA74; --accent-container: #431407; --on-accent-container: #FED7AA;
-    --danger: #FCA5A5; --on-danger: #450A0A;
-    --success: #86EFAC; --success-container: #14361F; --on-success-container: #BBF7D0;
-    --neutral-container: #26332F; --on-neutral-container: #C8D6D3;
+    --page: #0F1114; --bg: #15181C; --card: #1D2126; --card2: #252A30;
+    --border: #333940; --border-strong: #6E7782;
+    --ink: #E6E8EB; --muted: #A7AEB7;
+    --primary: #8FB4C9; --on-primary: #12283A; --primary-container: #2A4558; --on-primary-container: #D6E5EE;
+    --accent: #D9A66E; --accent-container: #3D2C1A; --on-accent-container: #F0DCC3;
+    --danger: #E39A94; --on-danger: #3E1513;
+    --success: #8CC3A0; --success-container: #1F3528; --on-success-container: #CDE6D5;
+    --neutral-container: #2A2F35; --on-neutral-container: #C9CED4;
     --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
@@ -152,7 +152,7 @@ dialog {
   border: 0; border-radius: 24px; padding: 0; width: min(560px, calc(100vw - 32px));
   background: var(--card); color: var(--ink); box-shadow: var(--shadow);
 }
-dialog::backdrop { background: rgba(8, 20, 18, 0.5); }
+dialog::backdrop { background: rgba(20, 24, 28, 0.5); }
 dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 

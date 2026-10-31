@@ -67,10 +67,13 @@ import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
 import com.kiosk.player.PlayerViewModel
 
-val Teal = Color(0xFF5EEAD4)
-val Ink = Color(0xFF0B1211)
-val Muted = Color(0xFFB8C9C5)
-val Panel = Color(0xFF1E2928)
+val Teal = Color(0xFF8FB4C9)
+val Ink = Color(0xFF15181C)
+val Muted = Color(0xFFA7AEB7)
+val Panel = Color(0xFF252A30)
+val Detail = Color(0xFFD3D7DC)
+val Warn = Color(0xFFD9A66E)
+val Online = Color(0xFF8CC3A0)
 
 @Composable
 fun PlayerApp(vm: PlayerViewModel) {
@@ -170,14 +173,14 @@ private fun PairingScreen(state: PlayerUi.Pairing, onSettings: () -> Unit, onSta
         Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
             Text("Add this screen", fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Open Kiosk Admin on your phone", fontSize = 28.sp, color = Color(0xFFD5E2DF))
-                Text("Players → Scan QR code", fontSize = 28.sp, color = Color(0xFFD5E2DF))
+                Text("Open Kiosk Admin on your phone", fontSize = 28.sp, color = Detail)
+                Text("Players → Scan QR code", fontSize = 28.sp, color = Detail)
             }
             Column {
                 Text("Or type this code", fontSize = 24.sp, color = Muted)
                 Text(prettyCode(state.code), fontSize = 80.sp, fontWeight = FontWeight.Bold, letterSpacing = 10.sp, color = Teal)
             }
-            state.problem?.let { Text(it, fontSize = 22.sp, color = Color(0xFFFDBA74)) }
+            state.problem?.let { Text(it, fontSize = 22.sp, color = Warn) }
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (state.demo) {
                     TvButton("Start demo playback", onStartDemo, Modifier.focusRequester(focus), primary = true)
@@ -185,7 +188,7 @@ private fun PairingScreen(state: PlayerUi.Pairing, onSettings: () -> Unit, onSta
                 } else {
                     TvButton("Settings", onSettings, Modifier.focusRequester(focus))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(12.dp).background(Color(0xFF4ADE80), CircleShape))
+                        Box(Modifier.size(12.dp).background(Online, CircleShape))
                         Text("  Waiting to be added", fontSize = 22.sp, color = Muted)
                     }
                 }
@@ -227,7 +230,7 @@ private fun CenterMessage(
     ) {
         eyebrow?.let { Text(it, fontSize = 22.sp, color = Muted, letterSpacing = 3.sp, fontWeight = FontWeight.SemiBold) }
         Text(title, fontSize = 52.sp, fontWeight = FontWeight.Bold, color = Color.White, textAlign = TextAlign.Center)
-        Text(detail, fontSize = 26.sp, color = Color(0xFFD5E2DF), textAlign = TextAlign.Center)
+        Text(detail, fontSize = 26.sp, color = Detail, textAlign = TextAlign.Center)
         if (progress != null) {
             LinearProgressIndicator(progress = { progress }, color = Teal, trackColor = Panel, modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().height(10.dp))
         }
@@ -254,7 +257,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             Text("Settings", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Text(
                 if (vm.isDemo) "Demo mode · no server" else "Server: ${vm.serverUrl ?: "not set"}",
-                fontSize = 24.sp, color = Color(0xFFD5E2DF),
+                fontSize = 24.sp, color = Detail,
             )
             Text("Kiosk Player ${BuildConfig.VERSION_NAME}", fontSize = 20.sp, color = Muted)
             KeepInFrontSection()
@@ -278,7 +281,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             if (confirmReset) {
                 Text(
                     "Starting over forgets the server, the pairing and the downloaded files on this TV.",
-                    fontSize = 20.sp, color = Color(0xFFFDBA74),
+                    fontSize = 20.sp, color = Warn,
                 )
             }
         }
@@ -313,7 +316,7 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
                 else -> "On · returns 30 seconds after someone leaves the app"
             },
             fontSize = 20.sp,
-            color = if (!granted) Color(0xFFFDBA74) else Muted,
+            color = if (!granted) Warn else Muted,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             if (!granted) {
@@ -338,7 +341,7 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
         if (showAdb) {
             Text(
                 "This TV box hides that setting. From a computer on the same network, run:\n${KeepInFront.ADB_COMMAND}",
-                fontSize = 18.sp, color = Color(0xFFFDBA74),
+                fontSize = 18.sp, color = Warn,
             )
         }
     }
