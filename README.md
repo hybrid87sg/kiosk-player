@@ -29,6 +29,11 @@ Your videos and pictures live in a **Google Drive shared drive**. Anything you d
 app's Library. Each TV downloads its playlist and plays from its own storage, so it keeps playing if the
 internet drops.
 
+4K videos are kept as they are in Drive. The server also makes smaller copies so a weak Android TV box
+can play them smoothly: 1080p H.264 for most boxes, 720p if a box cannot do 1080p, and an optional 4K
+HEVC copy for a box that can decode it. Each player reports what it can decode, and downloads the copy
+that fits. On a slow Home Assistant machine (a Raspberry Pi), turn **Make playback copies** off.
+
 ---
 
 ## Setup guide

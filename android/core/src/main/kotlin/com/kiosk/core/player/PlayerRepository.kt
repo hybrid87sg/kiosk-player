@@ -1,5 +1,6 @@
 package com.kiosk.core.player
 
+import com.kiosk.core.model.DeviceCapabilities
 import com.kiosk.core.model.PlayerPlaylist
 import com.kiosk.core.model.PlayerStatus
 import com.kiosk.core.model.Registration
@@ -13,8 +14,11 @@ import okhttp3.OkHttpClient
 
 /** What the TV player asks the server. */
 interface PlayerRepository {
-    /** [model] is the TV box's make and model, shown while it waits to be added. */
-    suspend fun register(appVersion: String, model: String? = null): Registration
+    /**
+     * [model] is the TV box's make and model, shown while it waits to be added.
+     * [decoders] is what it can play, so it gets playback copies that suit it.
+     */
+    suspend fun register(appVersion: String, model: String? = null, decoders: DeviceCapabilities? = null): Registration
     suspend fun status(): PlayerStatus
     suspend fun playlist(): PlayerPlaylist
     /**
@@ -29,6 +33,8 @@ interface PlayerRepository {
         download: Pair<Int, Int>? = null,
         timeZone: String? = null,
         afterHours: String? = null,
+        decoders: DeviceCapabilities? = null,
+        playbackError: String? = null,
     ): String?
 }
 
@@ -41,8 +47,8 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     val httpClient: OkHttpClient get() = connection.client
     val baseUrl: String get() = connection.baseUrl
 
-    override suspend fun register(appVersion: String, model: String?): Registration =
-        apiCall { api.register(AppVersionBody(appVersion, model)) }.also { token = it.token }
+    override suspend fun register(appVersion: String, model: String?, decoders: DeviceCapabilities?): Registration =
+        apiCall { api.register(AppVersionBody(appVersion, model, decoders)) }.also { token = it.token }
 
     /** Which server this is (its ID lets the TV find it again if its address changes). */
     suspend fun config(): ServerConfig = apiCall { api.config() }
@@ -57,6 +63,12 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
         download: Pair<Int, Int>?,
         timeZone: String?,
         afterHours: String?,
-    ): String? =
-        apiCall { api.heartbeat(HeartbeatBody(currentMediaId, freeBytes, appVersion, download?.first, download?.second, timeZone, afterHours)) }.version
+        decoders: DeviceCapabilities?,
+        playbackError: String?,
+    ): String? = apiCall {
+        api.heartbeat(HeartbeatBody(
+            currentMediaId, freeBytes, appVersion, download?.first, download?.second,
+            timeZone = timeZone, afterHours = afterHours, decoders = decoders, playbackError = playbackError,
+        ))
+    }.version
 }

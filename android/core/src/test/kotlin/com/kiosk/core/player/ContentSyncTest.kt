@@ -91,6 +91,41 @@ class ContentSyncTest {
         }
     }
 
+    @Test fun keepsTheFileThatIsPlayingWhenACopyReplacesIt() = runTest {
+        val playing = java.io.File(tmp.root, "7-oldmd5.mp4")
+        playing.writeBytes(ByteArray(16))
+        val sync = sync()
+        sync.sync(PlayerPlaylist("1", items = listOf(item)), keepPlaying = listOf(playing))
+        assertTrue(playing.exists())
+        assertTrue(sync.isReady(item))
+        sync.sync(PlayerPlaylist("2", items = listOf(item)))
+        assertFalse(playing.exists())
+        assertTrue(sync.isReady(item))
+    }
+
+    @Test fun freesOldFilesBeforeCheckingThereIsRoom() = runTest {
+        val stale = java.io.File(tmp.root, "old-file.mp4")
+        stale.writeBytes(ByteArray(32))
+        val sync = ContentSync(OkHttpClient(), server.url("/").toString(), tmp.root) {
+            if (stale.exists()) 0L else Long.MAX_VALUE
+        }
+        sync.sync(PlayerPlaylist("1", items = listOf(item)))
+        assertTrue(sync.isReady(item))
+        assertFalse(stale.exists())
+    }
+
+    @Test fun doesNotStartADownloadThatWouldFillTheDisk() = runTest {
+        val sync = ContentSync(OkHttpClient(), server.url("/").toString(), tmp.root) { 1024 }
+        try {
+            sync.sync(PlayerPlaylist("1", items = listOf(item)))
+            fail("should stop before filling the disk")
+        } catch (e: DownloadException) {
+            assertTrue(e.message!!.contains("free space"))
+        }
+        assertEquals(0, server.requestCount)
+        assertFalse(sync.isReady(item))
+    }
+
     @Test fun removesFilesNoLongerInThePlaylist() = runTest {
         val sync = sync()
         sync.sync(PlayerPlaylist("1", items = listOf(item)))

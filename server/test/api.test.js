@@ -507,6 +507,125 @@ test('settings page: Drive folder, cache switch, connection test, download progr
   await call('POST', '/api/player/heartbeat', { token: tv.token, json: {} });
   [device] = await (await call('GET', '/api/devices', { token: boss })).json();
   assert.equal(device.download, null);
+
+  const withTranscode = await (await call('GET', '/api/settings', { token: boss })).json();
+  assert.equal(typeof withTranscode.transcode.ffmpeg, 'boolean');
+  assert.equal(withTranscode.transcode.enabled, false);
+  assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { transcode_videos: 'yes' } })).status, 400);
+});
+
+test('playback copies: weak TVs get 1080p, capable ones get 4K, the original stays put', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-renditions-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const calls = [];
+  const probe = {
+    video: {
+      codec: 'hevc', profile: 'Main 10', level: 153, width: 3840, height: 2160,
+      pixFmt: 'yuv420p10le', fps: 60, variableFrameRate: false,
+    },
+    audio: { codec: 'ac3', channels: 6, profile: null },
+  };
+  const { call, signIn, upload, google, app } = await startServer(t, {
+    transcode: {
+      enabled: true,
+      hevc4k: true,
+      inline: true,
+      dir,
+      probe: async () => probe,
+      run: async (args) => {
+        calls.push(args);
+        const output = args[args.length - 1];
+        const profile = output.includes('hevc_2160') ? 'hevc_2160' : output.includes('h264_720') ? 'h264_720' : 'h264_1080';
+        fs.writeFileSync(output, Buffer.from(`rendition:${profile}`));
+      },
+    },
+  });
+  const boss = await signIn(BOSS);
+  const bytes = crypto.randomBytes(4000);
+  const video = await (await upload(boss, 'Lobby promo.mp4', bytes, 'video/mp4')).json();
+  assert.equal(video.playback_warning, null);
+  assert.equal(google.findByName('Lobby promo.mp4').data.equals(bytes), true);
+  assert.equal(fs.readdirSync(dir).some((name) => name.startsWith('.src-')), false);
+
+  const flat = calls.flat().map(String);
+  assert.ok(flat.includes('libx264') && flat.includes('4.1') && flat.includes('yuv420p') && flat.includes('+faststart'));
+  assert.ok(flat.includes('3.1') && flat.includes('libx265') && flat.includes('hvc1'));
+  assert.ok(!flat.some((arg) => arg.includes('10le') || arg.includes('main10')));
+
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape' } })).json();
+  await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: video.id }] } });
+
+  async function claim(name) {
+    const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name, playlist_id: playlist.id } });
+    return tv;
+  }
+
+  const oldTv = await claim('Old box');
+  const oldList = await (await call('GET', '/api/player/playlist', { token: oldTv.token })).json();
+  assert.equal(oldList.items[0].rendition, 'h264_1080');
+  // A copy of an older upload must not be served after the file in Drive changes.
+  app.locals.db.prepare(`UPDATE renditions SET source_md5 = 'replaced' WHERE media_id = ?`).run(video.id);
+  const staleList = await (await call('GET', '/api/player/playlist', { token: oldTv.token })).json();
+  assert.equal(staleList.items[0].rendition, null);
+  assert.equal(staleList.items[0].md5, video.md5);
+  assert.equal((await call('GET', `/media/${video.id}?rendition=h264_1080`, { token: oldTv.token })).status, 404);
+  app.locals.db.prepare(`UPDATE renditions SET source_md5 = ? WHERE media_id = ?`).run(video.md5, video.id);
+  assert.equal(oldList.items[0].url, `/media/${video.id}?rendition=h264_1080`);
+  const copy = Buffer.from(await (await call('GET', oldList.items[0].url, { token: oldTv.token })).arrayBuffer());
+  assert.equal(copy.toString(), 'rendition:h264_1080');
+  assert.notEqual(oldList.items[0].md5, video.md5);
+  const original = Buffer.from(await (await call('GET', `/media/${video.id}`, { token: oldTv.token })).arrayBuffer());
+  assert.ok(original.equals(bytes));
+  const partial = await call('GET', oldList.items[0].url, { token: oldTv.token, headers: { range: 'bytes=0-4' } });
+  assert.equal(partial.status, 206);
+  assert.equal(Buffer.from(await partial.arrayBuffer()).toString(), 'rendi');
+
+  const capable = await claim('4K box');
+  await call('POST', '/api/player/heartbeat', {
+    token: capable.token,
+    json: {
+      decoders: {
+        display_width: 3840, display_height: 2160, h264_level: 51,
+        h264_max_long: 3840, h264_max_short: 2160, hevc: true, hevc_max_long: 3840, hevc_max_short: 2160,
+      },
+    },
+  });
+  const hevcList = await (await call('GET', '/api/player/playlist', { token: capable.token })).json();
+  assert.equal(hevcList.items[0].rendition, 'hevc_2160');
+  assert.notEqual(hevcList.version, oldList.version);
+
+  const weak = await claim('720 box');
+  await call('POST', '/api/player/heartbeat', {
+    token: weak.token,
+    json: { decoders: { display_width: 1280, display_height: 720, h264_level: 31, h264_max_long: 1280, h264_max_short: 720, hevc: false } },
+  });
+  const smallList = await (await call('GET', '/api/player/playlist', { token: weak.token })).json();
+  assert.equal(smallList.items[0].rendition, 'h264_720');
+
+  await call('POST', '/api/player/heartbeat', { token: weak.token, json: { playback_error: 'Lobby promo.mp4: decoder failed' } });
+  let [device] = (await (await call('GET', '/api/devices', { token: boss })).json()).filter((d) => d.name === '720 box');
+  assert.equal(device.playback_error, 'Lobby promo.mp4: decoder failed');
+  assert.equal(device.decoders.h264_level, 31);
+  assert.equal(device.decoders.display_width, 1280);
+  await call('POST', '/api/player/heartbeat', { token: weak.token, json: { playback_error: '' } });
+  [device] = (await (await call('GET', '/api/devices', { token: boss })).json()).filter((d) => d.name === '720 box');
+  assert.equal(device.playback_error, null);
+
+  await call('DELETE', `/api/media/${video.id}`, { token: boss });
+  assert.equal(fs.readdirSync(dir).length, 0);
+});
+
+test('library warns about a video weak boxes may not play while copies are off', async (t) => {
+  const { call, signIn, upload, google } = await startServer(t);
+  const boss = await signIn(BOSS);
+  google.setUploadDims({ width: 1920, height: 1080 });
+  const small = await (await upload(boss, 'ok.mp4', crypto.randomBytes(200), 'video/mp4')).json();
+  assert.equal(small.playback_warning, null);
+  google.setUploadDims({ width: 3840, height: 2160 });
+  const big = await (await upload(boss, 'huge.mp4', crypto.randomBytes(200), 'video/mp4')).json();
+  assert.match(big.playback_warning, /turned off/);
+  assert.match(big.playback_warning, /3840×2160/);
 });
 
 test('new TVs wait on a list, so they can be added without typing their code', async (t) => {

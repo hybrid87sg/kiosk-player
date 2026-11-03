@@ -6,7 +6,10 @@ WORKDIR /app
 COPY app/package.json app/package-lock.json ./
 # The database library is compiled for this machine's processor, then the
 # compiler tools are removed again to keep the add-on small.
-RUN apk add --no-cache --virtual .build-tools python3 make g++ \
+# ffmpeg stays in the image. It makes the 1080p / 720p playback copies.
+# The compiler tools are only needed to build the database library.
+RUN apk add --no-cache ffmpeg \
+ && apk add --no-cache --virtual .build-tools python3 make g++ \
  && npm ci --omit=dev \
  && apk del .build-tools
 COPY app/src ./src

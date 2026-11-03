@@ -3,6 +3,7 @@
 package com.kiosk.core.network
 
 import com.kiosk.core.model.Device
+import com.kiosk.core.model.DeviceCapabilities
 import com.kiosk.core.model.Library
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.Mounting
@@ -104,6 +105,8 @@ internal data class AppVersionBody(
     @SerialName("app_version") val appVersion: String,
     /** The TV box's make and model, shown while it waits to be added. */
     val model: String? = null,
+    /** What this TV can decode, so it gets playback copies it can play. */
+    val decoders: DeviceCapabilities? = null,
 )
 
 @Serializable
@@ -127,6 +130,9 @@ internal data class HeartbeatBody(
     @SerialName("time_zone") val timeZone: String? = null,
     /** What it does after hours: "black" or "standby". */
     @SerialName("after_hours") val afterHours: String? = null,
+    val decoders: DeviceCapabilities? = null,
+    /** Empty string clears a previous error. Omitted when the app doesn't know. */
+    @SerialName("playback_error") val playbackError: String? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

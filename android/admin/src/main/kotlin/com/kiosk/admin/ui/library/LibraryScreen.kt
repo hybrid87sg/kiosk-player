@@ -299,6 +299,15 @@ private fun MediaRow(m: Media, onSetExpiry: () -> Unit, onRemove: () -> Unit) {
                     color = if (expiresSoon(e)) LocalKioskColors.current.attention else MaterialTheme.colorScheme.primary,
                 )
             }
+            m.playbackWarning?.let { warning ->
+                Text(
+                    warning,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Box {
             IconButton(onClick = { menu = true }) {

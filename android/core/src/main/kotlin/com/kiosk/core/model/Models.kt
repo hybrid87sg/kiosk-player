@@ -67,6 +67,8 @@ data class Media(
     /** null while Drive is still working out the file's size. */
     val orientation: ScreenShape? = null,
     @SerialName("created_at") val createdAt: Long = 0,
+    /** Set when this video may not play smoothly on some TV boxes. */
+    @SerialName("playback_warning") val playbackWarning: String? = null,
     /** When the file starts showing on screens (unix ms); null = straight away. */
     @SerialName("starts_at") val startsAt: Long? = null,
     /** When the file leaves Kiosk and every screen (unix ms); null = never. Google Drive keeps it. */
@@ -162,6 +164,10 @@ data class Device(
     @SerialName("open_now") val openNow: Boolean = true,
     /** What the TV does after hours: "black" or "standby". */
     @SerialName("after_hours") val afterHours: String? = null,
+    /** Last playback failure reported by the TV, if it is still failing. */
+    @SerialName("playback_error") val playbackError: String? = null,
+    /** What the TV said it can decode, from its last heartbeat. */
+    val decoders: DeviceCapabilities? = null,
 )
 
 /** A TV showing its pairing code right now, waiting to be added. */
@@ -199,6 +205,20 @@ data class PlaylistEntry(
 )
 
 // ---------- Player app ----------
+
+/** What a TV box reports about its screen and hardware decoders. */
+@Serializable
+data class DeviceCapabilities(
+    @SerialName("display_width") val displayWidth: Int = 0,
+    @SerialName("display_height") val displayHeight: Int = 0,
+    /** H.264 level times 10, so 41 means level 4.1. Null if the box didn't say. */
+    @SerialName("h264_level") val h264Level: Int? = null,
+    @SerialName("h264_max_long") val h264MaxLong: Int? = null,
+    @SerialName("h264_max_short") val h264MaxShort: Int? = null,
+    val hevc: Boolean = false,
+    @SerialName("hevc_max_long") val hevcMaxLong: Int? = null,
+    @SerialName("hevc_max_short") val hevcMaxShort: Int? = null,
+)
 
 @Serializable
 data class Registration(

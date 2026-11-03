@@ -9,6 +9,9 @@
 //   GOOGLE_SERVICE_ACCOUNT_FILE  path to the service account's JSON key
 //   DRIVE_FOLDER_ID              the Drive folder holding the signage content
 //   MEDIA_CACHE                  "on" to keep a local copy of each file for the TVs
+//   TRANSCODE                    "on" to make playback copies. Off unless set, so an
+//                                upgraded install does not start encoding by itself.
+//   TRANSCODE_4K_HEVC            "on" to also make an optional 4K HEVC copy
 //   GOOGLE_DEVICE_CLIENT_ID      optional: "TVs and Limited Input devices" client, for
 //   GOOGLE_DEVICE_CLIENT_SECRET    signing in to the web page with a google.com/device code
 //   INGRESS_PORT                 optional: port for Home Assistant's sidebar page
@@ -20,6 +23,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createApp, createIngressServer } = require('./app');
+const { transcodeOptIn } = require('./transcode');
 const { createGoogle } = require('./google');
 const { createRelay } = require('./relay');
 const { createHomeAssistant } = require('./notify');
@@ -42,6 +46,9 @@ function loadSettings() {
       folderId: o.drive_folder_id,
       serviceAccountFile: o.service_account_file ? path.resolve(configDir, o.service_account_file) : '',
       cache: o.cache_media !== false,
+      transcodeVideos: transcodeOptIn(o.transcode_videos),
+      transcode4kHevc: Boolean(o.transcode_4k_hevc),
+      transcodeThreads: Math.min(4, Math.max(1, Number(o.transcode_threads) || 1)),
       deviceClientId: o.google_device_client_id || '',
       deviceClientSecret: o.google_device_client_secret || '',
       ingressPort: Number(env.INGRESS_PORT) || 8099,
@@ -59,6 +66,9 @@ function loadSettings() {
     folderId: env.DRIVE_FOLDER_ID,
     serviceAccountFile: env.GOOGLE_SERVICE_ACCOUNT_FILE,
     cache: env.MEDIA_CACHE === 'on',
+    transcodeVideos: transcodeOptIn(env.TRANSCODE),
+    transcode4kHevc: env.TRANSCODE_4K_HEVC === 'on',
+    transcodeThreads: Math.min(4, Math.max(1, Number(env.TRANSCODE_THREADS) || 1)),
     deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',
     deviceClientSecret: env.GOOGLE_DEVICE_CLIENT_SECRET || '',
     ingressPort: Number(env.INGRESS_PORT) || null,
@@ -126,6 +136,12 @@ const app = createApp({
   homeAssistant: process.env.SUPERVISOR_TOKEN
     ? createHomeAssistant({ baseUrl: 'http://supervisor/core/api', token: process.env.SUPERVISOR_TOKEN })
     : null,
+  transcode: {
+    enabled: settings.transcodeVideos,
+    hevc4k: settings.transcode4kHevc,
+    dir: path.join(settings.dataDir, 'renditions'),
+    threads: settings.transcodeThreads,
+  },
   google: createGoogle({
     webClientId: settings.webClientId,
     deviceClientId: settings.deviceClientId,
@@ -136,8 +152,20 @@ const app = createApp({
 });
 
 // "0.0.0.0" means: accept connections from other devices too, not just this computer.
-app.listen(settings.port, '0.0.0.0', () => {
-  console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'})`);
+const server = app.listen(settings.port, '0.0.0.0', () => {
+  const copies = settings.transcodeVideos
+    ? `on${settings.transcode4kHevc ? ', with 4K HEVC' : ''}`
+    : 'off';
+  console.log(`Kiosk server running on port ${settings.port} (data in ${settings.dataDir}, media cache ${settings.cache ? 'on' : 'off'}, playback copies ${copies}, ${settings.transcodeThreads} encode thread${settings.transcodeThreads === 1 ? '' : 's'})`);
 });
+
+// Home Assistant stops the add-on with SIGTERM. Kill ffmpeg so it cannot keep the CPU.
+function stop() {
+  if (app.locals.transcoder) app.locals.transcoder.shutdown();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
 
 startIngress(app);

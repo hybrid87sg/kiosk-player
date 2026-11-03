@@ -24,6 +24,7 @@ class ContentSync(
     private val client: OkHttpClient,
     private val baseUrl: String,
     private val mediaDir: File,
+    private val freeSpace: () -> Long = { mediaDir.usableSpace },
 ) {
     init { mediaDir.mkdirs() }
 
@@ -38,8 +39,17 @@ class ContentSync(
      * longer used. [onProgress] gets (files done, total).
      * Throws if a download fails; files already finished are kept.
      */
-    suspend fun sync(playlist: PlayerPlaylist, onProgress: (Int, Int) -> Unit = { _, _ -> }) {
+    suspend fun sync(
+        playlist: PlayerPlaylist,
+        keepPlaying: List<File> = emptyList(),
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ) {
+        // Files starting soon are downloaded too, so they're ready in time.
         val items = (playlist.items + playlist.upcoming).distinctBy { it.id to it.md5 }
+        // Drop files the playlist no longer uses before downloading, so a nearly
+        // full box can make room. Files still on screen stay until a later sync,
+        // after playback has moved on to the new copy.
+        removeUnused(items, keepPlaying)
         var done = items.count { isReady(it) }
         onProgress(done, items.size)
         for (item in items) {
@@ -48,12 +58,11 @@ class ContentSync(
             done++
             onProgress(done, items.size)
         }
-        removeUnused(items)
     }
 
-    /** Deletes finished and partial files that aren't in [keep]. */
-    fun removeUnused(keep: List<PlayerItem>) {
-        val wanted = keep.map { fileFor(it).name }.toSet()
+    /** Deletes finished and partial files that aren't in [keep] or [keepPlaying]. */
+    fun removeUnused(keep: List<PlayerItem>, keepPlaying: List<File> = emptyList()) {
+        val wanted = keep.map { fileFor(it).name }.toSet() + keepPlaying.map { it.name }
         mediaDir.listFiles()?.forEach { f ->
             val name = f.name.removeSuffix(".part")
             if (name !in wanted) f.delete()
@@ -67,6 +76,10 @@ class ContentSync(
         val target = fileFor(item)
         val part = File(mediaDir, target.name + ".part")
         if (part.length() > item.size) part.delete()
+        val stillNeeded = (item.size - part.length()).coerceAtLeast(0)
+        if (!enoughFreeSpace(freeSpace(), stillNeeded)) {
+            throw DownloadException("${item.filename}: not enough free space on this TV")
+        }
 
         val request = Request.Builder().url(baseUrl.trimEnd('/') + item.url).apply {
             if (part.length() > 0) header("Range", "bytes=${part.length()}-")
