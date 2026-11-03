@@ -1,7 +1,16 @@
 configuration:
+  mode:
+    name: Mode
+    description: "main: this Home Assistant is the control centre (the usual choice, and the only one if you have one site). relay: this Home Assistant is at another site; its TVs reach the main server through it."
+  site_name:
+    name: Site name
+    description: The name of this site, e.g. Head office or Orchard branch. Screens are grouped by site on the web page.
+  main_server_url:
+    name: Main server address (relay only)
+    description: The main Kiosk server's Tailscale address, e.g. 100.101.102.103:3000. Leave empty in main mode.
   superadmin_email:
     name: Spongebob account email
-    description: Your Google account. It always has Spongebob access in Kiosk Admin.
+    description: Your Google account. It always has Spongebob access in Kiosk Admin. Not needed in relay mode (nor are the Google and Drive settings below).
   google_web_client_id:
     name: Google web client ID
     description: The "Web application" OAuth client ID from Google Cloud Console (ends in .apps.googleusercontent.com).

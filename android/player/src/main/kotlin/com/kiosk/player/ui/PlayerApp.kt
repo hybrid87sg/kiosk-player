@@ -61,30 +61,38 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.kiosk.core.model.Mounting
+import com.kiosk.core.player.FoundServer
 import com.kiosk.player.BuildConfig
+import com.kiosk.player.AfterHours
 import com.kiosk.player.KeepInFront
 import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
 import com.kiosk.player.PlayerViewModel
 
-val Teal = Color(0xFF5EEAD4)
-val Ink = Color(0xFF0B1211)
-val Muted = Color(0xFFB8C9C5)
-val Panel = Color(0xFF1E2928)
+// The app's colour palette (the same as the web interface and phone app).
+val Accent = Color(0xFFD97706) // primary accent: buttons, the pairing code
+val Ink = Color(0xFF003333) // app background, and text on orange buttons
+val Muted = Color(0xFFD4D4D4) // secondary text
+val Panel = Color(0xFF11384F) // surfaces: unselected buttons, panels
+val Soft = Color(0xFFD4D4D4) // body text on the background
+val Warning = Color(0xFFD97706) // problems and hints (the warning brown is too dark to read here)
+val Online = Color(0xFF15803D)
 
 @Composable
 fun PlayerApp(vm: PlayerViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Teal, onPrimary = Ink, background = Ink, surface = Ink)) {
+    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, onPrimary = Ink, background = Ink, surface = Ink)) {
         Box(Modifier.fillMaxSize().background(Ink)) {
             when (val state = ui) {
                 PlayerUi.Loading -> CenterMessage(title = "Kiosk Player", detail = "Starting…")
-                PlayerUi.Setup -> SetupScreen(onDemo = vm::chooseDemo, onServer = vm::chooseServer)
+                is PlayerUi.Setup -> SetupScreen(state.typeAddress, onFind = vm::findServer, onDemo = vm::chooseDemo, onServer = vm::chooseServer)
+                is PlayerUi.Finding -> FindingScreen(state, onChoose = vm::chooseFound, onAgain = vm::findServer, onType = vm::typeAddress, onBack = vm::backToSetup)
                 is PlayerUi.Pairing -> PairingScreen(state, onSettings = { settingsOpen = true }, onStartDemo = vm::startDemoPlayback)
                 is PlayerUi.Waiting -> CenterMessage(state.name?.uppercase(), state.title, state.detail, state.progress, onSettings = { settingsOpen = true })
                 is PlayerUi.Playing -> PlaybackScreen(state, onNowPlaying = { vm.currentMediaId = it }, onOpenSettings = { settingsOpen = true })
+                is PlayerUi.Closed -> ClosedScreen(onOpenSettings = { settingsOpen = true })
             }
             if (settingsOpen) {
                 SettingsPanel(vm, onClose = { settingsOpen = false })
@@ -102,7 +110,7 @@ fun TvButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, p
         onClick = onClick,
         interactionSource = interaction,
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (primary) Teal else Panel,
+            containerColor = if (primary) Accent else Panel,
             contentColor = if (primary) Ink else Color.White,
         ),
         modifier = modifier
@@ -115,9 +123,9 @@ fun TvButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, p
 }
 
 @Composable
-private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
+private fun SetupScreen(typeAddress: Boolean, onFind: () -> Unit, onDemo: () -> Unit, onServer: (String) -> Unit) {
     var address by rememberSaveable { mutableStateOf("") }
-    var showServer by rememberSaveable { mutableStateOf(false) }
+    var showServer by rememberSaveable(typeAddress) { mutableStateOf(typeAddress) }
     val first = remember { FocusRequester() }
     LaunchedEffect(showServer) { runCatching { first.requestFocus() } }
 
@@ -130,7 +138,8 @@ private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
         if (!showServer) {
             Text("How should this screen get its content?", fontSize = 24.sp, color = Muted)
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                TvButton("Connect to a server", { showServer = true }, Modifier.focusRequester(first), primary = true)
+                TvButton("Find my server automatically", onFind, Modifier.focusRequester(first), primary = true)
+                TvButton("Type the address", { showServer = true })
                 TvButton("Try the demo", onDemo)
             }
             KeepInFrontSection(Modifier.widthIn(max = 900.dp))
@@ -144,12 +153,64 @@ private fun SetupScreen(onDemo: () -> Unit, onServer: (String) -> Unit) {
                 textStyle = MaterialTheme.typography.headlineSmall.copy(color = Color.White),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { if (address.isNotBlank()) onServer(address) }),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Teal, unfocusedBorderColor = Muted),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Accent, unfocusedBorderColor = Muted),
                 modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth().focusRequester(first),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 TvButton("Connect", { if (address.isNotBlank()) onServer(address) }, primary = true)
                 TvButton("Back", { showServer = false })
+            }
+        }
+    }
+}
+
+/** Looking for the Kiosk server on this network, then (if there are several) choosing one. */
+@Composable
+private fun FindingScreen(
+    state: PlayerUi.Finding,
+    onChoose: (FoundServer) -> Unit,
+    onAgain: () -> Unit,
+    onType: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val first = remember { FocusRequester() }
+    LaunchedEffect(state.found) { runCatching { first.requestFocus() } }
+    Column(
+        Modifier.fillMaxSize().padding(64.dp),
+        verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        val found = state.found
+        when {
+            found == null -> {
+                Text("Looking for your Kiosk server…", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Checking every device on this network. This takes a few seconds.", fontSize = 24.sp, color = Muted)
+                LinearProgressIndicator(Modifier.widthIn(max = 600.dp).fillMaxWidth(), color = Accent)
+                TvButton("Cancel", onBack, Modifier.focusRequester(first))
+            }
+            found.isEmpty() -> {
+                Text("No server found", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(state.problem.orEmpty(), fontSize = 24.sp, color = Muted, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 900.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    TvButton("Search again", onAgain, Modifier.focusRequester(first), primary = true)
+                    TvButton("Type the address", onType)
+                    TvButton("Back", onBack)
+                }
+            }
+            else -> {
+                Text("Which server is this screen for?", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("More than one Kiosk server answered on this network.", fontSize = 24.sp, color = Muted)
+                found.forEachIndexed { i, server ->
+                    val name = server.siteName ?: "Kiosk server"
+                    val kind = if (server.role == "relay") "site relay" else "main server"
+                    TvButton(
+                        "$name · $kind · ${server.url.removePrefix("http://").trimEnd('/')}",
+                        { onChoose(server) },
+                        if (i == 0) Modifier.focusRequester(first) else Modifier,
+                        primary = i == 0,
+                    )
+                }
+                TvButton("Back", onBack)
             }
         }
     }
@@ -170,14 +231,14 @@ private fun PairingScreen(state: PlayerUi.Pairing, onSettings: () -> Unit, onSta
         Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
             Text("Add this screen", fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Open Kiosk Admin on your phone", fontSize = 28.sp, color = Color(0xFFD5E2DF))
-                Text("Players → Scan QR code", fontSize = 28.sp, color = Color(0xFFD5E2DF))
+                Text("It's waiting in Kiosk Signage under New screens:", fontSize = 28.sp, color = Soft)
+                Text("click Add there, or scan this QR code in Kiosk Admin", fontSize = 28.sp, color = Soft)
             }
             Column {
                 Text("Or type this code", fontSize = 24.sp, color = Muted)
-                Text(prettyCode(state.code), fontSize = 80.sp, fontWeight = FontWeight.Bold, letterSpacing = 10.sp, color = Teal)
+                Text(prettyCode(state.code), fontSize = 80.sp, fontWeight = FontWeight.Bold, letterSpacing = 10.sp, color = Accent)
             }
-            state.problem?.let { Text(it, fontSize = 22.sp, color = Color(0xFFFDBA74)) }
+            state.problem?.let { Text(it, fontSize = 22.sp, color = Warning) }
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (state.demo) {
                     TvButton("Start demo playback", onStartDemo, Modifier.focusRequester(focus), primary = true)
@@ -185,7 +246,7 @@ private fun PairingScreen(state: PlayerUi.Pairing, onSettings: () -> Unit, onSta
                 } else {
                     TvButton("Settings", onSettings, Modifier.focusRequester(focus))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(12.dp).background(Color(0xFF4ADE80), CircleShape))
+                        Box(Modifier.size(12.dp).background(Online, CircleShape))
                         Text("  Waiting to be added", fontSize = 22.sp, color = Muted)
                     }
                 }
@@ -227,9 +288,9 @@ private fun CenterMessage(
     ) {
         eyebrow?.let { Text(it, fontSize = 22.sp, color = Muted, letterSpacing = 3.sp, fontWeight = FontWeight.SemiBold) }
         Text(title, fontSize = 52.sp, fontWeight = FontWeight.Bold, color = Color.White, textAlign = TextAlign.Center)
-        Text(detail, fontSize = 26.sp, color = Color(0xFFD5E2DF), textAlign = TextAlign.Center)
+        Text(detail, fontSize = 26.sp, color = Soft, textAlign = TextAlign.Center)
         if (progress != null) {
-            LinearProgressIndicator(progress = { progress }, color = Teal, trackColor = Panel, modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().height(10.dp))
+            LinearProgressIndicator(progress = { progress }, color = Accent, trackColor = Panel, modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().height(10.dp))
         }
         if (onSettings != null) TvButton("Settings", onSettings, Modifier.focusRequester(focus))
     }
@@ -254,10 +315,11 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             Text("Settings", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Text(
                 if (vm.isDemo) "Demo mode · no server" else "Server: ${vm.serverUrl ?: "not set"}",
-                fontSize = 24.sp, color = Color(0xFFD5E2DF),
+                fontSize = 24.sp, color = Soft,
             )
             Text("Kiosk Player ${BuildConfig.VERSION_NAME}", fontSize = 20.sp, color = Muted)
             KeepInFrontSection()
+            AfterHoursSection()
             if (vm.isDemo) {
                 Text("Demo: how this screen is mounted", fontSize = 22.sp, color = Muted)
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -278,7 +340,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             if (confirmReset) {
                 Text(
                     "Starting over forgets the server, the pairing and the downloaded files on this TV.",
-                    fontSize = 20.sp, color = Color(0xFFFDBA74),
+                    fontSize = 20.sp, color = Warning,
                 )
             }
         }
@@ -313,7 +375,7 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
                 else -> "On · returns 30 seconds after someone leaves the app"
             },
             fontSize = 20.sp,
-            color = if (!granted) Color(0xFFFDBA74) else Muted,
+            color = if (!granted) Warning else Muted,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             if (!granted) {
@@ -338,7 +400,52 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
         if (showAdb) {
             Text(
                 "This TV box hides that setting. From a computer on the same network, run:\n${KeepInFront.ADB_COMMAND}",
-                fontSize = 18.sp, color = Color(0xFFFDBA74),
+                fontSize = 18.sp, color = Warning,
+            )
+        }
+    }
+}
+
+/**
+ * Outside working hours: plain black (nothing to burn into the screen). The
+ * remote's OK button still opens settings.
+ */
+@Composable
+private fun ClosedScreen(onOpenSettings: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Box(Modifier.fillMaxSize().background(Color.Black).openSettingsOnOk(onOpenSettings, focus))
+}
+
+/** The one-time permission that lets the player put the screen into standby after hours. */
+@Composable
+private fun AfterHoursSection(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(AfterHours.canSleep(context)) }
+    var showAdb by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        allowed = AfterHours.canSleep(context)
+        onPauseOrDispose { }
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("After working hours", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text(
+            if (allowed) "Black screen, and standby where this TV allows it. It wakes up at opening time."
+            else "Black screen. Allow “turn the screen off” to also put the TV into standby where it can.",
+            fontSize = 20.sp,
+            color = Muted,
+        )
+        if (!allowed) {
+            TvButton("Allow turning the screen off", {
+                KeepInFront.pauseFor(3) // don't jump back while Android's screen is open
+                val activity = context as? Activity
+                if (activity == null || !AfterHours.openPermissionScreen(activity)) showAdb = true
+            })
+        }
+        if (showAdb) {
+            Text(
+                "This TV hides that setting. From a computer on the same network, run:\n${AfterHours.ADB_COMMAND}",
+                fontSize = 18.sp, color = Warning,
             )
         }
     }

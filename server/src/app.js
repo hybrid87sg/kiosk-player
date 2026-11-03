@@ -19,6 +19,7 @@ const http = require('node:http');
 const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting } = require('./db');
 const auth = require('./auth');
 const { MediaCache } = require('./media-cache');
+const { checkHours, summarizeHours, isOpenAt } = require('./hours');
 
 // File types the player can show, by MIME type and by file extension.
 const TYPE_BY_MIME = { 'video/mp4': 'video', 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image' };
@@ -29,6 +30,18 @@ const DEVICE_ORIENTATIONS = ['landscape', 'portrait_right', 'portrait_left'];
 
 // A player counts as "online" if it sent a heartbeat in the last 2 minutes.
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+// A TV is "waiting to be added" while it asked for its code in the last 10
+// minutes. One that never gets added is forgotten after a day.
+const WAITING_WINDOW_MS = 10 * 60 * 1000;
+const WAITING_FORGET_MS = 24 * 60 * 60 * 1000;
+
+// Files starting within this time are sent to TVs early, to download ahead.
+const UPCOMING_MS = 24 * 60 * 60 * 1000;
+
+// A screen counts as "down" (worth a notification) after this long without a
+// word, during its location's working hours.
+const ALERT_AFTER_MS = 5 * 60 * 1000;
 
 // Opening the library re-reads the Drive folder at most this often.
 const SYNC_THROTTLE_MS = 60 * 1000;
@@ -58,13 +71,40 @@ function createApp({
   cacheMedia = true, // whether to keep them, until changed on the web Settings page
   maxUploadBytes = 8 * 1024 ** 3,
   syncIntervalMs = 5 * 60 * 1000,
+  siteName = null, // this server's own site, e.g. "Head office"; TVs at other sites come through relays
+  homeAssistant = null, // notify.js, when running as a Home Assistant add-on
+  monitorIntervalMs = 60 * 1000, // how often to look for offline screens (0 = never; tests call checkScreens)
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
+  // A random ID made once, so a TV can recognise "its" server if the address changes.
+  let serverId = getSetting(db, 'server_id');
+  if (!serverId) setSetting(db, 'server_id', (serverId = crypto.randomUUID()));
+  // Which site a TV is at: relays add the "X-Kiosk-Site" header; TVs talking
+  // to this server directly are at this server's own site.
+  const siteOf = (req) => String(req.get('x-kiosk-site') || '').trim().slice(0, 80) || siteName || null;
+
+  // Locations are keyed by site; '' is this server's own site while it has no name.
+  const ownSite = siteName || '';
+  if (siteName) {
+    // A site name was set later: move this site's screens and locations under it.
+    db.prepare(`UPDATE locations SET site = ? WHERE site = ''`).run(siteName);
+    db.prepare(`UPDATE devices SET site = ? WHERE site IS NULL`).run(siteName);
+  }
+  // Location names typed on screens before locations existed become real locations.
+  db.prepare(
+    `INSERT OR IGNORE INTO locations (site, name, created_at)
+     SELECT DISTINCT COALESCE(site, ''), location, ? FROM devices WHERE claimed = 1 AND location IS NOT NULL`
+  ).run(Date.now());
+  const locationOf = (d) => (d.location
+    ? db.prepare(`SELECT * FROM locations WHERE site = ? AND name = ?`).get(d.site || '', d.location)
+    : null);
+  const hoursOf = (loc) => (loc && loc.hours ? JSON.parse(loc.hours) : null);
+  const serverTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
   const cacheOn = () => Boolean(cacheStore) && (getSetting(db, 'cache_media') ?? cacheMedia);
   const pruneCache = () => {
-    if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media`).all());
+    if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media WHERE removed_at IS NULL`).all());
   };
   // A Drive folder chosen on the web Settings page wins over the start-up setting.
   const savedFolder = getSetting(db, 'drive_folder_id');
@@ -91,6 +131,11 @@ function createApp({
       google_web_client_id: googleWebClientId,
       web_code_sign_in: Boolean(google.deviceSignInAvailable),
       version: SERVER_VERSION,
+      // TVs search the network for this to find the server by themselves.
+      kind: 'kiosk-signage',
+      role: 'main',
+      server_id: serverId,
+      site_name: siteName,
     })
   );
 
@@ -210,7 +255,41 @@ function createApp({
 
   // ---------- Media library (Google Drive folder) ----------
 
-  const mediaColumns = `id, filename, type, mime, size, md5, width, height, orientation, created_at`;
+  const mediaColumns = `id, filename, type, mime, size, md5, width, height, orientation, created_at, starts_at, expires_at`;
+  const removedColumns = `${mediaColumns}, removed_at, removed_reason`;
+
+  // Takes a file out of Kiosk: out of the library and every playlist, and off
+  // the screens (their playlists change, so they drop it). Google Drive is not
+  // touched, and the file can be restored from "Expired and removed".
+  function retireMedia(ids, reason) {
+    if (!ids.length) return;
+    db.transaction(() => {
+      for (const id of ids) {
+        bumpPlaylistVersions(db, playlistsUsingMedia(db, id));
+        db.prepare(`DELETE FROM playlist_items WHERE media_id = ?`).run(id);
+        db.prepare(`UPDATE media SET removed_at = ?, removed_reason = ? WHERE id = ?`).run(Date.now(), reason, id);
+      }
+    })();
+    pruneCache();
+  }
+
+  // Files whose expiry date has passed leave Kiosk.
+  function expireDue() {
+    const due = db.prepare(`SELECT id FROM media WHERE removed_at IS NULL AND expires_at <= ?`).all(Date.now());
+    retireMedia(due.map((r) => r.id), 'expired');
+  }
+
+  // A file's dates from the apps: when it starts showing (null = straight away)
+  // and when it leaves Kiosk (null = never; otherwise in the future, after the start).
+  function checkSchedule(startsAt, expiresAt) {
+    for (const [name, value] of [['starts_at', startsAt], ['expires_at', expiresAt]]) {
+      if (value != null && !Number.isSafeInteger(value)) return { error: `${name} must be a time in milliseconds, or null` };
+    }
+    if (expiresAt != null && expiresAt <= Date.now()) return { error: 'Choose an end date in the future' };
+    if (startsAt != null && expiresAt != null && startsAt >= expiresAt) return { error: 'The end date must be after the start date' };
+    return { startsAt: startsAt ?? null, expiresAt: expiresAt ?? null };
+  }
+  const headerTime = (req, name) => (req.get(name) ? Number(req.get(name)) : null);
 
   // Saves (or refreshes) one Drive file in our catalogue. Returns the row,
   // or null if it's not a file type the player can show.
@@ -262,14 +341,16 @@ function createApp({
   }
 
   function libraryResponse(syncError) {
-    const items = db.prepare(`SELECT ${mediaColumns} FROM media ORDER BY created_at DESC`).all();
-    return { items, synced_at: lastSyncAt || null, sync_error: syncError };
+    const items = db.prepare(`SELECT ${mediaColumns} FROM media WHERE removed_at IS NULL ORDER BY created_at DESC`).all();
+    const removed = db.prepare(`SELECT ${removedColumns} FROM media WHERE removed_at IS NOT NULL ORDER BY removed_at DESC`).all();
+    return { items, removed, synced_at: lastSyncAt || null, sync_error: syncError };
   }
 
   // Lists the library. Re-reads Drive first if it's been more than a minute,
   // or if a file's shape is still being checked.
   // If Drive can't be reached, the last known list is returned with sync_error.
   app.get('/api/media', requireContent, async (req, res) => {
+    expireDue();
     let syncError = null;
     const checking = db.prepare(`SELECT 1 FROM media WHERE orientation IS NULL LIMIT 1`).get();
     if (Date.now() - lastSyncAt > SYNC_THROTTLE_MS || checking) {
@@ -302,6 +383,9 @@ function createApp({
     if (!filename) return res.status(400).json({ error: 'Missing X-Filename header' });
     const kind = mediaKind(filename, (req.get('content-type') || '').split(';')[0].trim().toLowerCase());
     if (!kind) return res.status(415).json({ error: 'Only .mp4, .jpg, .png and .webp files are supported' });
+    // Optional start and end dates chosen while uploading.
+    const schedule = checkSchedule(headerTime(req, 'x-starts-at'), headerTime(req, 'x-expires-at'));
+    if (schedule.error) return res.status(400).json({ error: schedule.error });
     if (Number(req.get('content-length')) > maxUploadBytes) return res.status(413).json({ error: 'File is too large' });
 
     // Sits between the phone and Drive, counting bytes so a file that is too
@@ -333,33 +417,52 @@ function createApp({
       await google.deleteFile(file.id).catch(log);
       return res.status(400).json({ error: meter.errored ? 'Upload failed: ' + meter.errored.message : 'File is empty' });
     }
-    res.status(201).json(upsertMedia(file));
+    const saved = upsertMedia(file);
+    db.prepare(`UPDATE media SET starts_at = ?, expires_at = ? WHERE id = ?`).run(schedule.startsAt, schedule.expiresAt, saved.id);
+    res.status(201).json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(saved.id));
   });
 
-  app.delete('/api/media/:id', requireContent, async (req, res) => {
-    const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
+  // Set or clear a file's start and end dates (either or both).
+  app.patch('/api/media/:id', requireContent, (req, res) => {
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
-    try {
-      await google.deleteFile(media.drive_file_id); // goes to Drive's trash, so it can be recovered
-    } catch (err) {
-      if (!(err.status === 404 || (err.response && err.response.status === 404))) {
-        log(err);
-        return res.status(502).json({ error: 'Could not delete the file in Google Drive' });
-      }
-    }
-    db.transaction(() => {
-      bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
-      db.prepare(`DELETE FROM media WHERE id = ?`).run(media.id); // also removes it from every playlist
-    })();
-    pruneCache();
+    const body = req.body || {};
+    const schedule = checkSchedule(
+      'starts_at' in body ? body.starts_at : media.starts_at,
+      'expires_at' in body ? body.expires_at : media.expires_at,
+    );
+    if (schedule.error) return res.status(400).json({ error: schedule.error });
+    db.prepare(`UPDATE media SET starts_at = ?, expires_at = ? WHERE id = ?`).run(schedule.startsAt, schedule.expiresAt, media.id);
+    // A changed start date can change what screens play.
+    bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
+    res.json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(media.id));
+  });
+
+  // "Remove from Kiosk": out of the library, playlists and screens. The file
+  // stays in Google Drive; Kiosk never deletes anything there.
+  app.delete('/api/media/:id', requireContent, (req, res) => {
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
+    if (!media) return res.status(404).json({ error: 'Not found' });
+    retireMedia([media.id], 'removed');
     res.json({ ok: true });
+  });
+
+  // Brings an expired or removed file back into the library (not into playlists).
+  app.post('/api/media/:id/restore', requireContent, (req, res) => {
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NOT NULL`).get(req.params.id);
+    if (!media) return res.status(404).json({ error: 'Not found' });
+    const schedule = checkSchedule((req.body || {}).starts_at, (req.body || {}).expires_at);
+    if (schedule.error) return res.status(400).json({ error: schedule.error });
+    db.prepare(`UPDATE media SET removed_at = NULL, removed_reason = NULL, starts_at = ?, expires_at = ? WHERE id = ?`)
+      .run(schedule.startsAt, schedule.expiresAt, media.id);
+    res.json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(media.id));
   });
 
   // Download. Served from the local cache when there is a copy; otherwise
   // streamed from Drive (and, with the cache on, saved while it passes).
   // The "Range" header lets an interrupted download on the TV continue where it stopped.
   app.get('/media/:id', auth.requireUserOrDevice(db), async (req, res) => {
-    const media = db.prepare(`SELECT * FROM media WHERE id = ?`).get(req.params.id);
+    const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
     const cache = cacheOn() ? cacheStore : null;
     if (cache && cache.has(media)) {
@@ -394,7 +497,8 @@ function createApp({
 
   function playlistItems(playlistId) {
     return db.prepare(
-      `SELECT p.media_id, p.image_seconds, p.start_at, p.end_at, m.filename, m.type, m.mime, m.size, m.md5, m.orientation
+      `SELECT p.media_id, p.image_seconds, p.start_at, p.end_at, m.filename, m.type, m.mime, m.size, m.md5, m.orientation,
+              m.starts_at, m.expires_at
        FROM playlist_items p JOIN media m ON m.id = p.media_id
        WHERE p.playlist_id = ? ORDER BY p.position`
     ).all(playlistId);
@@ -462,7 +566,7 @@ function createApp({
     if (!p) return res.status(404).json({ error: 'Not found' });
     const items = req.body && req.body.items;
     if (!Array.isArray(items)) return res.status(400).json({ error: 'Body must be { items: [...] }' });
-    const mediaExists = db.prepare(`SELECT 1 FROM media WHERE id = ?`);
+    const mediaExists = db.prepare(`SELECT 1 FROM media WHERE id = ? AND removed_at IS NULL`);
     for (const item of items) {
       if (!Number.isInteger(item.media_id) || !mediaExists.get(item.media_id)) {
         return res.status(400).json({ error: `Unknown media_id ${item.media_id}` });
@@ -511,6 +615,7 @@ function createApp({
       ? db.prepare(`SELECT filename FROM media WHERE id = ?`).get(d.current_media_id)
       : null;
     const playlist = d.playlist_id ? findPlaylist(d.playlist_id) : null;
+    const loc = locationOf(d);
     return {
       id: d.id,
       name: d.name,
@@ -524,6 +629,13 @@ function createApp({
       current_filename: current ? current.filename : null,
       free_bytes: d.free_bytes,
       app_version: d.app_version,
+      model: d.model,
+      site: d.site,
+      location_id: loc ? loc.id : null,
+      hours_summary: summarizeHours(hoursOf(loc)),
+      // false outside the location's working hours (the TV is dark then).
+      open_now: isOpenAt(hoursOf(loc), Date.now(), d.time_zone || serverTimeZone),
+      after_hours: d.after_hours || 'black',
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
@@ -551,6 +663,11 @@ function createApp({
     return { fields: out };
   }
 
+  // A location typed in the phone app that doesn't exist yet is added to the list.
+  function ensureLocation(site, name) {
+    if (name) db.prepare(`INSERT OR IGNORE INTO locations (site, name, created_at) VALUES (?, ?, ?)`).run(site || '', name, Date.now());
+  }
+
   function applyDeviceFields(id, fields) {
     const sets = Object.keys(fields).map((k) => `${k} = @${k}`);
     if (!sets.length) return;
@@ -558,8 +675,25 @@ function createApp({
   }
 
   app.get('/api/devices', requireDevices, (req, res) => {
-    const rows = db.prepare(`SELECT * FROM devices WHERE claimed = 1 ORDER BY location, name`).all();
+    const rows = db.prepare(`SELECT * FROM devices WHERE claimed = 1 ORDER BY site, location, name`).all();
     res.json(rows.map(deviceView));
+  });
+
+  // New TVs showing a pairing code right now, so they can be added with one
+  // click instead of typing the code. TVs that never got added are tidied up after a day.
+  app.get('/api/devices/waiting', requireDevices, (req, res) => {
+    const now = Date.now();
+    db.prepare(`DELETE FROM devices WHERE claimed = 0 AND COALESCE(last_seen, created_at) < ?`).run(now - WAITING_FORGET_MS);
+    const rows = db.prepare(
+      `SELECT * FROM devices WHERE claimed = 0 AND last_seen >= ? ORDER BY created_at`
+    ).all(now - WAITING_WINDOW_MS);
+    res.json(rows.map((d) => ({
+      id: d.id,
+      model: d.model,
+      site: d.site,
+      pairing_code: d.pairing_code,
+      last_seen: d.last_seen,
+    })));
   });
 
   // Pairing. "code" is either what the admin app read from the TV's QR code
@@ -575,6 +709,7 @@ function createApp({
     db.transaction(() => {
       db.prepare(`UPDATE devices SET claimed = 1, pairing_code = NULL WHERE id = ?`).run(device.id);
       applyDeviceFields(device.id, fields);
+      ensureLocation(device.site, fields.location);
     })();
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
@@ -586,6 +721,7 @@ function createApp({
     const { error, fields } = checkDeviceFields(req.body || {}, { partial: true });
     if (error) return res.status(400).json({ error });
     applyDeviceFields(device.id, fields);
+    ensureLocation(device.site, fields.location);
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
 
@@ -595,6 +731,179 @@ function createApp({
     if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ ok: true });
   });
+
+  // ---------- Locations and their working hours (superadmin, system manager) ----------
+
+  function locationView(loc) {
+    const screens = db.prepare(`SELECT id, name FROM devices WHERE claimed = 1 AND COALESCE(site, '') = ? AND location = ? ORDER BY name`)
+      .all(loc.site, loc.name);
+    const hours = hoursOf(loc);
+    return {
+      id: loc.id,
+      site: loc.site || null,
+      name: loc.name,
+      hours,
+      hours_summary: summarizeHours(hours),
+      screens,
+    };
+  }
+  const findLocation = (id) => db.prepare(`SELECT * FROM locations WHERE id = ?`).get(id);
+  // Every site that has screens or locations, this server's own first.
+  function knownSites() {
+    const rows = db.prepare(`SELECT DISTINCT COALESCE(site, '') AS site FROM devices UNION SELECT site FROM locations`).all();
+    return [...new Set([ownSite, ...rows.map((r) => r.site)])];
+  }
+
+  app.get('/api/locations', requireDevices, (req, res) => {
+    const rows = db.prepare(`SELECT * FROM locations ORDER BY site = ? DESC, site, name COLLATE NOCASE`).all(ownSite);
+    res.json({ own_site: ownSite || null, sites: knownSites().map((s) => s || null), locations: rows.map(locationView) });
+  });
+
+  app.post('/api/locations', requireDevices, (req, res) => {
+    const body = req.body || {};
+    const name = String(body.name || '').trim();
+    const site = body.site == null ? ownSite : String(body.site).trim();
+    if (!name) return res.status(400).json({ error: 'Give the location a name' });
+    if (name.length > 60) return res.status(400).json({ error: 'Keep the name under 60 characters' });
+    if (!knownSites().includes(site)) return res.status(400).json({ error: 'Unknown site' });
+    if (db.prepare(`SELECT 1 FROM locations WHERE site = ? AND name = ?`).get(site, name)) {
+      return res.status(409).json({ error: `There's already a location called ${name}` });
+    }
+    const id = db.prepare(`INSERT INTO locations (site, name, created_at) VALUES (?, ?, ?)`).run(site, name, Date.now()).lastInsertRowid;
+    res.status(201).json(locationView(findLocation(id)));
+  });
+
+  app.get('/api/locations/:id', requireDevices, (req, res) => {
+    const loc = findLocation(req.params.id);
+    if (!loc) return res.status(404).json({ error: 'Not found' });
+    res.json(locationView(loc));
+  });
+
+  // Rename, or change the working hours. The location's screens are told to update.
+  app.patch('/api/locations/:id', requireDevices, (req, res) => {
+    const loc = findLocation(req.params.id);
+    if (!loc) return res.status(404).json({ error: 'Not found' });
+    const body = req.body || {};
+    let name = loc.name;
+    if (body.name !== undefined) {
+      name = String(body.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'Give the location a name' });
+      if (name !== loc.name && db.prepare(`SELECT 1 FROM locations WHERE site = ? AND name = ?`).get(loc.site, name)) {
+        return res.status(409).json({ error: `There's already a location called ${name}` });
+      }
+    }
+    let hours = loc.hours;
+    if (body.hours !== undefined) {
+      const checked = checkHours(body.hours);
+      if (checked.error) return res.status(400).json({ error: checked.error });
+      hours = checked.hours ? JSON.stringify(checked.hours) : null;
+    }
+    db.transaction(() => {
+      db.prepare(`UPDATE devices SET location = ?, config_version = config_version + 1 WHERE claimed = 1 AND COALESCE(site, '') = ? AND location = ?`)
+        .run(name, loc.site, loc.name);
+      db.prepare(`UPDATE locations SET name = ?, hours = ? WHERE id = ?`).run(name, hours, loc.id);
+    })();
+    res.json(locationView(findLocation(loc.id)));
+  });
+
+  // Deleting needs the location's exact name typed again, and no screens left in it.
+  app.delete('/api/locations/:id', requireDevices, (req, res) => {
+    const loc = findLocation(req.params.id);
+    if (!loc) return res.status(404).json({ error: 'Not found' });
+    if (String((req.body || {}).confirm_name || '') !== loc.name) {
+      return res.status(400).json({ error: `Type ${loc.name} exactly to delete it` });
+    }
+    const { screens } = locationView(loc);
+    if (screens.length) {
+      return res.status(409).json({ error: `Move its screens to another location first: ${screens.map((s) => s.name).join(', ')}`, screens });
+    }
+    db.prepare(`DELETE FROM locations WHERE id = ?`).run(loc.id);
+    res.json({ ok: true });
+  });
+
+  // ---------- Notifications through Home Assistant ----------
+
+  const notifyTargets = () => getSetting(db, 'notify_targets') || [];
+  const NOTIFY_DATA = { url: '/hassio/ingress/local_kiosk_server' }; // tapping opens Kiosk Signage in the app
+
+  async function notify(title, message, tag) {
+    const targets = notifyTargets();
+    if (!homeAssistant || !targets.length) return false;
+    const results = await Promise.allSettled(
+      targets.map((t) => homeAssistant.send(t, { title, message, data: { ...NOTIFY_DATA, tag } })),
+    );
+    results.filter((r) => r.status === 'rejected').forEach((r) => log(`Notification failed: ${r.reason.message}`));
+    return results.some((r) => r.status === 'fulfilled');
+  }
+
+  const placeOf = (d) => [d.site, d.location].filter(Boolean).join(' › ');
+  const clock = (ms, tz) => {
+    try {
+      return new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz || serverTimeZone });
+    } catch {
+      return new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    }
+  };
+
+  // Looks for screens that went quiet during their working hours (and ones that
+  // came back), and sends one notification for each change. Runs every minute.
+  let checking = false;
+  async function checkScreens(now = Date.now()) {
+    if (!homeAssistant || !notifyTargets().length || checking) return;
+    checking = true;
+    try {
+      const devices = db.prepare(`SELECT * FROM devices WHERE claimed = 1`).all();
+      const down = [];
+      const back = [];
+      for (const d of devices) {
+        const silent = d.last_seen == null || now - d.last_seen > ALERT_AFTER_MS;
+        // Open now and 5 minutes ago, so a screen waking up at opening time gets a moment.
+        const hours = hoursOf(locationOf(d));
+        const tz = d.time_zone || serverTimeZone;
+        const inHours = isOpenAt(hours, now, tz) && isOpenAt(hours, now - ALERT_AFTER_MS, tz);
+        if (silent && inHours && !d.alerted_at) down.push(d);
+        else if (!silent && d.alerted_at) back.push(d);
+      }
+
+      if (down.length) {
+        const lines = [];
+        // A whole site going quiet at once is probably that site's internet.
+        const bySite = new Map();
+        for (const d of down) bySite.set(d.site || '', [...(bySite.get(d.site || '') || []), d]);
+        for (const [site, list] of bySite) {
+          const atSite = devices.filter((d) => (d.site || '') === site);
+          if (site && site !== ownSite && list.length === atSite.length && list.length > 1) {
+            lines.push(`${site}: all ${list.length} screens are offline. That site's internet or Home Assistant may be down.`);
+          } else {
+            for (const d of list) {
+              const seen = d.last_seen ? `last seen ${clock(d.last_seen, d.time_zone)}` : 'never connected';
+              lines.push(`${d.name}${placeOf(d) ? ` (${placeOf(d)})` : ''}: ${seen}`);
+            }
+          }
+        }
+        const title = down.length === 1 ? `${down[0].name} is offline` : `${down.length} screens are offline`;
+        const tag = down.length === 1 ? `kiosk-screen-${down[0].id}` : 'kiosk-screens';
+        if (await notify(title, lines.join('\n'), tag)) {
+          const mark = db.prepare(`UPDATE devices SET alerted_at = ? WHERE id = ?`);
+          down.forEach((d) => mark.run(now, d.id));
+        }
+      }
+
+      if (back.length) {
+        const title = back.length === 1 ? `${back[0].name} is back online` : `${back.length} screens are back online`;
+        const message = back.map((d) => `${d.name}${placeOf(d) ? ` (${placeOf(d)})` : ''}`).join('\n');
+        const tag = back.length === 1 ? `kiosk-screen-${back[0].id}` : 'kiosk-screens';
+        if (await notify(title, message, tag)) {
+          const clear = db.prepare(`UPDATE devices SET alerted_at = NULL WHERE id = ?`);
+          back.forEach((d) => clear.run(d.id));
+        }
+      }
+    } catch (err) {
+      log(err);
+    } finally {
+      checking = false;
+    }
+  }
 
   // ---------- Server settings (superadmin, web interface) ----------
 
@@ -607,7 +916,8 @@ function createApp({
         ? { available: true, enabled: cacheOn(), ...cacheStore.stats() }
         : { available: false, enabled: false, files: 0, bytes: 0 },
       sign_in: { phone_app: Boolean(googleWebClientId), web_code: Boolean(google.deviceSignInAvailable) },
-      library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media`).get(),
+      library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
+      notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
     };
   }
 
@@ -626,6 +936,13 @@ function createApp({
       if (typeof body.cache_media !== 'boolean') return res.status(400).json({ error: 'cache_media must be true or false' });
       setSetting(db, 'cache_media', body.cache_media);
     }
+    if (body.notify_targets !== undefined) {
+      const list = body.notify_targets;
+      if (!Array.isArray(list) || !list.every((t) => typeof t === 'string' && /^[a-z0-9_]+$/.test(t))) {
+        return res.status(400).json({ error: 'notify_targets must be a list of Home Assistant notify services' });
+      }
+      setSetting(db, 'notify_targets', [...new Set(list)]);
+    }
     res.json(settingsView());
   });
 
@@ -640,6 +957,25 @@ function createApp({
     }
   });
 
+  // Home Assistant's notify services, for the Settings page's checkboxes.
+  app.get('/api/settings/notify-targets', requireUsers, async (req, res) => {
+    if (!homeAssistant) return res.json({ available: false, targets: [] });
+    try {
+      res.json({ available: true, targets: await homeAssistant.listTargets() });
+    } catch (err) {
+      log(err);
+      res.status(502).json({ error: 'Could not ask Home Assistant for its notify services' });
+    }
+  });
+
+  app.post('/api/settings/test-notification', requireUsers, async (req, res) => {
+    if (!homeAssistant) return res.status(400).json({ error: 'Notifications work when Kiosk runs as a Home Assistant add-on' });
+    if (!notifyTargets().length) return res.status(400).json({ error: 'Tick at least one device to notify first' });
+    const sent = await notify('Kiosk Signage test', 'Notifications are working. You\'ll hear from Kiosk when a screen goes offline during working hours.', 'kiosk-test');
+    if (!sent) return res.status(502).json({ error: 'Home Assistant didn\'t accept the notification. Check the Kiosk add-on log.' });
+    res.json({ ok: true });
+  });
+
   app.post('/api/settings/clear-cache', requireUsers, (req, res) => {
     if (cacheStore) cacheStore.clear();
     res.json(settingsView());
@@ -651,14 +987,18 @@ function createApp({
   // pairing code, which it shows on screen as a QR code and as text.
   app.post('/api/player/register', (req, res) => {
     const token = auth.newToken();
-    const appVersion = (req.body && req.body.app_version) || null;
+    const body = req.body || {};
+    const appVersion = typeof body.app_version === 'string' ? body.app_version : null;
+    const model = typeof body.model === 'string' ? body.model.trim().slice(0, 80) || null : null;
     const insert = db.prepare(
-      `INSERT INTO devices (token, pairing_code, app_version, created_at) VALUES (?, ?, ?, ?)`
+      `INSERT INTO devices (token, pairing_code, app_version, model, site, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = randomPairingCode();
       try {
-        insert.run(token, code, appVersion, Date.now());
+        const now = Date.now();
+        insert.run(token, code, appVersion, model, siteOf(req), now, now);
         return res.status(201).json({ token, pairing_code: code, qr_payload: `kiosk-pair:${code}` });
       } catch (err) {
         if (err.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err; // otherwise: code taken, try another
@@ -669,6 +1009,8 @@ function createApp({
 
   app.get('/api/player/status', auth.requireDevice(db, { claimedOnly: false }), (req, res) => {
     const d = req.device;
+    // A TV waiting to be added asks every few seconds; that keeps it on the "waiting" list.
+    if (!d.claimed) db.prepare(`UPDATE devices SET last_seen = ?, site = ? WHERE id = ?`).run(Date.now(), siteOf(req), d.id);
     res.json({
       claimed: !!d.claimed,
       name: d.name,
@@ -682,36 +1024,49 @@ function createApp({
   function playerPlaylist(device) {
     const playlist = device.playlist_id ? findPlaylist(device.playlist_id) : null;
     const now = Date.now();
-    const items = playlist ? playlistItems(playlist.id).filter((item) =>
-      (item.start_at == null || item.start_at <= now) && (item.end_at == null || now < item.end_at)
-    ) : [];
+    const all = playlist ? playlistItems(playlist.id) : [];
+    // When an entry may play: both the file's dates and the playlist entry's dates allow it.
+    const startOf = (item) => Math.max(item.starts_at ?? 0, item.start_at ?? 0);
+    const ended = (item) => item.end_at != null && now >= item.end_at;
+    const items = all.filter((item) => startOf(item) <= now && !ended(item));
+    // Starting within a day: the TV downloads these ahead, but doesn't play them yet.
+    const upcoming = all.filter((item) => startOf(item) > now && startOf(item) <= now + UPCOMING_MS && !ended(item))
+      .filter((item, i, list) => !items.some((x) => x.media_id === item.media_id) && list.findIndex((x) => x.media_id === item.media_id) === i);
+    const toPlayer = (r) => ({
+      id: r.media_id,
+      type: r.type,
+      filename: r.filename,
+      url: `/media/${r.media_id}`,
+      md5: r.md5,
+      size: r.size,
+      orientation: r.orientation,
+      duration_seconds: r.type === 'image' ? r.image_seconds : null,
+    });
+    const ids = (list) => list.map((item) => item.media_id).join(',');
     return {
-      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${items.map((item) => item.media_id).join(',')}`,
+      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${ids(items)}` +
+        (upcoming.length ? `~${ids(upcoming)}` : ''),
       name: device.name,
       orientation: device.orientation,
       playlist_name: playlist ? playlist.name : null,
-      items: items.map((r) => ({
-        id: r.media_id,
-        type: r.type,
-        filename: r.filename,
-        url: `/media/${r.media_id}`,
-        md5: r.md5,
-        size: r.size,
-        orientation: r.orientation,
-        duration_seconds: r.type === 'image' ? r.image_seconds : null,
-      })),
+      items: items.map(toPlayer),
+      upcoming: upcoming.map(toPlayer),
+      // The location's working hours; the TV goes dark outside them (null = always on).
+      hours: hoursOf(locationOf(device)),
     };
   }
 
   app.get('/api/player/playlist', auth.requireDevice(db), (req, res) => {
+    expireDue();
     res.json(playerPlaylist(req.device));
   });
 
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
+    expireDue(); // so the version below already leaves out files that just expired
     const body = req.body || {};
     db.prepare(
       `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ?,
-       download_done = ?, download_total = ? WHERE id = ?`
+       download_done = ?, download_total = ?, site = ?, time_zone = ?, after_hours = ? WHERE id = ?`
     ).run(
       Date.now(),
       Number.isInteger(body.current_media_id) ? body.current_media_id : null,
@@ -719,6 +1074,9 @@ function createApp({
       typeof body.app_version === 'string' ? body.app_version : req.device.app_version,
       Number.isInteger(body.download_done) ? body.download_done : null,
       Number.isInteger(body.download_total) ? body.download_total : null,
+      siteOf(req),
+      typeof body.time_zone === 'string' ? body.time_zone.slice(0, 64) : req.device.time_zone,
+      ['black', 'standby'].includes(body.after_hours) ? body.after_hours : req.device.after_hours,
       req.device.id
     );
     res.json({ ok: true, version: playerPlaylist(req.device).version });
@@ -731,6 +1089,11 @@ function createApp({
     res.status(err.status || 500).json({ error: err.status ? err.message : 'Server error' });
   });
 
+  // Expired files leave the screens within a minute, even with nobody signed in.
+  if (syncIntervalMs > 0) setInterval(expireDue, 60 * 1000).unref();
+  // Offline screens are noticed (and notified) within a minute.
+  if (monitorIntervalMs > 0) setInterval(() => checkScreens(), monitorIntervalMs).unref();
+
   // Keep the library in step with Drive even when nobody has the admin app open.
   if (syncIntervalMs > 0) {
     setInterval(() => syncDriveFolder().catch(log), syncIntervalMs).unref();
@@ -738,6 +1101,7 @@ function createApp({
 
   app.locals.db = db;
   app.locals.syncDriveFolder = syncDriveFolder;
+  app.locals.checkScreens = checkScreens;
   return app;
 }
 

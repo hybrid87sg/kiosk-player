@@ -100,6 +100,18 @@ function openDatabase(dataDir) {
       created_at       INTEGER NOT NULL
     );
 
+    -- Places where screens are, e.g. "Main lobby", per site, with their
+    -- working hours (JSON, see hours.js; empty = open all the time).
+    -- site '' means this server's own site.
+    CREATE TABLE IF NOT EXISTS locations (
+      id         INTEGER PRIMARY KEY,
+      site       TEXT NOT NULL DEFAULT '',
+      name       TEXT NOT NULL,
+      hours      TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE (site, name)
+    );
+
     -- Settings changed from the web interface (e.g. the Drive folder),
     -- which take priority over the start-up settings.
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -114,6 +126,17 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'download_total', 'INTEGER');
   addColumnIfMissing(db, 'playlist_items', 'start_at', 'INTEGER');
   addColumnIfMissing(db, 'playlist_items', 'end_at', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'model', 'TEXT'); // e.g. "Xiaomi MIBOX4", shown while waiting to be added
+  addColumnIfMissing(db, 'devices', 'site', 'TEXT'); // which site (Home Assistant) the TV is at
+  // File expiry, and files taken out of Kiosk (expired or removed). The row is
+  // kept, so the next Drive sync doesn't bring the file back; Drive is untouched.
+  addColumnIfMissing(db, 'media', 'expires_at', 'INTEGER'); // unix ms; empty = never expires
+  addColumnIfMissing(db, 'media', 'removed_at', 'INTEGER'); // unix ms; empty = in the library
+  addColumnIfMissing(db, 'media', 'removed_reason', 'TEXT'); // 'expired' or 'removed'
+  addColumnIfMissing(db, 'media', 'starts_at', 'INTEGER'); // unix ms; empty = shows straight away
+  addColumnIfMissing(db, 'devices', 'time_zone', 'TEXT'); // the TV's own time zone, e.g. "Asia/Singapore"
+  addColumnIfMissing(db, 'devices', 'after_hours', 'TEXT'); // what the TV does when closed: 'black' or 'standby'
+  addColumnIfMissing(db, 'devices', 'alerted_at', 'INTEGER'); // when we notified that it's offline
 
   return db;
 }

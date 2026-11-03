@@ -16,8 +16,12 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.ServerConfig
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.RequestBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
@@ -35,8 +39,15 @@ internal interface AdminApi {
 
     @GET("api/media") suspend fun library(): Library
     @POST("api/media/sync") suspend fun syncLibrary(): Library
-    @POST("api/media") suspend fun upload(@Header("X-Filename") encodedName: String, @Body file: RequestBody): Media
+    @POST("api/media") suspend fun upload(
+        @Header("X-Filename") encodedName: String,
+        @Header("X-Starts-At") startsAt: String?, // left out when null
+        @Header("X-Expires-At") expiresAt: String?,
+        @Body file: RequestBody,
+    ): Media
+    @PATCH("api/media/{id}") suspend fun setSchedule(@Path("id") id: Long, @Body body: JsonObject): Media
     @DELETE("api/media/{id}") suspend fun deleteMedia(@Path("id") id: Long): OkReply
+    @POST("api/media/{id}/restore") suspend fun restoreMedia(@Path("id") id: Long, @Body body: JsonObject): Media
 
     @GET("api/playlists") suspend fun playlists(): List<PlaylistSummary>
     @GET("api/playlists/{id}") suspend fun playlist(@Path("id") id: Long): PlaylistDetail
@@ -46,6 +57,7 @@ internal interface AdminApi {
     @DELETE("api/playlists/{id}") suspend fun deletePlaylist(@Path("id") id: Long): OkReply
 
     @GET("api/devices") suspend fun devices(): List<Device>
+    @GET("api/devices/waiting") suspend fun waitingDevices(): List<WaitingDevice>
     @POST("api/devices/claim") suspend fun claim(@Body body: DeviceBody): Device
     @PATCH("api/devices/{id}") suspend fun updateDevice(@Path("id") id: Long, @Body body: DeviceBody): Device
     @DELETE("api/devices/{id}") suspend fun deleteDevice(@Path("id") id: Long): OkReply
@@ -57,6 +69,7 @@ internal interface AdminApi {
 }
 
 internal interface PlayerApi {
+    @GET("api/config") suspend fun config(): ServerConfig
     @POST("api/player/register") suspend fun register(@Body body: AppVersionBody): Registration
     @GET("api/player/status") suspend fun status(): PlayerStatus
     @GET("api/player/playlist") suspend fun playlist(): PlayerPlaylist
@@ -66,6 +79,14 @@ internal interface PlayerApi {
 // ---------- Request and reply bodies ----------
 
 @Serializable internal data class OkReply(val ok: Boolean = true)
+/**
+ * A file's dates. Built by hand so an empty date is sent as null ("no date"),
+ * which the server treats differently from leaving it out ("keep as it is").
+ */
+internal fun scheduleBody(startsAt: Long?, expiresAt: Long?): JsonObject = buildJsonObject {
+    put("starts_at", startsAt)
+    put("expires_at", expiresAt)
+}
 @Serializable internal data class GoogleSignInBody(@SerialName("id_token") val idToken: String)
 @Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape)
 @Serializable
@@ -78,7 +99,12 @@ internal data class ItemBody(
 @Serializable internal data class ItemsBody(val items: List<ItemBody>)
 @Serializable internal data class UserBody(val email: String, val role: Role)
 @Serializable internal data class RoleBody(val role: Role)
-@Serializable internal data class AppVersionBody(@SerialName("app_version") val appVersion: String)
+@Serializable
+internal data class AppVersionBody(
+    @SerialName("app_version") val appVersion: String,
+    /** The TV box's make and model, shown while it waits to be added. */
+    val model: String? = null,
+)
 
 @Serializable
 internal data class DeviceBody(
@@ -97,6 +123,10 @@ internal data class HeartbeatBody(
     /** While new files download: how many are done, out of how many. */
     @SerialName("download_done") val downloadDone: Int? = null,
     @SerialName("download_total") val downloadTotal: Int? = null,
+    /** This TV's time zone, so the server knows when its location is open for it. */
+    @SerialName("time_zone") val timeZone: String? = null,
+    /** What it does after hours: "black" or "standby". */
+    @SerialName("after_hours") val afterHours: String? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

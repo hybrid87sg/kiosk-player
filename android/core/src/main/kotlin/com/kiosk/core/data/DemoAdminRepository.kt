@@ -11,10 +11,12 @@ import com.kiosk.core.model.PlaylistDetail
 import com.kiosk.core.model.PlaylistEntry
 import com.kiosk.core.model.PlaylistItem
 import com.kiosk.core.model.PlaylistSummary
+import com.kiosk.core.model.RemovedMedia
 import com.kiosk.core.model.Role
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.ApiException
 import kotlinx.coroutines.delay
 
@@ -39,7 +41,8 @@ class DemoAdminRepository(
     private val media = mutableListOf(
         demoFile(1, "Lobby promo.mp4", MediaType.VIDEO, 1_400_000_000, 3840, 2160),
         demoFile(2, "Summer menu.jpg", MediaType.IMAGE, 3_200_000, 3840, 2160),
-        demoFile(3, "Opening hours.png", MediaType.IMAGE, 1_100_000, 1920, 1080),
+        // Expires in 2 days, so the expiry date shows up in Demo mode.
+        demoFile(3, "Opening hours.png", MediaType.IMAGE, 1_100_000, 1920, 1080).let { it.copy(media = it.media.copy(expiresAt = start + 2 * 86_400_000L)) },
         demoFile(4, "Brand reel 4K.mp4", MediaType.VIDEO, 2_800_000_000, 3840, 2160),
         demoFile(5, "Staff picks.webp", MediaType.IMAGE, 800_000, 1920, 1080),
         demoFile(6, "Menu board portrait.jpg", MediaType.IMAGE, 2_100_000, 2160, 3840),
@@ -50,13 +53,22 @@ class DemoAdminRepository(
         DemoPlaylist(2, "Reception portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(6, 12), PlaylistEntry(7, 10))),
     )
     private val devices = mutableListOf(
-        Device(1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4", freeBytes = 21_400_000_000),
+        Device(
+            1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4",
+            freeBytes = 21_400_000_000, hoursSummary = "Mon–Fri 08:00–18:00 · Sat–Sun closed",
+        ),
         Device(2, "Reception", "Branch office", Mounting.PORTRAIT_RIGHT, 2, online = false, lastSeen = start - 3 * 3_600_000, currentFilename = "Menu board portrait.jpg", freeBytes = 9_800_000_000),
     )
+    // A TV that found the server by itself and is waiting to be added.
+    private val waiting = mutableListOf(WaitingDevice(99, "Xiaomi MIBOX4", null, "DEMO42", start))
     private val users = mutableListOf(
         User(1, myEmail, Role.SUPERADMIN),
         User(2, "maria@yourcompany.com", Role.SYSTEM_MANAGER),
         User(3, "dan@yourcompany.com", Role.CONTENT_UPLOADER),
+    )
+    // "Expired and removed": one sample file that expired last week.
+    private val removed = mutableListOf(
+        RemovedMedia(50, "Spring sale.jpg", MediaType.IMAGE, 2_400_000, ScreenShape.LANDSCAPE, start - 5 * 86_400_000L, "expired"),
     )
     private var driveDropDone = false
     private var lastSync = start - 2 * 60_000
@@ -75,6 +87,26 @@ class DemoAdminRepository(
 
     private fun mediaById(id: Long) = media.firstOrNull { it.media.id == id }?.visible()
 
+    /** Files whose expiry date has passed leave the library and every playlist. */
+    private fun expireDue() {
+        media.filter { it.media.expiresAt?.let { e -> e <= now() } == true }.forEach { retire(it.media.id, "expired") }
+    }
+
+    private fun retire(id: Long, reason: String) {
+        val m = media.firstOrNull { it.media.id == id } ?: throw ApiException("Not found", 404)
+        media.remove(m)
+        removed.add(0, RemovedMedia(m.media.id, m.media.filename, m.media.type, m.media.size, m.media.orientation, now(), reason))
+        playlists.filter { pl -> pl.items.any { it.mediaId == id } }.forEach { pl ->
+            pl.items = pl.items.filter { it.mediaId != id }
+            pl.version++
+        }
+    }
+
+    private fun checkSchedule(startsAt: Long?, expiresAt: Long?) {
+        if (expiresAt != null && expiresAt <= now()) throw ApiException("Choose an end date in the future", 400)
+        if (startsAt != null && expiresAt != null && startsAt >= expiresAt) throw ApiException("The end date must be after the start date", 400)
+    }
+
     private suspend fun pause() { if (latencyMs > 0) delay(latencyMs) }
 
     override suspend fun signInWithGoogle(idToken: String) = Session("demo", myEmail, Role.SUPERADMIN)
@@ -82,7 +114,8 @@ class DemoAdminRepository(
 
     override suspend fun library(): Library {
         pause()
-        return Library(media.map { it.visible() }.sortedByDescending { it.createdAt }, lastSync)
+        expireDue()
+        return Library(media.map { it.visible() }.sortedByDescending { it.createdAt }, lastSync, removed = removed.toList())
     }
 
     override suspend fun syncLibrary(): Library {
@@ -96,7 +129,8 @@ class DemoAdminRepository(
         return library()
     }
 
-    override suspend fun upload(file: UploadSource, onProgress: (Float) -> Unit): Media {
+    override suspend fun upload(file: UploadSource, startsAt: Long?, expiresAt: Long?, onProgress: (Float) -> Unit): Media {
+        checkSchedule(startsAt, expiresAt)
         val type = when {
             file.mime.startsWith("video/") || file.name.lowercase().endsWith(".mp4") -> MediaType.VIDEO
             file.mime.startsWith("image/") || Regex("\\.(jpe?g|png|webp)$").containsMatchIn(file.name.lowercase()) -> MediaType.IMAGE
@@ -104,21 +138,38 @@ class DemoAdminRepository(
         }
         for (step in 1..20) { delay(120); onProgress(step / 20f) }
         val item = DemoMedia(
-            Media(nextId++, file.name, type, file.mime, file.size, "demo-upload", file.width, file.height, shapeOf(file.width, file.height) ?: ScreenShape.LANDSCAPE, now()),
+            Media(nextId++, file.name, type, file.mime, file.size, "demo-upload", file.width, file.height, shapeOf(file.width, file.height) ?: ScreenShape.LANDSCAPE, now(), startsAt = startsAt, expiresAt = expiresAt),
             shapeKnownAt = now() + 3000,
         )
         media += item
         return item.visible()
     }
 
+    override suspend fun setMediaSchedule(id: Long, startsAt: Long?, expiresAt: Long?): Media {
+        pause()
+        checkSchedule(startsAt, expiresAt)
+        val i = media.indexOfFirst { it.media.id == id }.takeIf { it >= 0 } ?: throw ApiException("Not found", 404)
+        media[i] = media[i].copy(media = media[i].media.copy(startsAt = startsAt, expiresAt = expiresAt))
+        return media[i].visible()
+    }
+
     override suspend fun deleteMedia(id: Long) {
         pause()
-        if (media.removeAll { it.media.id == id }) {
-            playlists.filter { pl -> pl.items.any { it.mediaId == id } }.forEach { pl ->
-                pl.items = pl.items.filter { it.mediaId != id }
-                pl.version++
-            }
-        } else throw ApiException("Not found", 404)
+        retire(id, "removed")
+    }
+
+    override suspend fun restoreMedia(id: Long, startsAt: Long?, expiresAt: Long?): Media {
+        pause()
+        checkSchedule(startsAt, expiresAt)
+        val r = removed.firstOrNull { it.id == id } ?: throw ApiException("Not found", 404)
+        removed.remove(r)
+        val mime = if (r.type == MediaType.VIDEO) "video/mp4" else "image/jpeg"
+        val restored = DemoMedia(
+            Media(r.id, r.filename, r.type, mime, r.size, "demo${r.id}", null, null, r.orientation, now(), startsAt = startsAt, expiresAt = expiresAt),
+            0,
+        )
+        media += restored
+        return restored.visible()
     }
 
     private fun DemoPlaylist.summary() = PlaylistSummary(
@@ -131,7 +182,12 @@ class DemoAdminRepository(
         return PlaylistDetail(
             s.id, s.name, s.orientation, s.version, s.itemCount, s.devices,
             items.mapNotNull { e ->
-                mediaById(e.mediaId)?.let { m -> PlaylistItem(m.id, e.imageSeconds, m.filename, m.type, m.mime, m.size, m.md5, m.orientation) }
+                mediaById(e.mediaId)?.let { m ->
+                    PlaylistItem(
+                        m.id, e.imageSeconds, m.filename, m.type, m.mime, m.size, m.md5, m.orientation, e.startAt, e.endAt,
+                        startsAt = m.startsAt, expiresAt = m.expiresAt,
+                    )
+                }
             },
         )
     }
@@ -181,11 +237,17 @@ class DemoAdminRepository(
         return devices.sortedWith(compareBy({ it.location ?: "￿" }, { it.name })).map { it.withPlaylistName() }
     }
 
+    override suspend fun waitingDevices(): List<WaitingDevice> {
+        pause()
+        return waiting.toList()
+    }
+
     override suspend fun claimDevice(code: String, setup: PlayerSetup): Device {
         pause()
         val clean = code.removePrefix("kiosk-pair:").uppercase().filter { it.isLetterOrDigit() }
         if (clean.length != 6) throw ApiException("No player is showing that code", 404)
         if (setup.name.isBlank()) throw ApiException("Give the player a name", 400)
+        waiting.removeAll { it.pairingCode == clean }
         val d = Device(
             nextId++, setup.name.trim(), setup.location?.trim()?.ifBlank { null }, setup.orientation, setup.playlistId,
             online = true, lastSeen = now(), freeBytes = 28_100_000_000,

@@ -41,7 +41,15 @@ enum class MediaType {
 
 /** Public settings from the server, read before signing in. */
 @Serializable
-data class ServerConfig(@SerialName("google_web_client_id") val googleWebClientId: String? = null)
+data class ServerConfig(
+    @SerialName("google_web_client_id") val googleWebClientId: String? = null,
+    /** "kiosk-signage" for a Kiosk server; used when a TV searches the network. */
+    val kind: String? = null,
+    /** "main" (manages everything) or "relay" (passes one site's TVs to the main server). */
+    val role: String? = null,
+    @SerialName("server_id") val serverId: String? = null,
+    @SerialName("site_name") val siteName: String? = null,
+)
 
 @Serializable
 data class Session(val token: String, val email: String, val role: Role)
@@ -59,13 +67,34 @@ data class Media(
     /** null while Drive is still working out the file's size. */
     val orientation: ScreenShape? = null,
     @SerialName("created_at") val createdAt: Long = 0,
+    /** When the file starts showing on screens (unix ms); null = straight away. */
+    @SerialName("starts_at") val startsAt: Long? = null,
+    /** When the file leaves Kiosk and every screen (unix ms); null = never. Google Drive keeps it. */
+    @SerialName("expires_at") val expiresAt: Long? = null,
 )
+
+/** A file taken out of Kiosk (it expired, or someone removed it). It's still in Google Drive. */
+@Serializable
+data class RemovedMedia(
+    val id: Long,
+    val filename: String,
+    val type: MediaType,
+    val size: Long = 0,
+    val orientation: ScreenShape? = null,
+    @SerialName("removed_at") val removedAt: Long,
+    /** "expired" or "removed". */
+    @SerialName("removed_reason") val removedReason: String,
+) {
+    val expired: Boolean get() = removedReason == "expired"
+}
 
 @Serializable
 data class Library(
     val items: List<Media>,
     @SerialName("synced_at") val syncedAt: Long? = null,
     @SerialName("sync_error") val syncError: String? = null,
+    /** "Expired and removed": can be restored. */
+    val removed: List<RemovedMedia> = emptyList(),
 )
 
 @Serializable
@@ -93,6 +122,9 @@ data class PlaylistItem(
     val orientation: ScreenShape? = null,
     @SerialName("start_at") val startAt: Long? = null,
     @SerialName("end_at") val endAt: Long? = null,
+    /** The file's own dates (see [Media.startsAt] and [Media.expiresAt]). */
+    @SerialName("starts_at") val startsAt: Long? = null,
+    @SerialName("expires_at") val expiresAt: Long? = null,
 )
 
 @Serializable
@@ -119,6 +151,27 @@ data class Device(
     @SerialName("current_filename") val currentFilename: String? = null,
     @SerialName("free_bytes") val freeBytes: Long? = null,
     @SerialName("app_version") val appVersion: String? = null,
+    /** The TV box, e.g. "Xiaomi MIBOX4". */
+    val model: String? = null,
+    /** Which site (Home Assistant) the TV is at, when there are several. */
+    val site: String? = null,
+    @SerialName("location_id") val locationId: Long? = null,
+    /** The location's working hours, e.g. "Mon–Fri 08:00–18:00". */
+    @SerialName("hours_summary") val hoursSummary: String? = null,
+    /** False outside working hours (the screen is dark then). */
+    @SerialName("open_now") val openNow: Boolean = true,
+    /** What the TV does after hours: "black" or "standby". */
+    @SerialName("after_hours") val afterHours: String? = null,
+)
+
+/** A TV showing its pairing code right now, waiting to be added. */
+@Serializable
+data class WaitingDevice(
+    val id: Long,
+    val model: String? = null,
+    val site: String? = null,
+    @SerialName("pairing_code") val pairingCode: String,
+    @SerialName("last_seen") val lastSeen: Long? = null,
 )
 
 @Serializable
@@ -181,4 +234,12 @@ data class PlayerPlaylist(
     val orientation: Mounting = Mounting.LANDSCAPE,
     @SerialName("playlist_name") val playlistName: String? = null,
     val items: List<PlayerItem> = emptyList(),
+    /** Files starting within a day: download them ahead, but don't play them yet. */
+    val upcoming: List<PlayerItem> = emptyList(),
+    /** The location's working hours ("mon"…"sun"); null = always on. */
+    val hours: Map<String, DayHours?>? = null,
 )
+
+/** Opening and closing time on one day, e.g. "08:00" and "18:00". */
+@Serializable
+data class DayHours(val open: String, val close: String)

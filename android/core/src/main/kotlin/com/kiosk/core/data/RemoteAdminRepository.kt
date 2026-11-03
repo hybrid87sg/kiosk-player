@@ -12,6 +12,7 @@ import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.ServerConfig
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.AdminApi
 import com.kiosk.core.network.DeviceBody
 import com.kiosk.core.network.GoogleSignInBody
@@ -22,6 +23,7 @@ import com.kiosk.core.network.RoleBody
 import com.kiosk.core.network.ServerConnection
 import com.kiosk.core.network.UserBody
 import com.kiosk.core.network.apiCall
+import com.kiosk.core.network.scheduleBody
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody
@@ -60,13 +62,17 @@ class RemoteAdminRepository(
     override suspend fun library(): Library = apiCall { api.library() }
     override suspend fun syncLibrary(): Library = apiCall { api.syncLibrary() }
 
-    override suspend fun upload(file: UploadSource, onProgress: (Float) -> Unit): Media {
+    override suspend fun upload(file: UploadSource, startsAt: Long?, expiresAt: Long?, onProgress: (Float) -> Unit): Media {
         // encodeURIComponent-style: the server decodes it with decodeURIComponent.
         val encodedName = URLEncoder.encode(file.name, "UTF-8").replace("+", "%20")
-        return apiCall { api.upload(encodedName, StreamingBody(file, onProgress)) }
+        return apiCall { api.upload(encodedName, startsAt?.toString(), expiresAt?.toString(), StreamingBody(file, onProgress)) }
     }
 
+    override suspend fun setMediaSchedule(id: Long, startsAt: Long?, expiresAt: Long?): Media =
+        apiCall { api.setSchedule(id, scheduleBody(startsAt, expiresAt)) }
     override suspend fun deleteMedia(id: Long) { apiCall { api.deleteMedia(id) } }
+    override suspend fun restoreMedia(id: Long, startsAt: Long?, expiresAt: Long?): Media =
+        apiCall { api.restoreMedia(id, scheduleBody(startsAt, expiresAt)) }
 
     override suspend fun playlists(): List<PlaylistSummary> = apiCall { api.playlists() }
     override suspend fun playlist(id: Long): PlaylistDetail = apiCall { api.playlist(id) }
@@ -83,6 +89,7 @@ class RemoteAdminRepository(
     override suspend fun deletePlaylist(id: Long) { apiCall { api.deletePlaylist(id) } }
 
     override suspend fun devices(): List<Device> = apiCall { api.devices() }
+    override suspend fun waitingDevices(): List<WaitingDevice> = apiCall { api.waitingDevices() }
 
     override suspend fun claimDevice(code: String, setup: PlayerSetup): Device =
         apiCall { api.claim(setup.toBody(code)) }

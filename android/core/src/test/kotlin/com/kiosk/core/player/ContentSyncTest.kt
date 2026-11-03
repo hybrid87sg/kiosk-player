@@ -57,6 +57,12 @@ class ContentSyncTest {
         assertArrayEquals(bytes, sync.fileFor(item).readBytes())
     }
 
+    @Test fun downloadsFilesThatStartSoonAhead() = runTest {
+        val sync = sync()
+        sync.sync(PlayerPlaylist("1", items = emptyList(), upcoming = listOf(item)))
+        assertTrue(sync.isReady(item)) // ready before it's due to play
+    }
+
     @Test fun resumesAnInterruptedDownload() = runTest {
         val sync = sync()
         cutAfter = 100_000

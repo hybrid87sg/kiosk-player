@@ -14,6 +14,7 @@ import com.kiosk.core.model.Role
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
+import com.kiosk.core.model.WaitingDevice
 import java.io.InputStream
 
 interface AdminRepository {
@@ -24,8 +25,16 @@ interface AdminRepository {
 
     suspend fun library(): Library
     suspend fun syncLibrary(): Library
-    suspend fun upload(file: UploadSource, onProgress: (Float) -> Unit): Media
+    /**
+     * [startsAt]: when the file starts showing (unix ms), or null for straight away.
+     * [expiresAt]: when it leaves Kiosk, or null for never.
+     */
+    suspend fun upload(file: UploadSource, startsAt: Long? = null, expiresAt: Long? = null, onProgress: (Float) -> Unit): Media
+    suspend fun setMediaSchedule(id: Long, startsAt: Long?, expiresAt: Long?): Media
+    /** "Remove from Kiosk": out of the library, playlists and screens. Google Drive keeps the file. */
     suspend fun deleteMedia(id: Long)
+    /** Brings an expired or removed file back into the library (not into playlists). */
+    suspend fun restoreMedia(id: Long, startsAt: Long?, expiresAt: Long?): Media
 
     suspend fun playlists(): List<PlaylistSummary>
     suspend fun playlist(id: Long): PlaylistDetail
@@ -35,6 +44,8 @@ interface AdminRepository {
     suspend fun deletePlaylist(id: Long)
 
     suspend fun devices(): List<Device>
+    /** TVs showing a pairing code right now, so they can be added without scanning or typing. */
+    suspend fun waitingDevices(): List<WaitingDevice>
     /** [code] is what the QR code says ("kiosk-pair:K7P29Q") or what was typed ("k7p-29q"). */
     suspend fun claimDevice(code: String, setup: PlayerSetup): Device
     suspend fun updateDevice(id: Long, setup: PlayerSetup): Device

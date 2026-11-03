@@ -6,7 +6,7 @@
 //   listFolder()                    -> [file]      files in the signage Drive folder
 //   uploadFile(stream, name, mime)  -> file        saves a new file into the folder
 //   downloadStream(fileId, range)   -> { status, headers, stream }
-//   deleteFile(fileId)                             moves a file to Drive's trash
+//   deleteFile(fileId)                             moves a file to Drive's trash (only used to clean up a failed upload; Kiosk never deletes library files from Drive)
 //   getFolderId() / setFolderId(id)                which Drive folder is used
 //   deviceSignInAvailable                          true if the web code sign-in is set up
 //   startDeviceSignIn()             -> { deviceCode, userCode, verificationUrl, interval, expiresIn }

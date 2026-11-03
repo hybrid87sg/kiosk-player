@@ -46,6 +46,17 @@ jobs:
           curl -sf localhost:3000/ | grep "Kiosk Signage"
           docker logs kiosk
 
+      - name: Check relay mode (a Home Assistant at another site)
+        run: |
+          mkdir -p relay-data
+          echo '{"mode":"relay","site_name":"Branch","main_server_url":"host.docker.internal:3000","service_account_file":"service-account.json","cache_media":true}' > relay-data/options.json
+          docker run -d --name relay -p 3001:3000 --add-host=host.docker.internal:host-gateway -v "$PWD/relay-data:/data" kiosk-addon
+          for i in $(seq 1 30); do curl -sf localhost:3001/api/health && break; sleep 1; done
+          curl -sf localhost:3001/api/config | grep '"role":"relay"'
+          curl -sf localhost:3001/api/relay/status | grep '"reachable":true'
+          curl -sf -X POST -H 'content-type: application/json' -d '{"model":"CI box"}' localhost:3001/api/player/register | grep pairing_code
+          docker logs relay
+
       - uses: actions/upload-artifact@v4
         with:
           name: kiosk_server-addon

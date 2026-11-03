@@ -56,6 +56,12 @@ const ICONS = {
   refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
   play: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  locations: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  collapse: '<path d="M15 18l-6-6 6-6"/>',
+  expand: '<path d="M9 18l6-6-6-6"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
 };
 
 /** An icon from the fixed set above (our own markup, never server text). */
@@ -160,6 +166,89 @@ function mediaMeta(m) {
   return `${m.type === 'video' ? 'Video' : 'Picture'} · ${m.orientation ? SHAPES[m.orientation] : 'Checking shape…'} · ${formatBytes(m.size)}`;
 }
 
+// ---------- Expiry dates ----------
+// People pick the last day a file shows. It expires at the start of the next
+// day, in this browser's time zone (like playlist dates).
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** "2026-12-24" for a date input, from an expiry time (the day before it). */
+function lastDayValue(expiresAt) {
+  if (expiresAt == null) return '';
+  const d = new Date(expiresAt - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** The expiry time for a chosen last day: midnight at the end of it. */
+function expiryFromLastDay(value) {
+  if (!value) return null;
+  const d = new Date(`${value}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+function shortDate(ms) {
+  return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: new Date(ms).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+
+/** "Shows until 24 Dec", warning-coloured when 3 days or less are left. */
+/** "2026-12-01" for a date input, from a start time. */
+function firstDayValue(startsAt) {
+  return startsAt == null ? '' : lastDayValue(startsAt + 1);
+}
+
+/** The start time for a chosen first day: midnight at its beginning. */
+function startOfDay(value) {
+  return value ? new Date(`${value}T00:00:00`).getTime() : null;
+}
+
+/** "Starts 1 Dec" (before its start) and "Shows until 24 Dec" chips for a file. */
+function scheduleChips(m) {
+  const chips = [];
+  if (m.starts_at != null && m.starts_at > Date.now()) {
+    chips.push(el('span', { class: 'chip primary', title: 'It goes on screens from this day. TVs download it a day ahead.' }, `Starts ${shortDate(m.starts_at)}`));
+  }
+  if (m.expires_at != null) {
+    const soon = m.expires_at - Date.now() <= 3 * DAY_MS;
+    chips.push(el('span', { class: `chip ${soon ? 'attention' : 'primary'}`, title: 'After this day it leaves Kiosk and every screen. Google Drive keeps it.' },
+      `Shows until ${shortDate(m.expires_at - 1)}`));
+  }
+  return chips;
+}
+
+/** Choose a file's first and last day (both optional). onSave(startsAt, expiresAt) does the saving. */
+function scheduleDialog({ title, text, startsAt = null, expiresAt = null, saveLabel = 'Save', onSave }) {
+  openDialog((dialog) => {
+    const from = el('input', { type: 'date', class: 'date-input', value: firstDayValue(startsAt) });
+    const until = el('input', { type: 'date', class: 'date-input', value: lastDayValue(expiresAt), min: lastDayValue(Date.now() + 1) });
+    from.addEventListener('change', () => { until.min = from.value || lastDayValue(Date.now() + 1); });
+    const save = async (start, end) => {
+      if (start != null && end != null && start >= end) return toast('The last day must be on or after the first day');
+      const ok = await attempt(() => onSave(start, end));
+      if (ok !== undefined) dialog.close();
+    };
+    const form = el('form', {
+      method: 'dialog',
+      onsubmit: (e) => {
+        e.preventDefault();
+        save(startOfDay(from.value), expiryFromLastDay(until.value));
+      },
+    },
+    el('h2', {}, title),
+    el('p', { class: 'sub' }, text),
+    el('div', { class: 'row', style: 'gap:16px;align-items:flex-end' },
+      el('label', { class: 'field' }, 'Show from (optional)', from),
+      el('label', { class: 'field' }, 'Show until (optional)', until)),
+    el('p', { class: 'meta', style: 'margin:0' }, 'Before the first day it waits in the library; after the last day it leaves Kiosk and every screen. Google Drive keeps it either way.'),
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { type: 'button', class: 'btn', onclick: () => save(null, null) }, 'No dates'),
+      el('button', { class: 'btn primary' }, saveLabel)));
+    setTimeout(() => from.focus());
+    return form;
+  });
+}
+
 /** Opens a dialog. build(dialog) returns its content; it closes with dialog.close(). */
 function openDialog(build) {
   const dialog = el('dialog');
@@ -251,23 +340,68 @@ async function startCodeSignIn(area) {
 
 function tabsFor(role) {
   const tabs = [];
-  if (role !== 'content_uploader') tabs.push(['screens', 'Screens']);
+  if (role !== 'content_uploader') tabs.push(['screens', 'Screens'], ['locations', 'Locations']);
   tabs.push(['library', 'Library'], ['playlists', 'Playlists']);
   if (role === 'superadmin') tabs.push(['users', 'Users'], ['settings', 'Settings']);
   return tabs;
 }
 
+// The side menu can be folded down to icons; remembered in this browser.
+const NAV_KEY = 'kiosk-nav-collapsed';
+function navCollapsed() {
+  try { return localStorage.getItem(NAV_KEY) === '1'; } catch { return false; }
+}
+
 function renderShell() {
-  const nav = el('nav', { class: 'nav', 'aria-label': 'Main' },
-    el('div', { class: 'brand' }, el('span', { class: 'brand-mark' }, icon('screens', 20)), 'Kiosk Signage'),
-    tabsFor(me.role).map(([key, label]) => el('a', { href: `#/${key}`, 'data-tab': key }, icon(key), label)),
+  const collapsed = navCollapsed();
+  const toggle = el('button', {
+    class: 'btn icon nav-toggle', type: 'button',
+    'aria-label': collapsed ? 'Expand the menu' : 'Collapse the menu', title: collapsed ? 'Expand the menu' : 'Collapse the menu',
+    'aria-expanded': String(!collapsed),
+    onclick: () => {
+      try { localStorage.setItem(NAV_KEY, navCollapsed() ? '0' : '1'); } catch { /* private mode */ }
+      renderShell();
+    },
+  }, icon(collapsed ? 'expand' : 'collapse', 18));
+  const nav = el('nav', { class: `nav${collapsed ? ' collapsed' : ''}`, 'aria-label': 'Main' },
+    el('div', { class: 'brand' }, el('span', { class: 'brand-mark' }, icon('screens', 20)), el('span', { class: 'label' }, 'Kiosk Signage'), toggle),
+    tabsFor(me.role).map(([key, label]) => [
+      el('a', { href: `#/${key}`, 'data-tab': key, title: label }, icon(key), el('span', { class: 'label' }, label)),
+      key === 'locations' ? el('div', { class: 'nav-sub', id: 'nav-locations' }) : null,
+    ]),
     el('div', { class: 'spacer' }),
-    el('div', { class: 'who' }, el('strong', {}, me.email), ROLES[me.role].label,
-      me.via_home_assistant ? ' · via Home Assistant' : '',
-      me.via_home_assistant ? null : el('div', {}, el('button', { class: 'btn text small', style: 'padding:0;margin-top:6px', onclick: signOut }, 'Sign out'))),
+    el('div', { class: 'who' }, el('strong', {}, me.email), el('span', { class: 'label' }, ROLES[me.role].label,
+      me.via_home_assistant ? ' · via Home Assistant' : ''),
+    me.via_home_assistant ? null : el('div', {}, el('button', { class: 'btn text small', style: 'padding:0;margin-top:6px', onclick: signOut }, 'Sign out'))),
   );
   fill(app, el('div', { class: 'shell' }, nav, el('main', { id: 'page' })));
+  refreshNavLocations();
   route();
+}
+
+/** Fills the Locations part of the menu: one link per location, under its site when there are several. */
+async function refreshNavLocations() {
+  const box = document.getElementById('nav-locations');
+  if (!box) return;
+  const data = await api('GET', 'api/locations').catch(() => null);
+  if (!data) return;
+  const sites = new Set(data.locations.map((l) => l.site || ''));
+  const bySite = new Map();
+  for (const l of data.locations) bySite.set(l.site || '', [...(bySite.get(l.site || '') || []), l]);
+  fill(box, [...bySite.entries()].map(([site, list]) => [
+    sites.size > 1 ? el('div', { class: 'nav-site' }, site || 'This site') : null,
+    list.map((l) => el('a', { href: `#/locations/${l.id}`, 'data-loc': String(l.id), title: l.name },
+      el('span', { class: 'label' }, l.name), el('span', { class: 'count' }, String(l.screens.length)))),
+  ]));
+  markCurrentNav();
+}
+
+function markCurrentNav() {
+  const [, section, id] = (location.hash || '').split('/');
+  document.querySelectorAll('.nav a[data-loc]').forEach((a) => {
+    if (section === 'locations' && a.dataset.loc === id) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
 }
 
 async function signOut() {
@@ -283,15 +417,17 @@ function route() {
   const [, section, id] = (location.hash || '').split('/');
   const allowed = tabsFor(me.role).map(([key]) => key);
   const current = allowed.includes(section) ? section : allowed[0];
-  document.querySelectorAll('.nav a').forEach((a) => {
-    if (a.dataset.tab === current) a.setAttribute('aria-current', 'page');
+  document.querySelectorAll('.nav a[data-tab]').forEach((a) => {
+    if (a.dataset.tab === current && !(current === 'locations' && id)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
+  markCurrentNav();
   const page = document.getElementById('page');
   if (!page) return;
   fill(page, el('p', { class: 'loading' }, 'Loading…'));
-  const pages = { screens: pageScreens, library: pageLibrary, playlists: pagePlaylists, users: pageUsers, settings: pageSettings };
+  const pages = { screens: pageScreens, locations: pageLocations, library: pageLibrary, playlists: pagePlaylists, users: pageUsers, settings: pageSettings };
   if (current === 'playlists' && id) pagePlaylist(page, Number(id));
+  else if (current === 'locations' && id) pageLocation(page, Number(id));
   else pages[current](page);
 }
 window.addEventListener('hashchange', route);
@@ -300,23 +436,36 @@ window.addEventListener('hashchange', route);
 
 async function pageScreens(page) {
   async function draw() {
-    const [devices, playlists] = await Promise.all([api('GET', 'api/devices'), api('GET', 'api/playlists')]);
+    const [devices, playlists, waiting] = await Promise.all([
+      api('GET', 'api/devices'), api('GET', 'api/playlists'), api('GET', 'api/devices/waiting'),
+    ]);
     const online = devices.filter((d) => d.online).length;
+    // With TVs at more than one site, group by site first, then location.
+    const sites = new Set([...devices, ...waiting].map((d) => d.site || ''));
+    const manySites = sites.size > 1;
     const groups = new Map();
     for (const d of devices) {
       const loc = d.location || 'No location';
-      if (!groups.has(loc)) groups.set(loc, []);
-      groups.get(loc).push(d);
+      const key = manySites ? `${d.site || 'This site'} › ${loc}` : loc;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(d);
     }
-    fill(page, 
+    // The header of a location's group: its working hours, and a link to the location.
+    const groupHead = (group, list) => {
+      const first = list[0];
+      return el('div', { class: 'section-label row group-head' }, `${group} · ${list.length}`,
+        first.location_id ? el('a', { class: 'hours-link', href: `#/locations/${first.location_id}` }, icon('clock', 14), first.hours_summary) : null);
+    };
+    fill(page,
       el('div', { class: 'page-head' },
         el('div', {}, el('h1', {}, 'Screens'),
           el('p', { class: 'sub' }, `${devices.length} screen${devices.length === 1 ? '' : 's'} · ${online} online · updates every 10 seconds`)),
-        el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add a screen')),
+        el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add by code')),
+      waiting.length ? waitingCard(waiting, manySites, playlists, devices, draw) : null,
       devices.length === 0
-        ? el('div', { class: 'empty' }, 'No screens yet. Open Kiosk Player on a TV, then click “Add a screen” and type the code it shows.')
-        : [...groups.entries()].map(([loc, list]) => [
-          el('div', { class: 'section-label' }, `${loc} · ${list.length}`),
+        ? el('div', { class: 'empty' }, 'No screens yet. Open Kiosk Player on a TV and choose “Find my server automatically”; it then appears here under “New screens waiting”.')
+        : [...groups.entries()].map(([group, list]) => [
+          groupHead(group, list),
           el('div', { class: 'grid' }, list.map((d) => screenCard(d, playlists, devices, draw))),
         ]),
     );
@@ -325,13 +474,33 @@ async function pageScreens(page) {
   pageTimer = setInterval(() => attempt(draw), 10000);
 }
 
+/** TVs showing a pairing code right now: add one with a click instead of typing its code. */
+function waitingCard(waiting, manySites, playlists, devices, redraw) {
+  const pretty = (code) => `${code.slice(0, 3)}-${code.slice(3)}`;
+  return el('div', { class: 'waiting' },
+    el('div', { class: 'section-label' }, `New screens waiting · ${waiting.length}`),
+    el('div', { class: 'list' }, waiting.map((w) =>
+      el('div', { class: 'list-row' },
+        el('div', { class: 'grow' },
+          el('div', { class: 'name' }, w.model || 'Android TV'),
+          el('div', { class: 'meta' }, manySites && w.site ? `${w.site} · ` : '', 'Showing code ',
+            el('strong', {}, pretty(w.pairing_code)), ' on its screen')),
+        el('button', {
+          class: 'btn primary small',
+          onclick: () => screenForm({ code: w.pairing_code, site: w.site, playlists, devices, onDone: redraw }),
+        }, 'Add')))),
+  );
+}
+
 function screenCard(d, playlists, devices, redraw) {
   const mount = MOUNTINGS[d.orientation] || MOUNTINGS.landscape;
   return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px' },
     el('div', { class: 'row', style: 'justify-content:space-between' },
       el('strong', { style: 'font-size:17px' }, d.name || 'Unnamed'),
-      el('span', { class: `chip ${d.online ? 'online' : 'offline'}` }, el('span', { class: 'dot' }),
-        d.online ? 'Online' : `Offline · ${timeAgo(d.last_seen)}`)),
+      d.open_now === false
+        ? el('span', { class: 'chip offline', title: d.hours_summary }, icon('clock', 12), d.after_hours === 'standby' ? 'After hours · standby' : 'After hours · black screen')
+        : el('span', { class: `chip ${d.online ? 'online' : 'offline'}` }, el('span', { class: 'dot' }),
+          d.online ? 'Online' : `Offline · ${timeAgo(d.last_seen)}`)),
     el('div', { class: 'row meta' }, shapeIcon(mount.shape), `${mount.label} · ${d.playlist_name || 'No playlist'}`),
     el('div', {}, d.current_filename ? `Now playing: ${d.current_filename}` : 'Waiting for content'),
     d.download ? el('div', {},
@@ -339,7 +508,7 @@ function screenCard(d, playlists, devices, redraw) {
       el('div', { class: 'progress', style: 'margin-top:6px' }, el('div', { style: `width:${Math.round((d.download.done / d.download.total) * 100)}%` }))) : null,
     el('div', { class: 'meta' }, d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : '', d.app_version ? ` · App ${d.app_version}` : ''),
     el('div', { class: 'row' },
-      el('button', { class: 'btn text small', onclick: () => screenForm({ device: d, playlists, devices, onDone: redraw }) }, 'Edit'),
+      el('button', { class: 'btn text small', onclick: () => screenForm({ device: d, site: d.site, playlists, devices, onDone: redraw }) }, 'Edit'),
       el('button', {
         class: 'btn danger small',
         onclick: () => confirmDialog(`Remove ${d.name}?`, 'The TV stops getting updates and shows a new pairing code, so it can be added again later.', 'Remove',
@@ -373,13 +542,24 @@ function addScreenDialog(playlists, devices, onDone) {
 }
 
 /** Name, location, how the screen is mounted and its playlist. New (code) or existing (device). */
-function screenForm({ code, device, playlists, devices, onDone }) {
+async function screenForm({ code, device, site = null, playlists, devices, onDone }) {
+  // The locations at this screen's site, to choose from (or add a new one).
+  const data = await attempt(() => api('GET', 'api/locations'));
+  if (!data) return;
+  const siteKey = (s) => s || data.own_site || '';
+  const choices = data.locations.filter((l) => siteKey(l.site) === siteKey(site)).map((l) => l.name);
+  if (device?.location && !choices.includes(device.location)) choices.push(device.location);
   openDialog((dialog) => {
     const name = el('input', { type: 'text', value: device?.name || '', placeholder: 'e.g. Front window', required: true });
-    const locations = [...new Set(devices.map((d) => d.location).filter(Boolean))];
-    const listId = `locations-${Math.random().toString(36).slice(2)}`;
-    const location = el('input', { type: 'text', value: device?.location || '', placeholder: 'e.g. Main lobby', list: listId });
-    location.setAttribute('list', listId);
+    const location = el('select', {},
+      el('option', { value: '' }, 'No location'),
+      choices.map((l) => el('option', { value: l, selected: device?.location === l }, l)),
+      el('option', { value: '__new' }, '+ New location…'));
+    const newLocation = el('input', { type: 'text', placeholder: 'Name of the new location, e.g. Main lobby', hidden: true });
+    location.addEventListener('change', () => {
+      newLocation.hidden = location.value !== '__new';
+      if (!newLocation.hidden) newLocation.focus();
+    });
     let mounting = device?.orientation || 'landscape';
     let playlistId = device?.playlist_id ?? playlists[0]?.id ?? null;
     const warning = el('div', { class: 'note', hidden: true });
@@ -404,8 +584,14 @@ function screenForm({ code, device, playlists, devices, onDone }) {
       method: 'dialog',
       onsubmit: async (e) => {
         e.preventDefault();
-        const body = { name: name.value.trim(), location: location.value.trim() || null, orientation: mounting, playlist_id: playlistId };
+        const body = { name: name.value.trim(), location: location.value || null, orientation: mounting, playlist_id: playlistId };
         if (!body.name) return toast('Give the screen a name');
+        if (body.location === '__new') {
+          const created = await attempt(() => api('POST', 'api/locations', { site: site || null, name: newLocation.value.trim() }));
+          if (!created) return;
+          body.location = created.name;
+          refreshNavLocations();
+        }
         const ok = await attempt(() => (device
           ? api('PATCH', `api/devices/${device.id}`, body)
           : api('POST', 'api/devices/claim', { ...body, code })));
@@ -415,9 +601,9 @@ function screenForm({ code, device, playlists, devices, onDone }) {
         onDone();
       },
     },
-    el('h2', {}, device ? 'Edit screen' : `Set up screen ${code}`),
+    el('h2', {}, device ? 'Edit screen' : `Set up screen ${code.slice(0, 3)}-${code.slice(3)}`),
     el('label', { class: 'field' }, 'Name', name),
-    el('label', { class: 'field' }, 'Location', location, el('datalist', { id: listId }, locations.map((l) => el('option', { value: l })))),
+    el('label', { class: 'field' }, 'Location', location, newLocation),
     el('div', { class: 'field' }, el('strong', {}, 'How the screen is mounted'), mountChoices,
       el('span', { class: 'meta' }, 'Kiosk Player turns the picture to match, because TV boxes always send a landscape picture.')),
     el('div', { class: 'field' }, el('strong', {}, 'Playlist'), playlistChoices),
@@ -429,9 +615,219 @@ function screenForm({ code, device, playlists, devices, onDone }) {
   });
 }
 
+// ---------- Locations: where screens are, and their working hours ----------
+
+const DAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
+
+async function pageLocations(page) {
+  async function draw() {
+    const data = await api('GET', 'api/locations');
+    const manySites = new Set(data.locations.map((l) => l.site || '')).size > 1 || data.sites.length > 1;
+    const bySite = new Map();
+    for (const l of data.locations) bySite.set(l.site || '', [...(bySite.get(l.site || '') || []), l]);
+    fill(page,
+      el('div', { class: 'page-head' },
+        el('div', {}, el('h1', {}, 'Locations'),
+          el('p', { class: 'sub' }, 'Where your screens are. Each location has its own working hours; outside them its screens go dark.')),
+        el('button', { class: 'btn primary', onclick: () => addLocationDialog(data, (l) => { location.hash = `#/locations/${l.id}`; }) }, '+ Add location')),
+      data.locations.length === 0
+        ? el('div', { class: 'empty' }, 'No locations yet. Add one, e.g. “Main lobby”, then put screens in it.')
+        : [...bySite.entries()].map(([site, list]) => [
+          manySites ? el('div', { class: 'section-label' }, site || 'This site') : null,
+          el('div', { class: 'list' }, list.map((l) => el('a', { class: 'list-row link-row', href: `#/locations/${l.id}` },
+            el('span', { class: 'loc-mark' }, icon('locations', 22)),
+            el('div', { class: 'grow' }, el('div', { class: 'name' }, l.name),
+              el('div', { class: 'meta row nowrap', style: 'gap:6px' }, icon('clock', 14), el('span', {}, l.hours_summary))),
+            el('span', { class: 'chip primary' }, `${l.screens.length} screen${l.screens.length === 1 ? '' : 's'}`)))),
+        ]),
+    );
+  }
+  await attempt(draw);
+}
+
+function addLocationDialog(data, onAdded) {
+  openDialog((dialog) => {
+    const name = el('input', { type: 'text', placeholder: 'e.g. Main lobby', maxLength: 60 });
+    const site = el('select', {}, data.sites.map((s) => el('option', { value: s || '' }, s || 'This site')));
+    const form = el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const added = await attempt(() => api('POST', 'api/locations', { name: name.value.trim(), site: site.value || null }));
+        if (!added) return;
+        dialog.close();
+        toast(`${added.name} added`);
+        refreshNavLocations();
+        onAdded(added);
+      },
+    },
+    el('h2', {}, 'Add a location'),
+    el('label', { class: 'field' }, 'Name', name),
+    data.sites.length > 1 ? el('label', { class: 'field' }, 'Site', site) : null,
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { class: 'btn primary' }, 'Add location')));
+    setTimeout(() => name.focus());
+    return form;
+  });
+}
+
+async function pageLocation(page, id) {
+  async function draw() {
+    const [loc, devices, playlists] = await Promise.all([api('GET', `api/locations/${id}`), api('GET', 'api/devices'), api('GET', 'api/playlists')]);
+    const here = devices.filter((d) => d.location_id === loc.id);
+    // Screens at the same site, in other locations, can be moved here.
+    const others = devices.filter((d) => d.location_id !== loc.id && (d.site || null) === loc.site);
+    fill(page,
+      el('div', { class: 'page-head' },
+        el('div', {},
+          el('a', { href: '#/locations', class: 'meta' }, '← Locations'),
+          el('h1', {}, loc.name),
+          el('p', { class: 'sub row', style: 'gap:6px' }, loc.site ? `${loc.site} · ` : '', icon('clock', 16), loc.hours_summary)),
+        el('div', { class: 'row' },
+          el('button', { class: 'btn tonal', onclick: () => hoursDialog(loc, draw) }, icon('clock', 18), 'Working hours'),
+          el('button', { class: 'btn', onclick: () => renameLocationDialog(loc, draw) }, 'Rename'),
+          el('button', { class: 'btn danger', onclick: () => deleteLocationDialog(loc, here) }, 'Delete location'))),
+      el('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' },
+        el('div', { class: 'section-label', style: 'margin:0 4px' }, `Screens here · ${here.length}`),
+        others.length ? el('button', { class: 'btn small', onclick: () => moveScreensDialog(loc, others, draw) }, '+ Move a screen here') : null),
+      here.length === 0
+        ? el('div', { class: 'empty', style: 'margin-top:10px' }, 'No screens here yet. Move one here, or choose this location when adding a screen.')
+        : el('div', { class: 'grid', style: 'margin-top:10px' }, here.map((d) => screenCard(d, playlists, devices, draw))),
+    );
+  }
+  await attempt(draw);
+  pageTimer = setInterval(() => attempt(draw), 10000);
+}
+
+/** Opening times for each day, or "Always on". */
+function hoursDialog(loc, onSaved) {
+  openDialog((dialog) => {
+    const rows = DAYS.map(([key, label]) => {
+      const entry = loc.hours ? loc.hours[key] : { open: '08:00', close: '18:00' };
+      const open = el('input', { type: 'checkbox', checked: Boolean(entry), 'aria-label': `Open on ${label}` });
+      const from = el('input', { type: 'time', class: 'date-input', value: entry?.open || '08:00', 'aria-label': `${label} opening time` });
+      const to = el('input', { type: 'time', class: 'date-input', value: entry?.close || '18:00', 'aria-label': `${label} closing time` });
+      const sync = () => { from.disabled = !open.checked; to.disabled = !open.checked; };
+      open.addEventListener('change', sync);
+      sync();
+      return { key, open, from, to, row: el('div', { class: 'hours-row' }, el('label', { class: 'row', style: 'gap:8px;font-weight:600' }, open, label), from, el('span', { class: 'meta' }, 'to'), to) };
+    });
+    const preset = (days, from, to) => rows.forEach((r) => {
+      r.open.checked = days.includes(r.key);
+      r.from.value = from;
+      r.to.value = to;
+      r.open.dispatchEvent(new Event('change'));
+    });
+    const save = async (hours) => {
+      const saved = await attempt(() => api('PATCH', `api/locations/${loc.id}`, { hours }));
+      if (!saved) return;
+      dialog.close();
+      toast(`${loc.name}: ${saved.hours_summary}`);
+      onSaved();
+    };
+    return el('form', {
+      method: 'dialog',
+      onsubmit: (e) => {
+        e.preventDefault();
+        save(Object.fromEntries(rows.map((r) => [r.key, r.open.checked ? { open: r.from.value, close: r.to.value } : null])));
+      },
+    },
+    el('h2', {}, `Working hours · ${loc.name}`),
+    el('p', { class: 'sub' }, 'Outside these hours the screens here go dark (and into standby where the TV allows it). Times are each TV’s local time. A closing time earlier than the opening time runs past midnight.'),
+    el('div', { class: 'row' },
+      el('button', { type: 'button', class: 'btn small', onclick: () => preset(['mon', 'tue', 'wed', 'thu', 'fri'], '09:00', '18:00') }, 'Mon–Fri 9–6'),
+      el('button', { type: 'button', class: 'btn small', onclick: () => preset(DAYS.map(([k]) => k), '10:00', '22:00') }, 'Every day 10–10')),
+    el('div', { class: 'hours-grid' }, rows.map((r) => r.row)),
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { type: 'button', class: 'btn', onclick: () => save(null) }, 'Always on'),
+      el('button', { class: 'btn primary' }, 'Save hours')));
+  });
+}
+
+function renameLocationDialog(loc, onDone) {
+  openDialog((dialog) => {
+    const name = el('input', { type: 'text', value: loc.name, maxLength: 60 });
+    return el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const saved = await attempt(() => api('PATCH', `api/locations/${loc.id}`, { name: name.value.trim() }));
+        if (!saved) return;
+        dialog.close();
+        refreshNavLocations();
+        onDone();
+      },
+    },
+    el('h2', {}, 'Rename location'),
+    el('label', { class: 'field' }, 'Name', name),
+    el('p', { class: 'meta' }, 'Its screens move along with it.'),
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { class: 'btn primary' }, 'Save')));
+  });
+}
+
+/** Deleting asks for the location's name to be typed, and only works once it's empty. */
+function deleteLocationDialog(loc, screens) {
+  openDialog((dialog) => {
+    if (screens.length) {
+      return el('div', { class: 'dialog-body' },
+        el('h2', {}, `${loc.name} still has screens`),
+        el('p', { class: 'sub' }, 'Move these screens to another location first (Edit on each screen), then delete it:'),
+        el('ul', {}, screens.map((d) => el('li', {}, d.name))),
+        el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => dialog.close() }, 'OK')));
+    }
+    const typed = el('input', { type: 'text', autocomplete: 'off', placeholder: loc.name, 'aria-label': `Type ${loc.name} to confirm` });
+    const go = el('button', { class: 'btn danger solid', disabled: true }, 'Delete location');
+    typed.addEventListener('input', () => { go.disabled = typed.value !== loc.name; });
+    const form = el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (typed.value !== loc.name) return;
+        const ok = await attempt(() => api('DELETE', `api/locations/${loc.id}`, { confirm_name: typed.value }));
+        if (!ok) return;
+        dialog.close();
+        toast(`${loc.name} deleted`);
+        refreshNavLocations();
+        location.hash = '#/locations';
+      },
+    },
+    el('h2', {}, `Delete ${loc.name}?`),
+    el('p', { class: 'sub' }, 'Its working hours are deleted too. This can’t be undone.'),
+    el('label', { class: 'field' }, el('span', {}, 'Type ', el('strong', {}, loc.name), ' to confirm'), typed),
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      go));
+    setTimeout(() => typed.focus());
+    return form;
+  });
+}
+
+function moveScreensDialog(loc, others, onDone) {
+  openDialog((dialog) => el('div', { class: 'dialog-body' },
+    el('h2', {}, `Move a screen to ${loc.name}`),
+    el('p', { class: 'sub' }, 'It keeps its playlist, and follows this location’s working hours.'),
+    el('div', { class: 'list', style: 'max-height:50vh;overflow:auto' }, others.map((d) => el('div', { class: 'list-row' },
+      el('div', { class: 'grow' }, el('div', { class: 'name' }, d.name), el('div', { class: 'meta' }, d.location ? `Now in ${d.location}` : 'No location')),
+      el('button', {
+        class: 'btn tonal small',
+        onclick: (e) => attempt(async () => {
+          await api('PATCH', `api/devices/${d.id}`, { location: loc.name });
+          e.target.closest('.list-row').remove();
+          toast(`${d.name} moved to ${loc.name}`);
+          refreshNavLocations();
+          onDone();
+        }),
+      }, 'Move here')))),
+    el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => dialog.close() }, 'Done'))));
+}
+
 // ---------- Library ----------
 
-function uploadFile(file, onProgress) {
+function uploadFile(file, onProgress, startsAt = null, expiresAt = null) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', 'api/media');
@@ -439,6 +835,8 @@ function uploadFile(file, onProgress) {
     if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
     xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    if (startsAt) xhr.setRequestHeader('X-Starts-At', String(startsAt));
+    if (expiresAt) xhr.setRequestHeader('X-Expires-At', String(expiresAt));
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
     xhr.onload = () => {
       let data = {};
@@ -455,9 +853,11 @@ async function pageLibrary(page) {
   const listArea = el('div');
   const status = el('span', { class: 'meta' });
   let library = null;
+  let showRemoved = false;
 
   function draw() {
     const items = library.items;
+    const removed = library.removed || [];
     status.textContent = library.sync_error || `Google Drive · synced ${timeAgo(library.synced_at)}`;
     status.className = library.sync_error ? 'warn' : 'meta';
     const groups = [
@@ -465,19 +865,61 @@ async function pageLibrary(page) {
       ['Landscape files', items.filter((m) => m.orientation === 'landscape')],
       ['Portrait files', items.filter((m) => m.orientation === 'portrait')],
     ].filter(([, list]) => list.length);
-    fill(listArea, 
+    fill(listArea,
       groups.length === 0 ? el('div', { class: 'empty', style: 'margin-top:20px' }, 'No files yet. Drop files above, or add them to the Signage folder in Google Drive.') : null,
       groups.map(([title, list]) => [
         el('div', { class: 'section-label' }, `${title} · ${list.length}`),
         el('div', { class: 'list' }, list.map((m) => el('div', { class: 'list-row' },
           thumb(m.type, m.orientation),
-          el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta' }, mediaMeta(m))),
+          el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename),
+            el('div', { class: 'meta row', style: 'gap:8px' }, mediaMeta(m), scheduleChips(m))),
           el('button', {
-            class: 'btn icon', 'aria-label': `Delete ${m.filename}`, title: 'Delete',
-            onclick: () => confirmDialog(`Delete ${m.filename}?`, 'It goes to the Google Drive trash and leaves every playlist. Screens stop showing it after their next update.', 'Delete',
-              () => attempt(async () => { await api('DELETE', `api/media/${m.id}`); toast(`${m.filename} moved to the Google Drive trash`); await load(); })),
+            class: 'btn icon', 'aria-label': `Set when ${m.filename} shows`, title: 'Show from / until',
+            onclick: () => scheduleDialog({
+              title: `When should ${m.filename} show?`,
+              text: 'Choose the first and last day it plays on screens. Leave either empty for no limit.',
+              startsAt: m.starts_at,
+              expiresAt: m.expires_at,
+              onSave: async (startsAt, expiresAt) => {
+                await api('PATCH', `api/media/${m.id}`, { starts_at: startsAt, expires_at: expiresAt });
+                toast(startsAt || expiresAt ? `${m.filename}: dates saved` : `${m.filename} shows with no date limits`);
+                await load();
+                return true;
+              },
+            }),
+          }, icon('calendar')),
+          el('button', {
+            class: 'btn icon', 'aria-label': `Remove ${m.filename} from Kiosk`, title: 'Remove from Kiosk',
+            onclick: () => confirmDialog(`Remove ${m.filename} from Kiosk?`, 'It leaves the library, every playlist and every screen. It stays in Google Drive, and you can restore it from “Expired and removed”.', 'Remove',
+              () => attempt(async () => { await api('DELETE', `api/media/${m.id}`); toast(`${m.filename} removed from Kiosk. Google Drive still has it.`); await load(); })),
           }, icon('trash'))))),
       ]),
+      removed.length ? el('div', { class: 'removed' },
+        el('button', {
+          class: 'btn text small', 'aria-expanded': String(showRemoved),
+          onclick: () => { showRemoved = !showRemoved; draw(); },
+        }, `${showRemoved ? '▾' : '▸'} Expired and removed · ${removed.length}`),
+        showRemoved ? [
+          el('p', { class: 'meta', style: 'margin:4px 4px 8px' }, 'These are still in Google Drive, but not in Kiosk. Restore one to use it again.'),
+          el('div', { class: 'list' }, removed.map((m) => el('div', { class: 'list-row' },
+            thumb(m.type, m.orientation),
+            el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename),
+              el('div', { class: 'meta' }, `${m.removed_reason === 'expired' ? 'Expired' : 'Removed'} ${shortDate(m.removed_at)} · ${mediaMeta(m)}`)),
+            el('button', {
+              class: 'btn tonal small',
+              onclick: () => scheduleDialog({
+                title: `Restore ${m.filename}`,
+                text: 'It comes back to the library. Add it to playlists again to show it on screens.',
+                saveLabel: 'Restore',
+                onSave: async (startsAt, expiresAt) => {
+                  await api('POST', `api/media/${m.id}/restore`, { starts_at: startsAt, expires_at: expiresAt });
+                  toast(`${m.filename} is back in the library`);
+                  await load();
+                  return true;
+                },
+              }),
+            }, 'Restore')))),
+        ] : null) : null,
     );
   }
 
@@ -486,7 +928,13 @@ async function pageLibrary(page) {
     draw();
   }
 
+  // Optional: first and last day for the files about to be uploaded.
+  const uploadStart = el('input', { type: 'date', class: 'date-input', id: 'upload-start', 'aria-label': 'New uploads show from' });
+  const uploadExpiry = el('input', { type: 'date', class: 'date-input', id: 'upload-expiry', min: lastDayValue(Date.now() + 1), 'aria-label': 'New uploads show until' });
+
   async function addFiles(files) {
+    const startsAt = startOfDay(uploadStart.value);
+    const expiresAt = expiryFromLastDay(uploadExpiry.value);
     for (const file of files) {
       const bar = el('div', { style: 'width:0%' });
       const label = el('span', { class: 'meta' }, '0%');
@@ -495,7 +943,7 @@ async function pageLibrary(page) {
         el('div', { class: 'progress' }, bar));
       uploads.append(row);
       try {
-        await uploadFile(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = `${Math.round(p * 100)}%`; });
+        await uploadFile(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = `${Math.round(p * 100)}%`; }, startsAt, expiresAt);
         toast(`${file.name} saved to Google Drive`);
       } catch (e) {
         toast(`${file.name}: ${e.message}`);
@@ -517,11 +965,14 @@ async function pageLibrary(page) {
   el('strong', {}, 'Drop videos and pictures here, or click to choose'),
   el('div', { class: 'meta' }, '.mp4 videos up to 4K, and .jpg, .png, .webp pictures. They’re saved into the Signage folder in Google Drive.'));
 
-  fill(page, 
+  fill(page,
     el('div', { class: 'page-head' },
       el('div', {}, el('h1', {}, 'Library'), el('p', { class: 'sub' }, status)),
       el('button', { class: 'btn', onclick: () => attempt(async () => { await load(true); toast('Library is up to date'); }) }, icon('refresh', 18), 'Sync with Drive')),
-    drop, picker, uploads, listArea,
+    drop,
+    el('div', { class: 'row meta upload-expiry' }, icon('calendar', 16), 'New uploads (optional) show from', uploadStart, 'until', uploadExpiry,
+      el('button', { type: 'button', class: 'btn text small', onclick: () => { uploadStart.value = ''; uploadExpiry.value = ''; } }, 'Clear')),
+    picker, uploads, listArea,
   );
   await attempt(() => load());
   // While a file's shape is still being checked, look again every few seconds.
@@ -653,6 +1104,7 @@ async function pagePlaylist(page, id) {
           thumb(it.type, it.orientation, i + 1),
           el('div', { class: 'grow' },
             el('div', { class: 'name' }, it.filename),
+            it.starts_at != null || it.expires_at != null ? el('div', { class: 'row', style: 'gap:6px' }, scheduleChips(it)) : null,
             mismatch(it) ? el('div', { class: 'warn' }, `${SHAPES[it.orientation]} file · plays with black bars here`) : null,
             it.type === 'video'
               ? el('div', { class: 'meta' }, 'Video · plays to the end')
@@ -727,12 +1179,12 @@ async function pagePlaylist(page, id) {
       addable.length === 0 ? el('p', { class: 'meta' }, 'Everything in the library is already in this playlist.') : null,
       el('div', { class: 'list', style: 'max-height:50vh;overflow:auto' }, addable.map((m) => el('div', { class: 'list-row' },
         thumb(m.type, m.orientation),
-        el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta' }, mediaMeta(m)),
+        el('div', { class: 'grow' }, el('div', { class: 'name' }, m.filename), el('div', { class: 'meta row', style: 'gap:8px' }, mediaMeta(m), scheduleChips(m)),
           m.orientation && m.orientation !== detail.orientation ? el('div', { class: 'warn' }, `${SHAPES[m.orientation]} file · plays with black bars here`) : null),
         el('button', {
           class: 'btn tonal small',
           onclick: (e) => {
-            items.push({ media_id: m.id, filename: m.filename, type: m.type, orientation: m.orientation, image_seconds: 10, start_at: null, end_at: null, schedule_enabled: false });
+            items.push({ media_id: m.id, filename: m.filename, type: m.type, orientation: m.orientation, starts_at: m.starts_at, expires_at: m.expires_at, image_seconds: 10, start_at: null, end_at: null, schedule_enabled: false });
             e.target.closest('.list-row').remove();
             draw();
           },
@@ -798,8 +1250,49 @@ async function pageSettings(page) {
     const s = await api('GET', 'api/settings');
     const folder = el('input', { type: 'text', value: s.drive_folder_id || '', style: 'font-family:monospace' });
     const testResult = el('span', { class: 'meta' });
-    fill(page, 
+    // Home Assistant's notify services (phones with the Home Assistant app, the sidebar bell…).
+    const notify = s.notifications.available
+      ? await api('GET', 'api/settings/notify-targets').catch((e) => ({ error: e.message, targets: [] }))
+      : null;
+    const notifyResult = el('span', { class: 'meta' });
+    const chosen = new Set(s.notifications.targets);
+    fill(page,
       el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, 'Settings'), el('p', { class: 'sub' }, `Kiosk server ${s.version}`))),
+
+      el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-bottom:16px' },
+        el('h2', { class: 'row', style: 'gap:8px' }, icon('bell', 20), 'Notifications'),
+        el('p', { class: 'meta', style: 'margin:0' }, 'Home Assistant tells the devices you tick when a screen has been offline for 5 minutes during its location’s working hours, and again when it’s back.'),
+        !notify
+          ? el('p', { class: 'note' }, 'Available when Kiosk runs as a Home Assistant add-on.')
+          : notify.error
+            ? el('p', { class: 'error' }, notify.error)
+            : [
+              notify.targets.length === 0
+                ? el('p', { class: 'note' }, 'Home Assistant has no notify services yet. Install the Home Assistant app on your phone and sign in; it then appears here.')
+                : el('div', { class: 'choices' }, notify.targets.map((t) => el('label', { class: 'choice' },
+                  el('input', {
+                    type: 'checkbox', checked: chosen.has(t.id),
+                    onchange: (e) => attempt(async () => {
+                      if (e.target.checked) chosen.add(t.id); else chosen.delete(t.id);
+                      await api('PATCH', 'api/settings', { notify_targets: [...chosen] });
+                      toast(chosen.size ? `Notifications go to ${chosen.size} device${chosen.size === 1 ? '' : 's'}` : 'Notifications are off');
+                    }),
+                  }),
+                  el('span', {}, el('strong', {}, t.name), el('br'), el('span', { class: 'meta' }, `notify.${t.id}`))))),
+              el('div', { class: 'row' },
+                el('button', {
+                  class: 'btn',
+                  onclick: async () => {
+                    notifyResult.textContent = 'Sending…';
+                    try {
+                      await api('POST', 'api/settings/test-notification');
+                      notifyResult.textContent = '✓ Sent. Check your device.';
+                      notifyResult.className = 'meta';
+                    } catch (e) { notifyResult.textContent = e.message; notifyResult.className = 'error'; }
+                  },
+                }, 'Send a test notification'),
+                notifyResult),
+            ]),
 
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px' },
         el('h2', {}, 'Google Drive folder'),

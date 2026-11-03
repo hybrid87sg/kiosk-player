@@ -41,9 +41,14 @@ class DemoAdminRepositoryTest {
         assertTrue(repo.playlists().none { it.id == empty.id })
     }
 
-    @Test fun deletingAFileTakesItOutOfPlaylists() = runTest {
+    @Test fun removingAFileTakesItOutOfPlaylistsAndItCanBeRestored() = runTest {
         repo.deleteMedia(1)
         assertTrue(repo.playlist(1).items.none { it.mediaId == 1L })
+        val library = repo.library()
+        assertTrue(library.items.none { it.id == 1L })
+        assertEquals("removed", library.removed.first().removedReason)
+        repo.restoreMedia(1, null, null)
+        assertTrue(repo.library().items.any { it.id == 1L })
     }
 
     @Test fun pairingAndSavingAPlaylist() = runTest {
