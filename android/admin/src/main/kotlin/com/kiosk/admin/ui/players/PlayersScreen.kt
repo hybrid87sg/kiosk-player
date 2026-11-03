@@ -69,6 +69,7 @@ import com.kiosk.admin.ui.common.formatBytes
 import com.kiosk.admin.ui.common.timeAgo
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.Device
+import com.kiosk.core.model.formatH264Level
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerSetup
 import com.kiosk.core.model.PlaylistSummary
@@ -293,7 +294,7 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                 Text("Storage: ${formatBytes(it)} free", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             d.decoders?.takeIf { it.displayWidth > 0 }?.let { caps ->
-                val level = caps.h264Level?.let { " · H.264 level ${it / 10}.${it % 10}" }.orEmpty()
+                val level = caps.h264Level?.let { " · H.264 level ${formatH264Level(it)}" }.orEmpty()
                 val hevc = if (caps.hevc) " · HEVC" else ""
                 Text(
                     "Screen ${caps.displayWidth}×${caps.displayHeight}$level$hevc",

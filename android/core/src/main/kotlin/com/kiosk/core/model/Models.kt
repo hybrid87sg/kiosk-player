@@ -220,6 +220,9 @@ data class DeviceCapabilities(
     @SerialName("hevc_max_short") val hevcMaxShort: Int? = null,
 )
 
+/** H.264 level as people write it: 41 is "4.1", 9 is the odd one, "1b". */
+fun formatH264Level(level: Int): String = if (level == 9) "1b" else "${level / 10}.${level % 10}"
+
 @Serializable
 data class Registration(
     val token: String,

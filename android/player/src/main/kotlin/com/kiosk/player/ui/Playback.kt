@@ -178,13 +178,23 @@ private fun MixedPlaylist(
                 LaunchedEffect(plays) { delay(item.seconds * 1000L); advance() }
                 Fitted(item.shape, mounting) { DemoSlide(item) }
             } else {
-                LaunchedEffect(plays) { delay(item.seconds.coerceAtLeast(1) * 1000L); advance() }
+                // A picture that can't be opened is reported and skipped after a short pause,
+                // so a playlist of broken pictures doesn't spin round as fast as it can.
+                var failed by remember(item.id, plays) { mutableStateOf(false) }
+                LaunchedEffect(plays, failed) {
+                    delay(if (failed) 3000L else item.seconds.coerceAtLeast(1) * 1000L)
+                    advance()
+                }
                 AsyncImage(
                     model = item.file,
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
-                    onError = { advance() },
+                    onSuccess = { onPlaybackHealthy() },
+                    onError = { state ->
+                        onPlaybackProblem(item.id, "Couldn't show picture: ${state.result.throwable.message ?: "unknown error"}")
+                        failed = true
+                    },
                 )
             }
         }
