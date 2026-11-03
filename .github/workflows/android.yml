@@ -31,7 +31,7 @@ jobs:
 
       - name: Test the shared code
         working-directory: android
-        run: ./gradlew :core:test
+        run: ./gradlew :core:test :admin:testDebugUnitTest
 
       - name: Build the APKs
         working-directory: android
