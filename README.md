@@ -344,7 +344,7 @@ TVs over the local network. If a site's internet goes down, its TVs keep playing
    (e.g. `Head office`). Note its Tailscale `100.x.y.z` address
    ([admin console](https://login.tailscale.com/admin/machines)).
 2. **At the new site, install Tailscale.** Install the **Tailscale** add-on in that site's Home Assistant
-   and log in with the same Tailscale account. In the Tailscale add-on's **Configuration**, turn
+   and log in with the **same Tailscale account** as the main site. Sharing a machine in from a different account isn't enough: a shared machine can't start connections, and a relay has to. In the Tailscale add-on's **Configuration**, turn
    **userspace networking** off, so other add-ons can use Tailscale too, then restart it.
 3. **Install the Kiosk add-on there** (Part 3, steps 1–2). You don't need the Google settings or the key
    file there. In **Configuration**, set:
@@ -390,7 +390,7 @@ connect with Tailscale, and sign in with Google.
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |
 | TV says "No server found" | Is the Kiosk add-on running, and is the TV on the same network as Home Assistant (not a guest Wi-Fi)? Or choose **Type the address**. |
 | TV shows "Can't reach the server" | If you typed an address, it must be the **home-network** one, not the Tailscale one. The TV also searches again by itself after 2 minutes. |
-| Relay page says it can't reach the main server | Check that both Home Assistants are online in Tailscale, that userspace networking is off in the relay site's Tailscale add-on, and the **Main server address** (`100.x.y.z:3000`). |
+| Relay page says it can't reach the main server | The page says which it is. **No answer:** both Home Assistants must be in the **same Tailscale account** (a machine that was only *shared* in from another account can't start connections), both online in Tailscale, and userspace networking off in the relay site's Tailscale add-on. **Nothing listening:** start the Kiosk add-on at the main site; the address is the main site's Tailscale address plus `:3000`. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
 
