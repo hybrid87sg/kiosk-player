@@ -15,6 +15,16 @@ const { createRelay } = require('../src/relay');
 const { createFakeGoogle } = require('./fake-google');
 
 const BOSS = 'boss@example.com';
+const PASSWORD = 'correct-horse-9'; // every test user's password
+
+// The id of the location "Lobby", made the first time it is asked for. Tests that just
+// need "a playlist" or "a screen" put it there.
+async function lobbyId(call, token) {
+  const made = await call('POST', '/api/locations', { token, json: { name: 'Lobby' } });
+  if (made.status === 201) return (await made.json()).id;
+  const all = await (await call('GET', '/api/locations', { token })).json();
+  return all.locations.find((l) => l.name === 'Lobby').id;
+}
 
 // A downloaded file's local copy is saved just after its last byte goes out,
 // so a test that checks for the copy waits a moment for it.
@@ -30,7 +40,7 @@ async function startServer(t, extra = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-test-'));
   const google = createFakeGoogle();
   const app = createApp({
-    dataDir, google, googleWebClientId: 'web-client-123', superadminEmail: BOSS, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {}, ...extra,
+    dataDir, google, firstAdmin: { username: BOSS, password: PASSWORD }, maxUploadBytes: 1024 * 1024, syncIntervalMs: 0, log: () => {}, ...extra,
   });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
@@ -52,7 +62,7 @@ async function startServer(t, extra = {}) {
   }
 
   async function signIn(email) {
-    const res = await call('POST', '/api/auth/google', { json: { id_token: `valid:${email}` } });
+    const res = await call('POST', '/api/auth/login', { json: { username: email, password: PASSWORD } });
     assert.equal(res.status, 200, `sign-in for ${email}`);
     return (await res.json()).token;
   }
@@ -66,28 +76,106 @@ async function startServer(t, extra = {}) {
   return { call, signIn, upload, google, app, base };
 }
 
-test('Google sign-in: only invited emails get in, with their role', async (t) => {
+test('sign-in: a username and password made on the Users page', async (t) => {
   const { call, signIn } = await startServer(t);
+  const login = (username, password) => call('POST', '/api/auth/login', { json: { username, password } });
 
-  // The admin app learns which Google client to sign in with.
+  // The apps learn how to sign in, and can tell this is a Kiosk server.
   const config = await (await call('GET', '/api/config')).json();
   assert.match(config.server_id, /^[0-9a-f-]{36}$/);
   assert.deepEqual(config, {
-    google_web_client_id: 'web-client-123', web_code_sign_in: true, version: require('../package.json').version,
+    sign_in: 'password', google_web_client_id: null, web_code_sign_in: false, version: require('../package.json').version,
     kind: 'kiosk-signage', role: 'main', server_id: config.server_id, site_name: null,
   });
 
-  assert.equal((await call('POST', '/api/auth/google', { json: { id_token: 'forged' } })).status, 401);
-  const stranger = await call('POST', '/api/auth/google', { json: { id_token: 'valid:stranger@example.com' } });
-  assert.equal(stranger.status, 403);
+  // A wrong password and an unknown username get the same answer.
+  const wrong = await login(BOSS, 'not-the-password');
+  assert.equal(wrong.status, 401);
+  const unknown = await login('stranger', PASSWORD);
+  assert.equal(unknown.status, 401);
+  assert.deepEqual(await wrong.json(), await unknown.json());
+  assert.equal((await login('', '')).status, 400);
+  // The Google sign-in routes are gone.
+  assert.equal((await call('POST', '/api/auth/google', { json: { id_token: 'valid:boss@example.com' } })).status, 404);
+  assert.equal((await call('POST', '/api/auth/device/start')).status, 404);
 
-  // SUPERADMIN_EMAIL is let in automatically, in any letter case.
+  // The first admin gets in, typed in any letter case.
   const boss = await signIn('Boss@Example.com');
-  assert.deepEqual(await (await call('GET', '/api/me', { token: boss })).json(), { email: BOSS, role: 'superadmin', via_home_assistant: false });
+  assert.deepEqual(await (await call('GET', '/api/me', { token: boss })).json(), { username: BOSS, email: BOSS, role: 'superadmin', via_home_assistant: false });
 
   // Signing out kills the token.
   await call('POST', '/api/auth/logout', { token: boss });
   assert.equal((await call('GET', '/api/me', { token: boss })).status, 401);
+});
+
+test('users: made with a password, which is never stored or sent back', async (t) => {
+  const { call, signIn, app } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const add = (json) => call('POST', '/api/users', { token: boss, json });
+  const login = (username, password) => call('POST', '/api/auth/login', { json: { username, password } });
+
+  // A username, a role and a password of at least 8 characters.
+  assert.equal((await add({ username: 'ab', role: 'system_manager', password: PASSWORD })).status, 400);
+  assert.equal((await add({ username: 'has space', role: 'system_manager', password: PASSWORD })).status, 400);
+  assert.equal((await add({ username: 'patrick', role: 'system_manager', password: 'short' })).status, 400);
+  assert.equal((await add({ username: 'patrick', role: 'system_manager' })).status, 400);
+  const made = await add({ username: 'Patrick', role: 'system_manager', password: 'starfish-rock-1' });
+  assert.equal(made.status, 201);
+  const text = await made.text();
+  assert.doesNotMatch(text, /starfish|scrypt|password_hash/);
+  const patrick = JSON.parse(text);
+  assert.deepEqual([patrick.username, patrick.role, patrick.has_password], ['patrick', 'system_manager', true]);
+  assert.equal((await add({ username: 'patrick', role: 'content_uploader', password: PASSWORD })).status, 409);
+  // Only a scrambled form is kept, and the list never shows it.
+  const stored = app.locals.db.prepare(`SELECT password_hash FROM users WHERE email = 'patrick'`).get().password_hash;
+  assert.match(stored, /^scrypt\$[0-9a-f]{32}\$[0-9a-f]{64}$/);
+  assert.doesNotMatch(await (await call('GET', '/api/users', { token: boss })).text(), /scrypt|password_hash/);
+
+  const first = await (await login('patrick', 'starfish-rock-1')).json();
+  assert.equal(first.role, 'system_manager');
+  const second = await (await login('patrick', 'starfish-rock-1')).json();
+
+  // Patrick changes his own password: his other sign-ins end, this one stays.
+  const change = (json) => call('POST', '/api/auth/password', { token: second.token, json });
+  assert.equal((await change({ current_password: 'wrong', new_password: 'jellyfish-net-2' })).status, 403);
+  assert.equal((await change({ current_password: 'starfish-rock-1', new_password: 'short' })).status, 400);
+  assert.equal((await change({ current_password: 'starfish-rock-1', new_password: 'jellyfish-net-2' })).status, 200);
+  assert.equal((await call('GET', '/api/me', { token: first.token })).status, 401);
+  assert.equal((await call('GET', '/api/me', { token: second.token })).status, 200);
+  assert.equal((await login('patrick', 'starfish-rock-1')).status, 401);
+  assert.equal((await login('patrick', 'jellyfish-net-2')).status, 200);
+
+  // Spongebob gives him a new password: he is signed out everywhere and uses the new one.
+  assert.equal((await call('PATCH', `/api/users/${patrick.id}`, { token: boss, json: { password: 'x' } })).status, 400);
+  assert.equal((await call('PATCH', `/api/users/${patrick.id}`, { token: boss, json: {} })).status, 400);
+  assert.equal((await call('PATCH', `/api/users/${patrick.id}`, { token: boss, json: { password: 'krabby-patty-3' } })).status, 200);
+  assert.equal((await call('GET', '/api/me', { token: second.token })).status, 401);
+  assert.equal((await login('patrick', 'krabby-patty-3')).status, 200);
+  // Only Spongebob can do that.
+  const patrickToken = (await (await login('patrick', 'krabby-patty-3')).json()).token;
+  assert.equal((await call('PATCH', `/api/users/${patrick.id}`, { token: patrickToken, json: { password: 'pineapple-9x' } })).status, 403);
+
+  // Removing him signs him out and his password stops working.
+  assert.equal((await call('DELETE', `/api/users/${patrick.id}`, { token: boss })).status, 200);
+  assert.equal((await call('GET', '/api/me', { token: patrickToken })).status, 401);
+  assert.equal((await login('patrick', 'krabby-patty-3')).status, 401);
+});
+
+test('sign-in: five wrong passwords lock a username for a while', async (t) => {
+  const { call } = await startServer(t);
+  const login = (password) => call('POST', '/api/auth/login', { json: { username: BOSS, password } });
+  for (let i = 0; i < 5; i++) assert.equal((await login(`guess-${i}`)).status, 401);
+  // Now even the right password is refused, with a reason.
+  const locked = await login(PASSWORD);
+  assert.equal(locked.status, 429);
+  assert.match((await locked.json()).error, /Try again in 5 minutes/);
+  // Another username is not affected.
+  assert.equal((await call('POST', '/api/auth/login', { json: { username: 'someone-else', password: 'x' } })).status, 401);
+});
+
+test('a first admin with an unusable password is not made', async (t) => {
+  const { call } = await startServer(t, { firstAdmin: { username: 'admin', password: 'short' } });
+  assert.equal((await call('POST', '/api/auth/login', { json: { username: 'admin', password: 'short' } })).status, 401);
 });
 
 test('roles: what each role may and may not do', async (t) => {
@@ -96,10 +184,10 @@ test('roles: what each role may and may not do', async (t) => {
 
   // The superadmin invites a system manager and a content uploader.
   for (const [email, role] of [['manager@example.com', 'system_manager'], ['uploader@example.com', 'content_uploader']]) {
-    assert.equal((await call('POST', '/api/users', { token: boss, json: { email, role } })).status, 201);
+    assert.equal((await call('POST', '/api/users', { token: boss, json: { username: email, role, password: PASSWORD } })).status, 201);
   }
-  assert.equal((await call('POST', '/api/users', { token: boss, json: { email: 'manager@example.com', role: 'superadmin' } })).status, 409);
-  assert.equal((await call('POST', '/api/users', { token: boss, json: { email: 'x@example.com', role: 'king' } })).status, 400);
+  assert.equal((await call('POST', '/api/users', { token: boss, json: { username: 'manager@example.com', role: 'superadmin', password: PASSWORD } })).status, 409);
+  assert.equal((await call('POST', '/api/users', { token: boss, json: { username: 'x@example.com', role: 'king', password: PASSWORD } })).status, 400);
   const manager = await signIn('manager@example.com');
   const uploader = await signIn('uploader@example.com');
 
@@ -202,8 +290,8 @@ test('playlists: several named playlists, each landscape or portrait', async (t)
 
   assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: '', orientation: 'landscape' } })).status, 400);
   assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: 'X', orientation: 'square' } })).status, 400);
-  const lobby = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby screens', orientation: 'landscape' } })).json();
-  const recep = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Reception portrait', orientation: 'portrait' } })).json();
+  const lobby = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby screens', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
+  const recep = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Reception portrait', orientation: 'portrait', location_id: await lobbyId(call, boss) } })).json();
   assert.equal(lobby.item_count, 0);
 
   // Save items, in order; the version goes up each time.
@@ -249,7 +337,7 @@ test('playlist item play dates are saved and only active files are sent to playe
   const boss = await signIn(BOSS);
   const file = await (await upload(boss, 'scheduled.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
   const playlist = await (await call('POST', '/api/playlists', {
-    token: boss, json: { name: 'Scheduled', orientation: 'landscape' },
+    token: boss, json: { name: 'Scheduled', orientation: 'landscape', location_id: await lobbyId(call, boss) },
   })).json();
   const now = Date.now();
   const dates = {
@@ -270,7 +358,7 @@ test('playlist item play dates are saved and only active files are sent to playe
 
   const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
   await call('POST', '/api/devices/claim', {
-    token: boss, json: { code: tv.pairing_code, name: 'Scheduled TV', playlist_id: playlist.id },
+    token: boss, json: { code: tv.pairing_code, name: 'Scheduled TV', location: 'Lobby', playlist_id: playlist.id },
   });
   const playerPlaylist = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
   assert.equal(playerPlaylist.items.length, 1);
@@ -285,8 +373,8 @@ test('pairing a TV by QR code or PIN, setting it up, then playing its playlist',
   const videoBytes = crypto.randomBytes(50_000);
   const video = await (await upload(boss, 'Lobby promo.mp4', videoBytes, 'video/mp4')).json();
   const image = await (await upload(boss, 'menu.png', crypto.randomBytes(1000), 'image/png')).json();
-  const lobby = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby screens', orientation: 'landscape' } })).json();
-  const recep = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Reception', orientation: 'portrait' } })).json();
+  const lobby = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby screens', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
+  const recep = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Reception', orientation: 'portrait', location_id: await lobbyId(call, boss) } })).json();
   await call('PUT', `/api/playlists/${lobby.id}/items`, {
     token: boss, json: { items: [{ media_id: image.id, image_seconds: 5 }, { media_id: video.id }] },
   });
@@ -300,7 +388,7 @@ test('pairing a TV by QR code or PIN, setting it up, then playing its playlist',
   assert.equal((await call('GET', '/api/player/playlist', { token: tvA.token })).status, 403);
 
   // TV A is paired by scanning its QR code and set up as a landscape lobby screen...
-  assert.equal((await call('POST', '/api/devices/claim', { token: boss, json: { code: 'kiosk-pair:ZZZZZZ', name: 'x' } })).status, 404);
+  assert.equal((await call('POST', '/api/devices/claim', { token: boss, json: { code: 'kiosk-pair:ZZZZZZ', name: 'x', location: 'Lobby' } })).status, 404);
   assert.equal((await call('POST', '/api/devices/claim', { token: boss, json: { code: tvA.qr_payload, name: 'Front', orientation: 'upside' } })).status, 400);
   const claimA = await call('POST', '/api/devices/claim', {
     token: boss, json: { code: tvA.qr_payload, name: 'Front window', location: 'Main lobby', orientation: 'landscape', playlist_id: lobby.id },
@@ -387,7 +475,7 @@ test('media cache: the first download comes from Drive, later ones from the loca
   const bytes = crypto.randomBytes(80_000);
   const video = await (await upload(boss, 'promo.mp4', bytes, 'video/mp4')).json();
   const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
-  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'TV' } });
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'TV' } });
 
   const first = await call('GET', `/media/${video.id}`, { token: tv.token });
   assert.ok(Buffer.from(await first.arrayBuffer()).equals(bytes));
@@ -408,29 +496,6 @@ test('media cache: the first download comes from Drive, later ones from the loca
   assert.equal(fs.readdirSync(cacheDir).length, 0);
 });
 
-test('web page sign-in with a code from google.com/device', async (t) => {
-  const { call, google } = await startServer(t);
-  const start = await (await call('POST', '/api/auth/device/start')).json();
-  assert.equal(start.user_code, 'ABCD-EFGH');
-  assert.equal(start.verification_url, 'https://www.google.com/device');
-
-  // Until the person enters the code, the page keeps waiting.
-  assert.deepEqual(await (await call('POST', '/api/auth/device/poll', { json: { poll_id: start.poll_id } })).json(), { status: 'pending' });
-
-  // Someone who isn't invited is turned away.
-  google.approveDeviceSignIn('stranger@example.com');
-  assert.equal((await call('POST', '/api/auth/device/poll', { json: { poll_id: start.poll_id } })).status, 403);
-
-  // An invited person gets a session, and the code can't be reused.
-  const again = await (await call('POST', '/api/auth/device/start')).json();
-  google.approveDeviceSignIn(BOSS);
-  const done = await (await call('POST', '/api/auth/device/poll', { json: { poll_id: again.poll_id } })).json();
-  assert.equal(done.status, 'done');
-  assert.equal(done.role, 'superadmin');
-  assert.equal((await call('GET', '/api/me', { token: done.token })).status, 200);
-  assert.equal((await call('POST', '/api/auth/device/poll', { json: { poll_id: again.poll_id } })).status, 410);
-});
-
 test('Home Assistant sidebar: trusted only on the ingress port, from Home Assistant', async (t) => {
   const { app, base, call } = await startServer(t);
   const ingress = createIngressServer(app, '127.0.0.1');
@@ -441,7 +506,7 @@ test('Home Assistant sidebar: trusted only on the ingress port, from Home Assist
 
   // Through the ingress port, the Home Assistant user is a superadmin.
   const me = await (await fetch(`${ingressBase}/api/me`, { headers: haHeaders })).json();
-  assert.deepEqual(me, { email: 'Hairil', role: 'superadmin', via_home_assistant: true });
+  assert.deepEqual(me, { username: 'Hairil', email: 'Hairil', role: 'superadmin', via_home_assistant: true });
   assert.equal((await fetch(`${ingressBase}/api/users`, { headers: haHeaders })).status, 200);
   // The same page is served there too.
   assert.match(await (await fetch(`${ingressBase}/`)).text(), /Kiosk Signage/);
@@ -464,14 +529,14 @@ test('settings page: Drive folder, cache switch, connection test, download progr
   const boss = await signIn(BOSS);
 
   // Only superadmins see settings.
-  await call('POST', '/api/users', { token: boss, json: { email: 'manager@example.com', role: 'system_manager' } });
+  await call('POST', '/api/users', { token: boss, json: { username: 'manager@example.com', role: 'system_manager', password: PASSWORD } });
   const manager = await signIn('manager@example.com');
   assert.equal((await call('GET', '/api/settings', { token: manager })).status, 403);
 
   let settings = await (await call('GET', '/api/settings', { token: boss })).json();
   assert.equal(settings.drive_folder_id, 'folder-original');
   assert.deepEqual(settings.cache, { available: true, enabled: true, files: 0, bytes: 0 });
-  assert.deepEqual(settings.sign_in, { phone_app: true, web_code: true });
+  assert.equal(settings.users, 2); // people with a password
 
   // Change the Drive folder from the web page.
   assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { drive_folder_id: 'x' } })).status, 400);
@@ -503,7 +568,7 @@ test('settings page: Drive folder, cache switch, connection test, download progr
 
   // A TV reports download progress in its heartbeat; the screen overview shows it.
   const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
-  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'TV' } });
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'TV' } });
   await call('POST', '/api/player/heartbeat', { token: tv.token, json: { download_done: 1, download_total: 3 } });
   let [device] = await (await call('GET', '/api/devices', { token: boss })).json();
   assert.deepEqual(device.download, { done: 1, total: 3 });
@@ -555,12 +620,12 @@ test('playback copies: weak TVs get 1080p, capable ones get 4K, the original sta
   assert.ok(flat.includes('3.1') && flat.includes('libx265') && flat.includes('hvc1'));
   assert.ok(!flat.some((arg) => arg.includes('10le') || arg.includes('main10')));
 
-  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape' } })).json();
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
   await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: video.id }] } });
 
   async function claim(name) {
     const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
-    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name, playlist_id: playlist.id } });
+    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name, playlist_id: playlist.id } });
     return tv;
   }
 
@@ -634,7 +699,7 @@ test('library warns about a video weak boxes may not play while copies are off',
 test('new TVs wait on a list, so they can be added without typing their code', async (t) => {
   const { call, signIn, app } = await startServer(t, { siteName: 'Head office' });
   const boss = await signIn(BOSS);
-  await call('POST', '/api/users', { token: boss, json: { email: 'up@example.com', role: 'content_uploader' } });
+  await call('POST', '/api/users', { token: boss, json: { username: 'up@example.com', role: 'content_uploader', password: PASSWORD } });
   const uploader = await signIn('up@example.com');
 
   // The server ID stays the same, so a TV can recognise its server after an address change.
@@ -651,7 +716,7 @@ test('new TVs wait on a list, so they can be added without typing their code', a
 
   // Adding it (the "Add" button sends the code) takes it off the list.
   const added = await (await call('POST', '/api/devices/claim', {
-    token: boss, json: { code: waiting[0].pairing_code, name: 'Lobby TV' },
+    token: boss, json: { code: waiting[0].pairing_code, name: 'Lobby TV', location: 'Lobby' },
   })).json();
   assert.equal(added.site, 'Head office');
   assert.equal(added.model, 'Xiaomi MIBOX4');
@@ -703,9 +768,9 @@ test('another site: TVs reach the main server through a relay that keeps copies 
 
   const data = crypto.randomBytes(5000);
   const media = await (await upload(boss, 'promo.jpg', data, 'image/jpeg')).json();
-  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Branch', orientation: 'landscape' } })).json();
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Branch', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
   await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: media.id }] } });
-  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Branch TV', playlist_id: playlist.id } });
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'Branch TV', playlist_id: playlist.id } });
 
   const list = await (await viaRelay('/api/player/playlist', { token: tv.token })).json();
   assert.equal(list.items.length, 1);
@@ -742,7 +807,7 @@ test('another site: TVs reach the main server through a relay that keeps copies 
 test('file expiry: an expired file leaves Kiosk and every screen, but stays in Google Drive', async (t) => {
   const { call, signIn, upload, google, app } = await startServer(t);
   const boss = await signIn(BOSS);
-  await call('POST', '/api/users', { token: boss, json: { email: 'up@example.com', role: 'content_uploader' } });
+  await call('POST', '/api/users', { token: boss, json: { username: 'up@example.com', role: 'content_uploader', password: PASSWORD } });
   const uploader = await signIn('up@example.com');
   const inAWeek = Date.now() + 7 * 24 * 60 * 60 * 1000;
 
@@ -758,10 +823,10 @@ test('file expiry: an expired file leaves Kiosk and every screen, but stays in G
   assert.equal((await call('PATCH', `/api/media/${offer.id}`, { token: boss, json: { expires_at: 'soon' } })).status, 400);
 
   // Both files play on a TV.
-  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape' } })).json();
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
   await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: offer.id }, { media_id: promo.id }] } });
   const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
-  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Lobby TV', playlist_id: playlist.id } });
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'Lobby TV', playlist_id: playlist.id } });
   const before = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
   assert.deepEqual(before.items.map((i) => i.id), [offer.id, promo.id]);
 
@@ -810,10 +875,10 @@ test('file start dates: not on screens before the start, but downloaded a day ah
   assert.equal((await call('PATCH', `/api/media/${later.id}`, { token: boss, json: { starts_at: Date.now() + 3 * 24 * hour, expires_at: Date.now() + 5 * 24 * hour } })).status, 200);
   assert.equal((await call('PATCH', `/api/media/${later.id}`, { token: boss, json: { expires_at: Date.now() + 24 * hour } })).status, 400);
 
-  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape' } })).json();
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Lobby', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
   await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [now, soon, later].map((m) => ({ media_id: m.id })) } });
   const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
-  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Lobby TV', playlist_id: playlist.id } });
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'Lobby TV', playlist_id: playlist.id } });
   const list = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
   assert.deepEqual(list.items.map((i) => i.id), [now.id]);
   assert.deepEqual(list.upcoming.map((i) => i.id), [soon.id]); // later.jpg is more than a day away
@@ -828,7 +893,7 @@ test('file start dates: not on screens before the start, but downloaded a day ah
 test('locations: add, rename, working hours to the TV, and delete only when empty with the name typed', async (t) => {
   const { call, signIn } = await startServer(t);
   const boss = await signIn(BOSS);
-  await call('POST', '/api/users', { token: boss, json: { email: 'up@example.com', role: 'content_uploader' } });
+  await call('POST', '/api/users', { token: boss, json: { username: 'up@example.com', role: 'content_uploader', password: PASSWORD } });
   const uploader = await signIn('up@example.com');
 
   const lobby = await (await call('POST', '/api/locations', { token: boss, json: { name: 'Main lobby' } })).json();
@@ -970,7 +1035,7 @@ test('notifications: a whole site going quiet is reported as the site, not scree
   await call('PATCH', '/api/settings', { token: boss, json: { notify_targets: ['mobile_app_pixel'] } });
   for (const name of ['Branch 1', 'Branch 2']) {
     const tv = await (await call('POST', '/api/player/register', { json: {}, headers: { 'x-kiosk-site': 'Orchard branch' } })).json();
-    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name } });
+    await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name } });
   }
   app.locals.db.prepare(`UPDATE devices SET last_seen = ?`).run(Date.now() - 10 * 60 * 1000);
   await app.locals.checkScreens();
@@ -1057,7 +1122,7 @@ test('the Google key can be added on the Settings page, and is never sent back',
   if (process.platform !== 'win32') assert.equal(fs.statSync(googleKeyFile).mode & 0o077, 0);
 
   // Only Spongebob (superadmin) may change it.
-  await call('POST', '/api/users', { token: boss, json: { email: 'uploader@example.com', role: 'content_uploader' } });
+  await call('POST', '/api/users', { token: boss, json: { username: 'uploader@example.com', role: 'content_uploader', password: PASSWORD } });
   const uploader = await signIn('uploader@example.com');
   assert.equal((await put(JSON.stringify(key), uploader)).status, 403);
 });
@@ -1140,123 +1205,10 @@ test('a relay says why it can\'t reach the main server', async (t) => {
 async function addScreen(call, boss, { name, site = null, orientation = 'landscape', appVersion = '0.5.0', ...rest }) {
   const headers = site ? { 'x-kiosk-site': site } : {};
   const tv = await (await call('POST', '/api/player/register', { json: { app_version: appVersion }, headers: { ...headers } })).json();
-  const claimed = await (await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name, orientation, ...rest } })).json();
+  const claimed = await (await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name, orientation, location: 'Lobby', ...rest } })).json();
   const playlist = async () => (await call('GET', '/api/player/playlist', { token: tv.token, headers: { ...headers } })).json();
   return { ...tv, id: claimed.id, view: claimed, playlist };
 }
-
-test('every site has an automatic Landscape and Portrait playlist, and screens follow the one that fits', async (t) => {
-  const { call, signIn, upload } = await startServer(t, { siteName: 'Linsy' });
-  const boss = await signIn(BOSS);
-  const wide = await (await upload(boss, 'wide.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
-  const tall = await (await upload(boss, 'tall.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
-
-  const lobby = await addScreen(call, boss, { name: 'Lobby' });
-  const totem = await addScreen(call, boss, { name: 'Totem', orientation: 'portrait_left' });
-  const cafe = await addScreen(call, boss, { name: 'Cafe', site: 'Qoltured' });
-
-  // Nothing was assigned, yet each screen already has a playlist: its site's automatic one.
-  assert.equal(lobby.view.playlist_id, null);
-  assert.equal(lobby.view.playlist_auto, true);
-  assert.equal(lobby.view.playlist_name, 'Landscape');
-  assert.equal(totem.view.playlist_name, 'Portrait');
-
-  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
-  assert.deepEqual(list.map((p) => [p.site, p.name, p.auto, p.devices.map((d) => d.name)]), [
-    ['Linsy', 'Landscape', true, ['Lobby']], ['Linsy', 'Portrait', true, ['Totem']],
-    ['Qoltured', 'Landscape', true, ['Cafe']], ['Qoltured', 'Portrait', true, []],
-  ]);
-  assert.deepEqual(await (await call('GET', '/api/sites', { token: boss })).json(), { own_site: 'Linsy', sites: ['Linsy', 'Qoltured'] });
-  const at = (site, name) => list.find((p) => p.site === site && p.name === name);
-
-  // Filling Linsy's Landscape reaches Linsy's landscape screen only.
-  await call('PUT', `/api/playlists/${at('Linsy', 'Landscape').id}/items`, { token: boss, json: { items: [{ media_id: wide.id }] } });
-  await call('PUT', `/api/playlists/${at('Linsy', 'Portrait').id}/items`, { token: boss, json: { items: [{ media_id: tall.id }] } });
-  assert.deepEqual((await lobby.playlist()).items.map((i) => i.id), [wide.id]);
-  assert.deepEqual((await totem.playlist()).items.map((i) => i.id), [tall.id]);
-  assert.deepEqual((await cafe.playlist()).items, []);
-
-  // Turning the lobby screen on its side moves it to the Portrait playlist by itself.
-  const before = (await lobby.playlist()).version;
-  await call('PATCH', `/api/devices/${lobby.id}`, { token: boss, json: { orientation: 'portrait_right' } });
-  const turned = await lobby.playlist();
-  assert.deepEqual(turned.items.map((i) => i.id), [tall.id]);
-  assert.notEqual(turned.version, before);
-  await call('PATCH', `/api/devices/${lobby.id}`, { token: boss, json: { orientation: 'landscape' } });
-
-  // The automatic two can't be renamed, reshaped, moved or deleted; their contents can change.
-  const auto = at('Linsy', 'Landscape');
-  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { name: 'Mine' } })).status, 409);
-  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { orientation: 'portrait' } })).status, 409);
-  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { site: 'Qoltured' } })).status, 409);
-  assert.equal((await call('DELETE', `/api/playlists/${auto.id}`, { token: boss })).status, 409);
-
-  // An extra playlist at a site, and one screen pinned to it.
-  assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: 'X', orientation: 'landscape', site: 'Nowhere' } })).status, 400);
-  const menu = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Menu board', orientation: 'landscape', site: 'Qoltured' } })).json();
-  assert.deepEqual([menu.site, menu.auto], ['Qoltured', false]);
-  const own = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Window', orientation: 'landscape' } })).json();
-  assert.equal(own.site, 'Linsy'); // no site given: this server's own
-  await call('PUT', `/api/playlists/${menu.id}/items`, { token: boss, json: { items: [{ media_id: tall.id }, { media_id: wide.id }] } });
-  const pinned = await (await call('PATCH', `/api/devices/${cafe.id}`, { token: boss, json: { playlist_id: menu.id } })).json();
-  assert.deepEqual([pinned.playlist_id, pinned.playlist_auto, pinned.playlist_name], [menu.id, false, 'Menu board']);
-  assert.deepEqual((await cafe.playlist()).items.map((i) => i.id), [tall.id, wide.id]);
-  const again = await (await call('GET', '/api/playlists', { token: boss })).json();
-  assert.deepEqual(again.find((p) => p.id === menu.id).devices.map((d) => d.name), ['Cafe']);
-  assert.deepEqual(again.find((p) => p.site === 'Qoltured' && p.name === 'Landscape').devices, []);
-  assert.equal((await call('DELETE', `/api/playlists/${menu.id}`, { token: boss })).status, 409); // still on Cafe
-
-  // Back to Automatic, and the extra can go.
-  const back = await (await call('PATCH', `/api/devices/${cafe.id}`, { token: boss, json: { playlist_id: null } })).json();
-  assert.deepEqual([back.playlist_id, back.playlist_auto, back.playlist_name], [null, true, 'Landscape']);
-  assert.equal((await call('DELETE', `/api/playlists/${menu.id}`, { token: boss })).status, 200);
-});
-
-test('playlists from before sites: the ones in use become each site\'s automatic playlists', async (t) => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-old-'));
-  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-  // An install as it was before: flat playlists, each picked per screen.
-  const { openDatabase } = require('../src/db');
-  const db = openDatabase(dataDir);
-  const now = Date.now();
-  const playlist = (name, orientation) => db.prepare(`INSERT INTO playlists (name, orientation, created_at) VALUES (?, ?, ?)`).run(name, orientation, now).lastInsertRowid;
-  const screen = (name, site, orientation, playlistId) => db.prepare(
-    `INSERT INTO devices (token, name, site, orientation, playlist_id, claimed, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)`
-  ).run(`tok-${name}`, name, site, orientation, playlistId, now);
-  const main = playlist('Main loop', 'landscape');
-  const promo = playlist('Promo', 'landscape');
-  const tall = playlist('Tall ads', 'portrait');
-  const unused = playlist('Old ideas', 'landscape');
-  screen('A', 'Qoltured', 'landscape', main);
-  screen('B', 'Qoltured', 'landscape', main);
-  screen('C', 'Qoltured', 'landscape', promo);
-  screen('D', 'Qoltured', 'portrait_left', tall);
-  screen('E', 'Linsy', 'landscape', null);
-  db.close();
-
-  const { call, signIn, app } = await startServer(t, { dataDir, siteName: 'Linsy' });
-  const boss = await signIn(BOSS);
-  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
-  const row = (id) => list.find((p) => p.id === Number(id));
-  // The playlist most Qoltured landscape screens played is now Qoltured's Landscape; they follow it.
-  assert.deepEqual([row(main).site, row(main).name, row(main).auto, row(main).devices.map((d) => d.name)], ['Qoltured', 'Landscape', true, ['A', 'B']]);
-  assert.deepEqual([row(tall).site, row(tall).name, row(tall).auto], ['Qoltured', 'Portrait', true]);
-  // The other one in use stays as an extra, with its screen still pinned to it.
-  assert.deepEqual([row(promo).site, row(promo).name, row(promo).auto, row(promo).devices.map((d) => d.name)], ['Qoltured', 'Promo', false, ['C']]);
-  // One nobody played is kept, without a site.
-  assert.deepEqual([row(unused).unassigned, row(unused).site, row(unused).auto], [true, null, false]);
-  assert.equal(list[list.length - 1].id, Number(unused));
-  // A site with nothing assigned gets two new empty ones.
-  assert.deepEqual(list.filter((p) => p.site === 'Linsy').map((p) => [p.name, p.auto, p.item_count]), [['Landscape', true, 0], ['Portrait', true, 0]]);
-  const devices = await (await call('GET', '/api/devices', { token: boss })).json();
-  assert.deepEqual(devices.map((d) => [d.name, d.playlist_id, d.playlist_name]).sort(), [
-    ['A', null, 'Landscape'], ['B', null, 'Landscape'], ['C', Number(promo), 'Promo'], ['D', null, 'Portrait'], ['E', null, 'Landscape'],
-  ]);
-  // It is done once: an older playlist adopted into a site later isn't touched again.
-  const adopted = await (await call('PATCH', `/api/playlists/${unused}`, { token: boss, json: { site: 'Linsy' } })).json();
-  assert.deepEqual([adopted.site, adopted.unassigned], ['Linsy', false]);
-  assert.equal(app.locals.db.prepare(`SELECT COUNT(*) AS n FROM playlists WHERE auto = 1`).get().n, 4);
-});
 
 test('a landscape screen can be mounted upside down, if its TV app is new enough', async (t) => {
   const { call, signIn } = await startServer(t);
@@ -1280,33 +1232,204 @@ test('a landscape screen can be mounted upside down, if its TV app is new enough
   assert.equal(old.view.can_flip, false);
 });
 
-test('a main server that only manages other sites has no playlists of its own', async (t) => {
-  const { call, signIn, upload } = await startServer(t, { siteName: 'Main centre' });
+
+test('every location has an automatic Landscape and Portrait playlist, and screens follow the one that fits', async (t) => {
+  const { call, signIn, upload } = await startServer(t, { siteName: 'Main Centre' });
   const boss = await signIn(BOSS);
-  const playlists = async () => (await call('GET', '/api/playlists', { token: boss })).json();
-  const sites = async () => (await (await call('GET', '/api/sites', { token: boss })).json()).sites;
+  const wide = await (await upload(boss, 'wide.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const tall = await (await upload(boss, 'tall.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const location = async (name) => (await (await call('POST', '/api/locations', { token: boss, json: { name } })).json()).id;
+  const qoltured = await location('Qoltured');
+  const linsy = await location('Linsy');
+  assert.equal((await call('POST', '/api/locations', { token: boss, json: { name: 'qoltured' } })).status, 409); // one list, one of each name
 
-  // On its own, with no screens yet, it keeps its two: screens can only be added here.
-  assert.deepEqual((await playlists()).map((p) => [p.site, p.name]), [['Main centre', 'Landscape'], ['Main centre', 'Portrait']]);
+  // With no screens anywhere, each location already has its two, and the main server has none of its own.
+  let list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(list.map((p) => [p.location, p.name, p.auto, p.location_id]), [
+    ['Linsy', 'Landscape', true, linsy], ['Linsy', 'Portrait', true, linsy],
+    ['Qoltured', 'Landscape', true, qoltured], ['Qoltured', 'Portrait', true, qoltured],
+  ]);
+  const at = (loc, name) => list.find((p) => p.location === loc && p.name === name);
 
-  // Once another site has a screen and this one has none, only that site has playlists.
-  const cafe = await addScreen(call, boss, { name: 'Cafe', site: 'Qoltured' });
-  assert.deepEqual((await playlists()).map((p) => [p.site, p.name]), [['Qoltured', 'Landscape'], ['Qoltured', 'Portrait']]);
-  assert.deepEqual(await sites(), ['Qoltured']);
-  assert.equal(cafe.view.playlist_name, 'Landscape');
+  // A screen is in a location whichever Home Assistant it connects through: this one came in through a relay.
+  const window_ = await addScreen(call, boss, { name: 'Front window', site: 'Qoltured relay', location: 'Qoltured' });
+  const totem = await addScreen(call, boss, { name: 'Totem', orientation: 'portrait_left', location: 'Qoltured' });
+  const counter = await addScreen(call, boss, { name: 'Counter', location: 'Linsy' });
+  assert.deepEqual([window_.view.playlist_id, window_.view.playlist_auto, window_.view.playlist_name], [null, true, 'Landscape']);
+  assert.equal(window_.view.location_id, qoltured);
+  assert.equal(totem.view.playlist_name, 'Portrait');
+  assert.equal((await (await call('GET', '/api/locations', { token: boss })).json()).locations.length, 2); // the relay made no third location
 
-  // A screen added at the main site brings its playlists back.
-  const desk = await addScreen(call, boss, { name: 'Front desk' });
-  assert.deepEqual(await sites(), ['Main centre', 'Qoltured']);
-  const list = await playlists();
-  assert.deepEqual(list.filter((p) => p.site === 'Main centre').map((p) => [p.name, p.devices.map((d) => d.name)]), [['Landscape', ['Front desk']], ['Portrait', []]]);
+  // Filling Qoltured's playlists reaches Qoltured's screens only.
+  await call('PUT', `/api/playlists/${at('Qoltured', 'Landscape').id}/items`, { token: boss, json: { items: [{ media_id: wide.id }] } });
+  await call('PUT', `/api/playlists/${at('Qoltured', 'Portrait').id}/items`, { token: boss, json: { items: [{ media_id: tall.id }] } });
+  assert.deepEqual((await window_.playlist()).items.map((i) => i.id), [wide.id]);
+  assert.deepEqual((await totem.playlist()).items.map((i) => i.id), [tall.id]);
+  assert.deepEqual((await counter.playlist()).items, []);
+  list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(at('Qoltured', 'Landscape').devices.map((d) => d.name), ['Front window']);
+  assert.deepEqual(at('Linsy', 'Landscape').devices.map((d) => d.name), ['Counter']);
 
-  // Remove that screen: a playlist someone filled is kept, the empty one goes.
-  const file = await (await upload(boss, 'a.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
-  const filled = list.find((p) => p.site === 'Main centre' && p.name === 'Landscape');
-  await call('PUT', `/api/playlists/${filled.id}/items`, { token: boss, json: { items: [{ media_id: file.id }] } });
-  await call('DELETE', `/api/devices/${desk.id}`, { token: boss });
-  assert.deepEqual((await playlists()).filter((p) => p.site === 'Main centre').map((p) => [p.name, p.item_count]), [['Landscape', 1], ['Portrait', 0]]);
-  await call('PUT', `/api/playlists/${filled.id}/items`, { token: boss, json: { items: [] } });
-  assert.deepEqual((await playlists()).map((p) => p.site), ['Qoltured', 'Qoltured']);
+  // Turned on its side, a screen moves to Portrait; moved to Linsy, it follows Linsy.
+  const before = (await window_.playlist()).version;
+  await call('PATCH', `/api/devices/${window_.id}`, { token: boss, json: { orientation: 'portrait_right' } });
+  const turned = await window_.playlist();
+  assert.deepEqual(turned.items.map((i) => i.id), [tall.id]);
+  assert.notEqual(turned.version, before);
+  await call('PATCH', `/api/devices/${window_.id}`, { token: boss, json: { orientation: 'landscape', location: 'Linsy' } });
+  assert.deepEqual((await window_.playlist()).items, []);
+  await call('PATCH', `/api/devices/${window_.id}`, { token: boss, json: { location: 'Qoltured' } });
+
+  // The automatic two can't be renamed, reshaped, moved or deleted.
+  const auto = at('Qoltured', 'Landscape');
+  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { name: 'Mine' } })).status, 409);
+  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { orientation: 'portrait' } })).status, 409);
+  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { location_id: linsy } })).status, 409);
+  assert.equal((await call('DELETE', `/api/playlists/${auto.id}`, { token: boss })).status, 409);
+
+  // An extra playlist belongs to a location, and one screen can be pinned to it.
+  assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: 'X', orientation: 'landscape' } })).status, 400);
+  assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: 'X', orientation: 'landscape', location_id: 999 } })).status, 400);
+  const menu = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Menu board', orientation: 'landscape', location_id: qoltured } })).json();
+  assert.deepEqual([menu.location, menu.auto, menu.unassigned], ['Qoltured', false, false]);
+  await call('PUT', `/api/playlists/${menu.id}/items`, { token: boss, json: { items: [{ media_id: tall.id }, { media_id: wide.id }] } });
+  const pinned = await (await call('PATCH', `/api/devices/${window_.id}`, { token: boss, json: { playlist_id: menu.id } })).json();
+  assert.deepEqual([pinned.playlist_id, pinned.playlist_auto, pinned.playlist_name], [menu.id, false, 'Menu board']);
+  assert.deepEqual((await window_.playlist()).items.map((i) => i.id), [tall.id, wide.id]);
+  list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(at('Qoltured', 'Landscape').devices, []);
+  assert.equal((await call('DELETE', `/api/playlists/${menu.id}`, { token: boss })).status, 409); // still on Front window
+  const back = await (await call('PATCH', `/api/devices/${window_.id}`, { token: boss, json: { playlist_id: null } })).json();
+  assert.deepEqual([back.playlist_id, back.playlist_auto, back.playlist_name], [null, true, 'Landscape']);
+
+  // Renaming a location keeps its playlists and screens.
+  await call('PATCH', `/api/locations/${qoltured}`, { token: boss, json: { name: 'Qoltured Cafe' } });
+  list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(at('Qoltured Cafe', 'Landscape').devices.map((d) => d.name), ['Front window']);
+  assert.deepEqual((await window_.playlist()).items.map((i) => i.id), [wide.id]);
+
+  // Deleting an emptied location: its automatic two go, an extra is kept without a location.
+  for (const tv of [window_, totem]) await call('PATCH', `/api/devices/${tv.id}`, { token: boss, json: { location: 'Linsy' } });
+  assert.equal((await call('DELETE', `/api/locations/${qoltured}`, { token: boss, json: { confirm_name: 'Qoltured Cafe' } })).status, 200);
+  list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(list.map((p) => [p.location, p.name, p.unassigned]), [
+    ['Linsy', 'Landscape', false], ['Linsy', 'Portrait', false], [null, 'Menu board', true],
+  ]);
+  // ...and can be moved to another location.
+  const moved = await (await call('PATCH', `/api/playlists/${menu.id}`, { token: boss, json: { location_id: linsy } })).json();
+  assert.deepEqual([moved.location, moved.unassigned], ['Linsy', false]);
+});
+
+test('a screen has to be in a location', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const tv = await (await call('POST', '/api/player/register', { json: { app_version: '0.5.0' } })).json();
+  const claim = (json) => call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'TV', ...json } });
+  for (const bad of [{}, { location: '' }, { location: '   ' }, { location: null }]) {
+    const res = await claim(bad);
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /Choose a location/);
+  }
+  // A new name typed on the phone makes the location.
+  const added = await (await claim({ location: 'Lobby' })).json();
+  assert.equal(added.location, 'Lobby');
+  assert.equal(added.playlist_name, 'Landscape');
+  // It can be moved, but not taken out of every location.
+  assert.equal((await call('PATCH', `/api/devices/${added.id}`, { token: boss, json: { location: null } })).status, 400);
+  assert.equal((await call('PATCH', `/api/devices/${added.id}`, { token: boss, json: { name: 'Renamed' } })).status, 200);
+});
+
+// An install as it was: tables filled by hand before the server starts.
+function oldInstall(t, fill) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-old-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const { openDatabase, setSetting } = require('../src/db');
+  const db = openDatabase(dataDir);
+  const now = Date.now();
+  fill({
+    db,
+    setSetting: (key, value) => setSetting(db, key, value),
+    location: (site, name) => db.prepare(`INSERT INTO locations (site, name, created_at) VALUES (?, ?, ?)`).run(site, name, now).lastInsertRowid,
+    playlist: (name, orientation, extra = {}) => db.prepare(`INSERT INTO playlists (name, orientation, site, auto, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(name, orientation, extra.site ?? null, extra.auto ? 1 : 0, now).lastInsertRowid,
+    item: (playlistId, mediaId) => db.prepare(`INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)`).run(playlistId, mediaId),
+    media: (name) => db.prepare(`INSERT INTO media (drive_file_id, filename, type, mime, size, md5, created_at) VALUES (?, ?, 'image', 'image/jpeg', 1, 'x', ?)`)
+      .run(`drive-${name}`, name, now).lastInsertRowid,
+    screen: (name, site, location, orientation, playlistId) => db.prepare(
+      `INSERT INTO devices (token, name, site, location, orientation, playlist_id, claimed, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
+    ).run(`tok-${name}`, name, site, location, orientation, playlistId, now),
+  });
+  db.close();
+  return dataDir;
+}
+
+test('playlists from 0.5: a site\'s playlists are dropped when it has several locations', async (t) => {
+  let extra;
+  const dataDir = oldInstall(t, (old) => {
+    old.setSetting('playlists_by_site', 1);
+    old.location('Main Centre', 'Qoltured');
+    old.location('Main Centre', 'Linsy');
+    const filled = old.playlist('Landscape', 'landscape', { site: 'Main Centre', auto: true });
+    old.item(filled, old.media('a.jpg'));
+    old.playlist('Portrait', 'portrait', { site: 'Main Centre', auto: true });
+    extra = old.playlist('Menu board', 'landscape', { site: 'Main Centre' });
+    old.screen('Cafe', 'Main Centre', 'Qoltured', 'landscape', extra);
+    old.playlist('Spare', 'landscape', { site: 'Main Centre' });
+  });
+  const { call, signIn } = await startServer(t, { dataDir, siteName: 'Main Centre' });
+  const boss = await signIn(BOSS);
+  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  // The main centre's own two are gone (even the filled one); each location has a fresh, empty pair.
+  assert.deepEqual(list.filter((p) => p.auto).map((p) => [p.location, p.name, p.item_count]), [
+    ['Linsy', 'Landscape', 0], ['Linsy', 'Portrait', 0], ['Qoltured', 'Landscape', 0], ['Qoltured', 'Portrait', 0],
+  ]);
+  // An extra a screen was pinned to moves to that screen's location; an unused one is kept as "older".
+  assert.deepEqual(list.filter((p) => !p.auto).map((p) => [p.location, p.name, p.unassigned, p.devices.map((d) => d.name)]), [
+    ['Qoltured', 'Menu board', false, ['Cafe']], [null, 'Spare', true, []],
+  ]);
+  assert.equal(list.find((p) => p.name === 'Menu board').id, Number(extra));
+});
+
+test('playlists from 0.5: a site with one location hands its playlists to it', async (t) => {
+  let filled;
+  const dataDir = oldInstall(t, (old) => {
+    old.setSetting('playlists_by_site', 1);
+    old.location('', 'Lobby');
+    filled = old.playlist('Landscape', 'landscape', { site: '', auto: true });
+    old.item(filled, old.media('a.jpg'));
+    old.playlist('Portrait', 'portrait', { site: '', auto: true });
+    old.screen('TV', null, 'Lobby', 'landscape', null);
+  });
+  const { call, signIn } = await startServer(t, { dataDir });
+  const boss = await signIn(BOSS);
+  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(list.map((p) => [p.location, p.name, p.auto, p.item_count, p.devices.map((d) => d.name)]), [
+    ['Lobby', 'Landscape', true, 1, ['TV']], ['Lobby', 'Portrait', true, 0, []],
+  ]);
+  assert.equal(list[0].id, Number(filled)); // the same playlist, so the TV keeps playing it
+});
+
+test('playlists from before 0.5: the ones in use become each location\'s automatic playlists', async (t) => {
+  let main, promo, unused;
+  const dataDir = oldInstall(t, (old) => {
+    old.location('', 'Lobby');
+    main = old.playlist('Main loop', 'landscape');
+    promo = old.playlist('Promo', 'landscape');
+    unused = old.playlist('Old ideas', 'portrait');
+    old.screen('A', null, 'Lobby', 'landscape', main);
+    old.screen('B', null, 'Lobby', 'landscape', main);
+    old.screen('C', null, 'Lobby', 'landscape', promo);
+    old.screen('D', null, null, 'landscape', null); // never given a location
+  });
+  const { call, signIn } = await startServer(t, { dataDir });
+  const boss = await signIn(BOSS);
+  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  const row = (id) => list.find((p) => p.id === Number(id));
+  assert.deepEqual([row(main).location, row(main).name, row(main).auto, row(main).devices.map((d) => d.name)], ['Lobby', 'Landscape', true, ['A', 'B']]);
+  assert.deepEqual([row(promo).location, row(promo).name, row(promo).auto, row(promo).devices.map((d) => d.name)], ['Lobby', 'Promo', false, ['C']]);
+  assert.deepEqual([row(unused).unassigned, row(unused).location], [true, null]);
+  // A screen with no location has nothing to play until it is given one.
+  const devices = await (await call('GET', '/api/devices', { token: boss })).json();
+  const d = devices.find((x) => x.name === 'D');
+  assert.deepEqual([d.location, d.playlist_name, d.playing_playlist_id], [null, null, null]);
 });

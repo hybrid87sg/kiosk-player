@@ -4,16 +4,15 @@
 //
 //   PORT                         port to listen on (default 3000)
 //   DATA_DIR                     where the database lives (default ./data)
-//   SUPERADMIN_EMAIL             your Google account; always a superadmin
-//   GOOGLE_WEB_CLIENT_ID         "Web" OAuth client ID from Google Cloud Console
+//   ADMIN_USERNAME               outside Home Assistant only: the first person who can sign in,
+//   ADMIN_PASSWORD                 made a superadmin at start-up (at least 8 characters). In Home
+//                                  Assistant, make users on the sidebar page's Users tab instead.
 //   GOOGLE_SERVICE_ACCOUNT_FILE  path to the service account's JSON key
 //   DRIVE_FOLDER_ID              the Drive folder holding the signage content
 //   MEDIA_CACHE                  "on" to keep a local copy of each file for the TVs
 //   TRANSCODE                    "on" to make playback copies. Off unless set, so an
 //                                upgraded install does not start encoding by itself.
 //   TRANSCODE_4K_HEVC            "on" to also make an optional 4K HEVC copy
-//   GOOGLE_DEVICE_CLIENT_ID      optional: "TVs and Limited Input devices" client, for
-//   GOOGLE_DEVICE_CLIENT_SECRET    signing in to the web page with a google.com/device code
 //   INGRESS_PORT                 optional: port for Home Assistant's sidebar page
 //   SITE_NAME                    optional: this site's name, e.g. "Head office"
 //   MODE                         "main" (default) or "relay", for a Home Assistant at
@@ -41,16 +40,13 @@ function loadSettings() {
       source: 'the add-on Configuration tab',
       port: 3000,
       dataDir,
-      superadminEmail: o.superadmin_email,
-      webClientId: o.google_web_client_id,
+      firstAdmin: null, // users are made on the sidebar page, which Home Assistant's own login protects
       folderId: o.drive_folder_id,
       serviceAccountFile: o.service_account_file ? path.resolve(configDir, o.service_account_file) : '',
       cache: o.cache_media !== false,
       transcodeVideos: transcodeOptIn(o.transcode_videos),
       transcode4kHevc: Boolean(o.transcode_4k_hevc),
       transcodeThreads: Math.min(4, Math.max(1, Number(o.transcode_threads) || 1)),
-      deviceClientId: o.google_device_client_id || '',
-      deviceClientSecret: o.google_device_client_secret || '',
       ingressPort: Number(env.INGRESS_PORT) || 8099,
       mode: o.mode === 'relay' ? 'relay' : 'main',
       siteName: (o.site_name || '').trim() || null,
@@ -61,16 +57,13 @@ function loadSettings() {
     source: 'environment variables (see the top of src/index.js)',
     port: Number(env.PORT) || 3000,
     dataDir,
-    superadminEmail: env.SUPERADMIN_EMAIL,
-    webClientId: env.GOOGLE_WEB_CLIENT_ID,
+    firstAdmin: env.ADMIN_USERNAME && env.ADMIN_PASSWORD ? { username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD } : null,
     folderId: env.DRIVE_FOLDER_ID,
     serviceAccountFile: env.GOOGLE_SERVICE_ACCOUNT_FILE,
     cache: env.MEDIA_CACHE === 'on',
     transcodeVideos: transcodeOptIn(env.TRANSCODE),
     transcode4kHevc: env.TRANSCODE_4K_HEVC === 'on',
     transcodeThreads: Math.min(4, Math.max(1, Number(env.TRANSCODE_THREADS) || 1)),
-    deviceClientId: env.GOOGLE_DEVICE_CLIENT_ID || '',
-    deviceClientSecret: env.GOOGLE_DEVICE_CLIENT_SECRET || '',
     ingressPort: Number(env.INGRESS_PORT) || null,
     mode: env.MODE === 'relay' ? 'relay' : 'main',
     siteName: (env.SITE_NAME || '').trim() || null,
@@ -108,8 +101,6 @@ if (settings.mode === 'relay') {
 }
 
 const missing = [
-  ['superadmin email', settings.superadminEmail],
-  ['Google web client ID', settings.webClientId],
   ['Drive folder ID', settings.folderId],
 ].filter(([, value]) => !value).map(([name]) => name);
 if (missing.length) {
@@ -140,8 +131,7 @@ if (!serviceAccountKey) {
 
 const app = createApp({
   dataDir: settings.dataDir,
-  superadminEmail: settings.superadminEmail,
-  googleWebClientId: settings.webClientId,
+  firstAdmin: settings.firstAdmin,
   mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
   cacheMedia: settings.cache,
   siteName: settings.siteName,
@@ -161,9 +151,6 @@ const app = createApp({
     threads: settings.transcodeThreads,
   },
   google: createGoogle({
-    webClientId: settings.webClientId,
-    deviceClientId: settings.deviceClientId,
-    deviceClientSecret: settings.deviceClientSecret,
     serviceAccountKey,
     folderId: settings.folderId,
   }),
