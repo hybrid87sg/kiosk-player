@@ -62,6 +62,19 @@ function mediaKind(name, mimeType) {
 
 // Wider than tall is landscape, taller than wide is portrait. Unknown size
 // (Drive hasn't finished processing a new video) means "still checking".
+// True if an app version like "0.5.1" is at least "0.5.0". Unknown versions count as older.
+function versionAtLeast(version, wanted) {
+  const parts = (v) => String(v || '').split('.').map((n) => parseInt(n, 10));
+  const have = parts(version);
+  const need = parts(wanted);
+  if (have.some(Number.isNaN) || have.length < 2) return false;
+  for (let i = 0; i < need.length; i++) {
+    const a = have[i] || 0;
+    if (a !== need[i]) return a > need[i];
+  }
+  return true;
+}
+
 function orientationOf(width, height) {
   if (!width || !height) return null;
   return width >= height ? 'landscape' : 'portrait';
@@ -104,6 +117,7 @@ function createApp({
   if (siteName) {
     // A site name was set later: move this site's screens and locations under it.
     db.prepare(`UPDATE locations SET site = ? WHERE site = ''`).run(siteName);
+    db.prepare(`UPDATE playlists SET site = ? WHERE site = ''`).run(siteName);
     db.prepare(`UPDATE devices SET site = ? WHERE site IS NULL`).run(siteName);
   }
   // Location names typed on screens before locations existed become real locations.
@@ -656,11 +670,90 @@ function createApp({
     ).all(playlistId);
   }
 
-  function playlistSummary(p) {
-    const devices = db.prepare(`SELECT id, name FROM devices WHERE playlist_id = ? AND claimed = 1 ORDER BY name`).all(p.id);
-    const count = db.prepare(`SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ?`).get(p.id).n;
-    return { id: p.id, name: p.name, orientation: p.orientation, version: p.version, item_count: count, devices };
+  // Landscape screens play landscape playlists; a screen turned on its side plays portrait ones.
+  const shapeOf = (deviceOrientation) => (deviceOrientation === 'landscape' ? 'landscape' : 'portrait');
+  const AUTO_NAMES = { landscape: 'Landscape', portrait: 'Portrait' };
+
+  // Every site has two automatic playlists, Landscape and Portrait. They are made the
+  // first time they are needed, so a new site (a new relay) gets them without any setup.
+  function autoPlaylist(site, orientation) {
+    const find = db.prepare(`SELECT * FROM playlists WHERE site = ? AND auto = 1 AND orientation = ?`);
+    let p = find.get(site || '', orientation);
+    if (!p) {
+      db.prepare(`INSERT INTO playlists (name, orientation, site, auto, created_at) VALUES (?, ?, ?, 1, ?)`)
+        .run(AUTO_NAMES[orientation], orientation, site || '', Date.now());
+      p = find.get(site || '', orientation);
+    }
+    return p;
   }
+  function ensureAutoPlaylists() {
+    for (const site of knownSites()) for (const orientation of PLAYLIST_ORIENTATIONS) autoPlaylist(site, orientation);
+  }
+  // What a screen plays: the playlist it is pinned to, or else its site's automatic one.
+  function playlistFor(device) {
+    const pinned = device.playlist_id ? findPlaylist(device.playlist_id) : null;
+    return pinned || autoPlaylist(device.site, shapeOf(device.orientation));
+  }
+
+  // Playlists used to be one flat list, each picked per screen. Once, they are sorted
+  // into sites: for each site and shape, the playlist most of its screens were playing
+  // becomes the automatic one (those screens then simply follow it), other playlists in
+  // use there become that site's extra playlists, and ones nobody uses keep no site.
+  function sortPlaylistsIntoSites() {
+    if (getSetting(db, 'playlists_by_site')) return;
+    db.transaction(() => {
+      for (const site of knownSites()) {
+        for (const orientation of PLAYLIST_ORIENTATIONS) {
+          const used = db.prepare(
+            `SELECT p.id, COUNT(*) AS n FROM devices d JOIN playlists p ON p.id = d.playlist_id
+             WHERE d.claimed = 1 AND COALESCE(d.site, '') = ? AND p.site IS NULL AND p.orientation = ?
+               AND (CASE WHEN d.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END) = ?
+             GROUP BY p.id ORDER BY n DESC, p.id`
+          ).all(site, orientation, orientation);
+          used.forEach((row, i) => {
+            if (i === 0 && !db.prepare(`SELECT 1 FROM playlists WHERE site = ? AND auto = 1 AND orientation = ?`).get(site, orientation)) {
+              db.prepare(`UPDATE playlists SET site = ?, auto = 1, name = ? WHERE id = ?`).run(site, AUTO_NAMES[orientation], row.id);
+              db.prepare(`UPDATE devices SET playlist_id = NULL WHERE playlist_id = ? AND COALESCE(site, '') = ?`).run(row.id, site);
+            } else {
+              db.prepare(`UPDATE playlists SET site = ? WHERE id = ?`).run(site, row.id);
+            }
+          });
+        }
+      }
+      // A playlist on a screen of the other shape stays pinned there, as that site's extra.
+      const odd = db.prepare(
+        `SELECT DISTINCT p.id, COALESCE(d.site, '') AS site FROM devices d JOIN playlists p ON p.id = d.playlist_id
+         WHERE d.claimed = 1 AND p.site IS NULL`
+      ).all();
+      for (const row of odd) db.prepare(`UPDATE playlists SET site = ? WHERE id = ? AND site IS NULL`).run(row.site, row.id);
+      setSetting(db, 'playlists_by_site', 1);
+    })();
+  }
+
+  function playlistSummary(p) {
+    // The screens playing it: those pinned to it and, for an automatic one, every screen
+    // of that shape at the site that isn't pinned elsewhere.
+    const devices = db.prepare(
+      `SELECT id, name FROM devices WHERE claimed = 1 AND (playlist_id = @id OR (
+         @auto = 1 AND playlist_id IS NULL AND COALESCE(site, '') = @site
+         AND (CASE WHEN orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END) = @orientation))
+       ORDER BY name`
+    ).all({ id: p.id, auto: p.auto ? 1 : 0, site: p.site ?? '', orientation: p.orientation });
+    const count = db.prepare(`SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ?`).get(p.id).n;
+    return {
+      id: p.id,
+      name: p.name,
+      orientation: p.orientation,
+      version: p.version,
+      item_count: count,
+      devices,
+      site: p.site || null, // null = this server's own site, unless "unassigned" is true
+      auto: Boolean(p.auto), // the site's automatic Landscape or Portrait playlist
+      unassigned: p.site === null, // from before playlists belonged to sites, and not in use
+    };
+  }
+
+  sortPlaylistsIntoSites();
 
   function playlistDetail(p) {
     return { ...playlistSummary(p), items: playlistItems(p.id) };
@@ -681,18 +774,37 @@ function createApp({
       if (!PLAYLIST_ORIENTATIONS.includes(body.orientation)) return { error: 'orientation must be landscape or portrait' };
       out.orientation = body.orientation;
     }
+    // Which site it belongs to. Leaving it out of a new playlist means this server's own site.
+    if (body.site !== undefined || !partial) {
+      const site = body.site == null ? ownSite : String(body.site).trim();
+      if (!knownSites().includes(site)) return { error: 'Unknown site' };
+      out.site = site;
+    }
     return { fields: out };
   }
 
+  // Every playlist, a site at a time: this server's own site first, the automatic
+  // Landscape and Portrait before a site's extras, and unused older playlists last.
   app.get('/api/playlists', requireContent, (req, res) => {
-    res.json(db.prepare(`SELECT * FROM playlists ORDER BY name`).all().map(playlistSummary));
+    ensureAutoPlaylists();
+    const rows = db.prepare(
+      `SELECT * FROM playlists
+       ORDER BY site IS NULL, site = ? DESC, site COLLATE NOCASE, auto DESC, orientation, name COLLATE NOCASE`
+    ).all(ownSite);
+    res.json(rows.map(playlistSummary));
   });
 
+  // The sites playlists can belong to, for the pickers in the apps.
+  app.get('/api/sites', requireContent, (req, res) => {
+    res.json({ own_site: ownSite || null, sites: knownSites().map((s) => s || null) });
+  });
+
+  // An extra playlist for a site, besides its automatic two.
   app.post('/api/playlists', requireContent, (req, res) => {
     const { error, fields } = checkPlaylistFields(req.body || {}, { partial: false });
     if (error) return res.status(400).json({ error });
-    const result = db.prepare(`INSERT INTO playlists (name, orientation, created_at) VALUES (?, ?, ?)`)
-      .run(fields.name, fields.orientation, Date.now());
+    const result = db.prepare(`INSERT INTO playlists (name, orientation, site, auto, created_at) VALUES (?, ?, ?, 0, ?)`)
+      .run(fields.name, fields.orientation, fields.site, Date.now());
     res.status(201).json(playlistDetail(findPlaylist(result.lastInsertRowid)));
   });
 
@@ -707,8 +819,11 @@ function createApp({
     if (!p) return res.status(404).json({ error: 'Not found' });
     const { error, fields } = checkPlaylistFields(req.body || {}, { partial: true });
     if (error) return res.status(400).json({ error });
-    db.prepare(`UPDATE playlists SET name = ?, orientation = ?, version = version + 1 WHERE id = ?`)
-      .run(fields.name ?? p.name, fields.orientation ?? p.orientation, p.id);
+    if (p.auto && Object.keys(fields).some((k) => fields[k] !== p[k])) {
+      return res.status(409).json({ error: 'This is a site\'s automatic playlist: its name, shape and site can\'t be changed. Change what\'s in it instead.' });
+    }
+    db.prepare(`UPDATE playlists SET name = ?, orientation = ?, site = ?, version = version + 1 WHERE id = ?`)
+      .run(fields.name ?? p.name, fields.orientation ?? p.orientation, fields.site ?? p.site, p.id);
     res.json(playlistDetail(findPlaylist(p.id)));
   });
 
@@ -752,6 +867,9 @@ function createApp({
   app.delete('/api/playlists/:id', requireContent, (req, res) => {
     const p = findPlaylist(req.params.id);
     if (!p) return res.status(404).json({ error: 'Not found' });
+    if (p.auto) {
+      return res.status(409).json({ error: 'This is a site\'s automatic playlist and can\'t be deleted. Take its files out to leave it empty.' });
+    }
     const users = db.prepare(`SELECT name FROM devices WHERE playlist_id = ? AND claimed = 1`).all(p.id);
     if (users.length) {
       return res.status(409).json({ error: `Still playing on ${users.map((d) => d.name).join(', ')}. Move those players to another playlist first.` });
@@ -766,15 +884,22 @@ function createApp({
     const current = d.current_media_id
       ? db.prepare(`SELECT filename FROM media WHERE id = ?`).get(d.current_media_id)
       : null;
-    const playlist = d.playlist_id ? findPlaylist(d.playlist_id) : null;
+    const playlist = playlistFor(d);
     const loc = locationOf(d);
     return {
       id: d.id,
       name: d.name,
       location: d.location,
       orientation: d.orientation,
+      // A landscape screen mounted upside down. Sent beside "orientation" so that apps
+      // from before this existed keep working: they just don't know about the flip.
+      flipped: Boolean(d.flipped) && d.orientation === 'landscape',
+      can_flip: versionAtLeast(d.app_version, '0.5.0'), // older TV apps can't turn the picture upside down
+      // null = "Automatic": the screen follows its site's Landscape or Portrait playlist.
       playlist_id: d.playlist_id,
-      playlist_name: playlist ? playlist.name : null,
+      playlist_name: playlist.name,
+      playlist_auto: !d.playlist_id,
+      playing_playlist_id: playlist.id,
       online: d.last_seen != null && Date.now() - d.last_seen < ONLINE_WINDOW_MS,
       last_seen: d.last_seen,
       current_media_id: d.current_media_id,
@@ -809,6 +934,11 @@ function createApp({
         return { error: `orientation must be one of: ${DEVICE_ORIENTATIONS.join(', ')}` };
       }
       out.orientation = body.orientation;
+      if (body.orientation !== 'landscape') out.flipped = 0; // only a landscape screen can be upside down
+    }
+    if (body.flipped !== undefined) {
+      if (typeof body.flipped !== 'boolean') return { error: 'flipped must be true or false' };
+      out.flipped = body.flipped && (out.orientation ?? 'landscape') === 'landscape' ? 1 : 0;
     }
     if (body.playlist_id !== undefined) {
       if (body.playlist_id !== null && !findPlaylist(body.playlist_id)) return { error: 'Unknown playlist' };
@@ -874,6 +1004,7 @@ function createApp({
     if (!device) return res.status(404).json({ error: 'Not found' });
     const { error, fields } = checkDeviceFields(req.body || {}, { partial: true });
     if (error) return res.status(400).json({ error });
+    if (fields.flipped && (fields.orientation ?? device.orientation) !== 'landscape') fields.flipped = 0;
     applyDeviceFields(device.id, fields);
     ensureLocation(device.site, fields.location);
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
@@ -1253,7 +1384,7 @@ function createApp({
   }
 
   function playerPlaylist(device) {
-    const playlist = device.playlist_id ? findPlaylist(device.playlist_id) : null;
+    const playlist = device.claimed ? playlistFor(device) : null;
     const now = Date.now();
     const all = playlist ? playlistItems(playlist.id) : [];
     // When an entry may play: both the file's dates and the playlist entry's dates allow it.
@@ -1289,6 +1420,7 @@ function createApp({
         (ahead.length ? `~${ids(ahead)}` : ''),
       name: device.name,
       orientation: device.orientation,
+      flipped: Boolean(device.flipped) && device.orientation === 'landscape',
       playlist_name: playlist ? playlist.name : null,
       items: playing,
       upcoming: ahead,

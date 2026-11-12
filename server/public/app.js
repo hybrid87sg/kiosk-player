@@ -135,12 +135,33 @@ const MOUNTINGS = {
   landscape: { label: 'Landscape', shape: 'landscape' },
   portrait_right: { label: 'Portrait, turned right', shape: 'portrait' },
   portrait_left: { label: 'Portrait, turned left', shape: 'portrait' },
+  landscape_flipped: { label: 'Landscape, upside down', shape: 'landscape' },
 };
+// The server keeps "upside down" as a flag beside the orientation, so older apps still work.
+const mountingOf = (d) => (d && d.flipped && d.orientation === 'landscape' ? 'landscape_flipped' : (d && d.orientation) || 'landscape');
+const mountingBody = (key) => (key === 'landscape_flipped' ? { orientation: 'landscape', flipped: true } : { orientation: key, flipped: false });
+// Playlists belong to a site. The server's own site has no name of its own unless one was set.
+const siteLabel = (site, ownSite) => site || ownSite || 'This site';
+const playlistLabel = (p) => (p.auto ? `${p.name} (automatic)` : p.name);
+// Where "back" goes from a playlist: people who manage screens see playlists under Locations.
+const playlistsHome = () => (me && me.role === 'content_uploader' ? '#/playlists' : '#/locations');
 const ROLES = {
   superadmin: { label: 'Spongebob', desc: 'Everything, including people and settings' },
   system_manager: { label: 'Patrick', desc: 'Screens and content' },
   content_uploader: { label: 'Squidward', desc: 'Files and playlists only' },
 };
+
+/** A small screen with a mark on the edge where the top of the picture is. */
+function mountIcon(key, size = 24) {
+  const portrait = MOUNTINGS[key].shape === 'portrait';
+  const w = portrait ? Math.round(size * 0.62) : size;
+  const h = portrait ? size : Math.round(size * 0.62);
+  const edge = { landscape: 'top', landscape_flipped: 'bottom', portrait_right: 'right', portrait_left: 'left' }[key];
+  return el('span', {
+    class: 'mount-icon', 'aria-hidden': 'true',
+    style: `width:${w}px;height:${h}px;border-${edge}-width:5px`,
+  });
+}
 
 /** A small outlined rectangle in landscape or portrait shape. */
 function shapeIcon(shape, size = 18) {
@@ -341,7 +362,8 @@ async function startCodeSignIn(area) {
 function tabsFor(role) {
   const tabs = [];
   if (role !== 'content_uploader') tabs.push(['screens', 'Screens'], ['locations', 'Locations']);
-  tabs.push(['library', 'Library'], ['playlists', 'Playlists']);
+  tabs.push(['library', 'Library']);
+  if (role === 'content_uploader') tabs.push(['playlists', 'Playlists']); // others find playlists under Locations
   if (role === 'superadmin') tabs.push(['users', 'Users'], ['settings', 'Settings']);
   return tabs;
 }
@@ -415,10 +437,12 @@ function route() {
   if (!me) return;
   clearInterval(pageTimer);
   const [, section, id] = (location.hash || '').split('/');
-  const allowed = tabsFor(me.role).map(([key]) => key);
+  const allowed = [...tabsFor(me.role).map(([key]) => key), 'playlists'];
   const current = allowed.includes(section) ? section : allowed[0];
+  // A playlist is opened from Locations, so that stays lit in the menu while it is open.
+  const lit = current === 'playlists' && me.role !== 'content_uploader' ? 'locations' : current;
   document.querySelectorAll('.nav a[data-tab]').forEach((a) => {
-    if (a.dataset.tab === current && !(current === 'locations' && id)) a.setAttribute('aria-current', 'page');
+    if (a.dataset.tab === lit && !(current === 'locations' && id)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
   markCurrentNav();
@@ -493,7 +517,7 @@ function waitingCard(waiting, manySites, playlists, devices, redraw) {
 }
 
 function screenCard(d, playlists, devices, redraw) {
-  const mount = MOUNTINGS[d.orientation] || MOUNTINGS.landscape;
+  const mount = MOUNTINGS[mountingOf(d)] || MOUNTINGS.landscape;
   return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px' },
     el('div', { class: 'row', style: 'justify-content:space-between' },
       el('strong', { style: 'font-size:17px' }, d.name || 'Unnamed'),
@@ -501,7 +525,7 @@ function screenCard(d, playlists, devices, redraw) {
         ? el('span', { class: 'chip offline', title: d.hours_summary }, icon('clock', 12), d.after_hours === 'standby' ? 'After hours · standby' : 'After hours · black screen')
         : el('span', { class: `chip ${d.online ? 'online' : 'offline'}` }, el('span', { class: 'dot' }),
           d.online ? 'Online' : `Offline · ${timeAgo(d.last_seen)}`)),
-    el('div', { class: 'row meta' }, shapeIcon(mount.shape), `${mount.label} · ${d.playlist_name || 'No playlist'}`),
+    el('div', { class: 'row meta' }, shapeIcon(mount.shape), `${mount.label} · ${d.playlist_name ? `${d.playlist_name}${d.playlist_auto ? ' (automatic)' : ''}` : 'No playlist'}`),
     el('div', {}, d.current_filename ? `Now playing: ${d.current_filename}` : 'Waiting for content'),
     d.playback_error ? el('div', { class: 'error' }, d.playback_error) : null,
     d.decoders && d.decoders.display_width ? el('div', { class: 'meta' },
@@ -565,31 +589,44 @@ async function screenForm({ code, device, site = null, playlists, devices, onDon
       newLocation.hidden = location.value !== '__new';
       if (!newLocation.hidden) newLocation.focus();
     });
-    let mounting = device?.orientation || 'landscape';
-    let playlistId = device?.playlist_id ?? playlists[0]?.id ?? null;
+    let mounting = mountingOf(device);
+    // null means Automatic: the screen follows its site's Landscape or Portrait playlist.
+    let playlistId = device?.playlist_id ?? null;
+    const siteName = siteLabel(site, data.own_site);
+    // A screen can instead be pinned to one of its site's extra playlists.
+    const extras = playlists.filter((p) => !p.auto && ((!p.unassigned && siteKey(p.site) === siteKey(site)) || p.id === playlistId));
     const warning = el('div', { class: 'note', hidden: true });
     const updateWarning = () => {
       const chosen = playlists.find((p) => p.id === playlistId);
       const screenShape = MOUNTINGS[mounting].shape;
       warning.hidden = !chosen || chosen.orientation === screenShape;
       if (chosen) warning.textContent = `${chosen.name} is made for ${chosen.orientation} screens, but this screen is ${screenShape}. Its files will play with black bars.`;
+      autoMeta.textContent = `Plays ${siteName}’s ${SHAPES[screenShape]} playlist. If you turn the screen, it switches by itself.`;
     };
-    const mountChoices = el('div', { class: 'choices' }, Object.entries(MOUNTINGS).map(([key, m]) =>
+    // Turning the picture upside down needs Kiosk Player 0.5.0 or newer on the TV.
+    const cantFlip = Boolean(device) && device.can_flip === false;
+    const mountChoices = el('div', { class: 'choices' }, Object.entries(MOUNTINGS).map(([key, m]) => {
+      const off = key === 'landscape_flipped' && cantFlip && mounting !== key;
+      return el('label', { class: `choice${off ? ' disabled' : ''}` },
+        el('input', { type: 'radio', name: 'mounting', value: key, checked: mounting === key, disabled: off, onchange: () => { mounting = key; updateWarning(); } }),
+        el('span', {}, mountIcon(key, 26), ' ', m.label,
+          off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.5.0 or newer; this TV has ${device.app_version || 'an older version'}.`)] : null));
+    }));
+    const autoMeta = el('span', { class: 'meta' });
+    const playlistChoices = el('div', { class: 'choices' },
       el('label', { class: 'choice' },
-        el('input', { type: 'radio', name: 'mounting', value: key, checked: mounting === key, onchange: () => { mounting = key; updateWarning(); } }),
-        el('span', {}, shapeIcon(m.shape, 22), ' ', m.label))));
-    const playlistChoices = playlists.length
-      ? el('div', { class: 'choices' }, playlists.map((p) =>
+        el('input', { type: 'radio', name: 'playlist', value: '', checked: playlistId === null, onchange: () => { playlistId = null; updateWarning(); } }),
+        el('span', {}, el('strong', {}, 'Automatic'), el('br'), autoMeta)),
+      extras.map((p) =>
         el('label', { class: 'choice' },
           el('input', { type: 'radio', name: 'playlist', value: p.id, checked: playlistId === p.id, onchange: () => { playlistId = p.id; updateWarning(); } }),
-          el('span', {}, el('strong', {}, p.name), el('br'), el('span', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} items`)))))
-      : el('p', { class: 'meta' }, 'No playlists yet. Make one in Playlists; the screen waits for content until then.');
+          el('span', {}, el('strong', {}, p.name), el('br'), el('span', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} item${p.item_count === 1 ? '' : 's'}`)))));
     updateWarning();
     const form = el('form', {
       method: 'dialog',
       onsubmit: async (e) => {
         e.preventDefault();
-        const body = { name: name.value.trim(), location: location.value || null, orientation: mounting, playlist_id: playlistId };
+        const body = { name: name.value.trim(), location: location.value || null, ...mountingBody(mounting), playlist_id: playlistId };
         if (!body.name) return toast('Give the screen a name');
         if (body.location === '__new') {
           const created = await attempt(() => api('POST', 'api/locations', { site: site || null, name: newLocation.value.trim() }));
@@ -610,8 +647,9 @@ async function screenForm({ code, device, site = null, playlists, devices, onDon
     el('label', { class: 'field' }, 'Name', name),
     el('label', { class: 'field' }, 'Location', location, newLocation),
     el('div', { class: 'field' }, el('strong', {}, 'How the screen is mounted'), mountChoices,
-      el('span', { class: 'meta' }, 'Kiosk Player turns the picture to match, because TV boxes always send a landscape picture.')),
-    el('div', { class: 'field' }, el('strong', {}, 'Playlist'), playlistChoices),
+      el('span', { class: 'meta' }, 'Pick the way the top of the picture should point. Kiosk Player turns the picture to match, because TV boxes always send a landscape picture.')),
+    el('div', { class: 'field' }, el('strong', {}, 'Playlist'), playlistChoices,
+      extras.length ? null : el('span', { class: 'meta' }, `To show something different on one screen, add an extra playlist for ${siteName} under Locations.`)),
     warning,
     el('div', { class: 'dialog-actions' },
       el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
@@ -626,28 +664,68 @@ const DAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu
 
 async function pageLocations(page) {
   async function draw() {
-    const data = await api('GET', 'api/locations');
-    const manySites = new Set(data.locations.map((l) => l.site || '')).size > 1 || data.sites.length > 1;
-    const bySite = new Map();
+    const [data, playlists] = await Promise.all([api('GET', 'api/locations'), api('GET', 'api/playlists')]);
+    const bySite = new Map(data.sites.map((s) => [s || '', []]));
     for (const l of data.locations) bySite.set(l.site || '', [...(bySite.get(l.site || '') || []), l]);
     fill(page,
       el('div', { class: 'page-head' },
         el('div', {}, el('h1', {}, 'Locations'),
-          el('p', { class: 'sub' }, 'Where your screens are. Each location has its own working hours; outside them its screens go dark.')),
+          el('p', { class: 'sub' }, 'Each site has its own playlists, and the areas where its screens are. Each area has its own working hours; outside them its screens go dark.')),
         el('button', { class: 'btn primary', onclick: () => addLocationDialog(data, (l) => { location.hash = `#/locations/${l.id}`; }) }, '+ Add location')),
-      data.locations.length === 0
-        ? el('div', { class: 'empty' }, 'No locations yet. Add one, e.g. “Main lobby”, then put screens in it.')
-        : [...bySite.entries()].map(([site, list]) => [
-          manySites ? el('div', { class: 'section-label' }, site || 'This site') : null,
-          el('div', { class: 'list' }, list.map((l) => el('a', { class: 'list-row link-row', href: `#/locations/${l.id}` },
+      [...bySite.entries()].map(([site, list]) => el('section', { class: 'site-block' },
+        el('h2', { class: 'site-name' }, siteLabel(site, data.own_site)),
+        sitePlaylists(site || null, data.own_site, playlists, draw),
+        el('div', { class: 'section-label' }, 'Areas and screens'),
+        list.length === 0
+          ? el('div', { class: 'empty' }, 'No areas here yet. Add a location, e.g. “Main lobby”, then put screens in it.')
+          : el('div', { class: 'list' }, list.map((l) => el('a', { class: 'list-row link-row', href: `#/locations/${l.id}` },
             el('span', { class: 'loc-mark' }, icon('locations', 22)),
             el('div', { class: 'grow' }, el('div', { class: 'name' }, l.name),
               el('div', { class: 'meta row nowrap', style: 'gap:6px' }, icon('clock', 14), el('span', {}, l.hours_summary))),
-            el('span', { class: 'chip primary' }, `${l.screens.length} screen${l.screens.length === 1 ? '' : 's'}`)))),
-        ]),
+            el('span', { class: 'chip primary' }, `${l.screens.length} screen${l.screens.length === 1 ? '' : 's'}`)))))),
+      olderPlaylists(playlists, data.sites, data.own_site, draw),
     );
   }
   await attempt(draw);
+}
+
+/** One playlist as a card that opens it. */
+function playlistCard(p) {
+  return el('a', {
+    class: 'card', href: `#/playlists/${p.id}`, style: 'text-decoration:none;color:inherit;display:flex;gap:14px;align-items:center',
+  },
+  el('span', { style: 'color:var(--primary);width:36px;display:grid;place-items:center' }, shapeIcon(p.orientation, 30)),
+  el('div', { class: 'grow' },
+    el('div', { class: 'name', style: 'font-size:17px' }, p.name, p.auto ? el('span', { class: 'chip', style: 'margin-left:8px' }, 'Automatic') : null),
+    el('div', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} item${p.item_count === 1 ? '' : 's'}`),
+    el('div', { class: 'meta' }, p.devices.length ? `Plays on ${p.devices.map((d) => d.name).join(', ')}` : 'Not playing on any screen yet')));
+}
+
+/** A site's playlists: its automatic Landscape and Portrait, then any extras, and a button to add one. */
+function sitePlaylists(site, ownSite, playlists, redraw) {
+  const key = (s) => s || ownSite || '';
+  const mine = playlists.filter((p) => !p.unassigned && key(p.site) === key(site));
+  const name = siteLabel(site, ownSite);
+  return [
+    el('div', { class: 'section-label row group-head' }, 'Playlists',
+      el('button', {
+        class: 'btn text small', type: 'button',
+        onclick: () => playlistForm({ site, siteName: name, onSaved: (p) => { location.hash = `#/playlists/${p.id}`; } }),
+      }, '+ Extra playlist')),
+    el('p', { class: 'meta', style: 'margin:0 4px 10px' },
+      `Screens at ${name} play Landscape or Portrait by themselves, whichever fits how they’re mounted. An extra playlist is for a screen that should show something different.`),
+    el('div', { class: 'grid' }, mine.map(playlistCard)),
+  ];
+}
+
+/** Playlists from before playlists belonged to sites that no screen was using. */
+function olderPlaylists(playlists, sites, ownSite, redraw) {
+  const old = playlists.filter((p) => p.unassigned);
+  if (!old.length) return null;
+  return el('section', { class: 'site-block' },
+    el('h2', { class: 'site-name' }, 'Older playlists'),
+    el('p', { class: 'meta', style: 'margin:0 4px 10px' }, 'These were made before playlists belonged to a site, and no screen plays them. Open one to move it to a site or delete it.'),
+    el('div', { class: 'grid' }, old.map(playlistCard)));
 }
 
 function addLocationDialog(data, onAdded) {
@@ -988,27 +1066,30 @@ async function pageLibrary(page) {
 // ---------- Playlists ----------
 
 async function pagePlaylists(page) {
-  const playlists = await attempt(() => api('GET', 'api/playlists'));
-  if (!playlists) return;
-  fill(page, 
-    el('div', { class: 'page-head' },
-      el('div', {}, el('h1', {}, 'Playlists'), el('p', { class: 'sub' }, 'Each screen plays one playlist. Make one per screen shape or location.')),
-      el('button', { class: 'btn primary', onclick: () => playlistForm({ onSaved: (p) => { location.hash = `#/playlists/${p.id}`; } }) }, '+ New playlist')),
-    playlists.length === 0 ? el('div', { class: 'empty' }, 'No playlists yet.') : null,
-    el('div', { class: 'grid' }, playlists.map((p) => el('a', {
-      class: 'card', href: `#/playlists/${p.id}`, style: 'text-decoration:none;color:inherit;display:flex;gap:14px;align-items:center',
-    },
-    el('span', { style: 'color:var(--primary);width:36px;display:grid;place-items:center' }, shapeIcon(p.orientation, 30)),
-    el('div', { class: 'grow' },
-      el('div', { class: 'name', style: 'font-size:17px' }, p.name),
-      el('div', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} item${p.item_count === 1 ? '' : 's'}`),
-      el('div', { class: 'meta' }, p.devices.length ? `Plays on ${p.devices.map((d) => d.name).join(', ')}` : 'Not playing on any screen yet'))))),
-  );
+  async function draw() {
+    const [playlists, where] = await Promise.all([api('GET', 'api/playlists'), api('GET', 'api/sites')]);
+    fill(page,
+      el('div', { class: 'page-head' },
+        el('div', {}, el('h1', {}, 'Playlists'), el('p', { class: 'sub' }, 'Each site has a Landscape and a Portrait playlist that its screens play by themselves.'))),
+      where.sites.map((site) => el('section', { class: 'site-block' },
+        el('h2', { class: 'site-name' }, siteLabel(site, where.own_site)),
+        sitePlaylists(site, where.own_site, playlists, draw))),
+      olderPlaylists(playlists, where.sites, where.own_site, draw),
+    );
+  }
+  await attempt(draw);
 }
 
 /** New playlist, or name/shape/delete for an existing one. */
-function playlistForm({ playlist, onSaved, onDeleted }) {
+async function playlistForm({ playlist, site = null, siteName = null, onSaved, onDeleted }) {
+  // An older playlist (no site yet) can be moved to a site here.
+  const where = playlist?.unassigned ? await attempt(() => api('GET', 'api/sites')) : null;
+  if (playlist?.unassigned && !where) return;
   openDialog((dialog) => {
+    const moveTo = where
+      ? el('select', {}, el('option', { value: '__none' }, 'Leave it without a site'),
+        where.sites.map((s) => el('option', { value: s || '' }, siteLabel(s, where.own_site))))
+      : null;
     const name = el('input', { type: 'text', value: playlist?.name || '', placeholder: 'e.g. Menu boards' });
     let shape = playlist?.orientation || 'landscape';
     const problem = el('div', { class: 'error' });
@@ -1018,6 +1099,8 @@ function playlistForm({ playlist, onSaved, onDeleted }) {
         e.preventDefault();
         if (!name.value.trim()) return toast('Give the playlist a name');
         const body = { name: name.value.trim(), orientation: shape };
+        if (!playlist) body.site = site;
+        if (moveTo && moveTo.value !== '__none') body.site = moveTo.value || null;
         const saved = await attempt(() => (playlist ? api('PATCH', `api/playlists/${playlist.id}`, body) : api('POST', 'api/playlists', body)));
         if (!saved) return;
         dialog.close();
@@ -1025,8 +1108,10 @@ function playlistForm({ playlist, onSaved, onDeleted }) {
         onSaved?.(saved);
       },
     },
-    el('h2', {}, playlist ? 'Playlist settings' : 'New playlist'),
+    el('h2', {}, playlist ? 'Playlist settings' : `Extra playlist for ${siteName || 'this site'}`),
+    playlist ? null : el('p', { class: 'meta', style: 'margin:0' }, 'Screens don’t play an extra playlist by themselves. After making it, edit a screen and choose it there.'),
     el('label', { class: 'field' }, 'Playlist name', name),
+    moveTo ? el('label', { class: 'field' }, 'Site', moveTo) : null,
     el('div', { class: 'field' }, el('strong', {}, 'Made for'),
       el('div', { class: 'choices' }, Object.entries(SHAPES).map(([key, label]) => el('label', { class: 'choice' },
         el('input', { type: 'radio', name: 'shape', checked: shape === key, onchange: () => { shape = key; } }),
@@ -1051,6 +1136,7 @@ function playlistForm({ playlist, onSaved, onDeleted }) {
 
 async function pagePlaylist(page, id) {
   let detail;
+  let ownSiteName = null; // this server's own site, for the heading
   let library;
   let items = [];
   let dragFrom = null;
@@ -1085,15 +1171,17 @@ async function pagePlaylist(page, id) {
     fill(page, 
       el('div', { class: 'page-head' },
         el('div', {},
-          el('a', { href: '#/playlists', class: 'meta' }, '← Playlists'),
-          el('h1', {}, detail.name),
+          el('a', { href: playlistsHome(), class: 'meta' }, me.role === 'content_uploader' ? '← Playlists' : '← Locations'),
+          el('h1', {}, detail.unassigned ? detail.name : `${siteLabel(detail.site, ownSiteName)} · ${detail.name}`),
           el('p', { class: 'sub row' },
             el('span', { class: 'chip primary' }, shapeIcon(detail.orientation, 14), `${SHAPES[detail.orientation]} screens`),
+            detail.auto ? el('span', { class: 'chip' }, 'Automatic') : null,
             `${items.length} item${items.length === 1 ? '' : 's'} · loops forever · `,
             detail.devices.length ? `Plays on ${detail.devices.map((d) => d.name).join(', ')}` : 'Not playing on any screen yet')),
         el('div', { class: 'row' },
           el('button', { class: 'btn', onclick: addFromLibrary }, '+ Add from library'),
-          el('button', { class: 'btn text', onclick: () => playlistForm({ playlist: detail, onSaved: () => load(), onDeleted: () => { location.hash = '#/playlists'; } }) }, 'Playlist settings'))),
+          // The automatic two have nothing to set: their name and shape are fixed, and they can't be deleted.
+          detail.auto ? null : el('button', { class: 'btn text', onclick: () => playlistForm({ playlist: detail, onSaved: () => load(), onDeleted: () => { location.hash = playlistsHome(); } }) }, 'Playlist settings'))),
       items.length === 0
         ? el('div', { class: 'empty' }, 'This playlist is empty. Its screens show “Waiting for content” until you add something and save.')
         : el('div', { class: 'list' }, items.map((it, i) => {
@@ -1199,7 +1287,9 @@ async function pagePlaylist(page, id) {
   }
 
   async function load() {
-    [detail, library] = await Promise.all([api('GET', `api/playlists/${id}`), api('GET', 'api/media')]);
+    let where;
+    [detail, library, where] = await Promise.all([api('GET', `api/playlists/${id}`), api('GET', 'api/media'), api('GET', 'api/sites')]);
+    ownSiteName = where.own_site;
     items = detail.items.map((x) => ({ ...x, schedule_enabled: x.start_at != null || x.end_at != null }));
     draw();
   }

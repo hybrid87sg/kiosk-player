@@ -246,3 +246,11 @@ dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column
   padding: 10px 14px; background: var(--input-bg); color: var(--input-ink); color-scheme: light;
 }
 .key-pane input[type=file] { font-weight: 400; }
+
+/* Locations page: one block per site, with its playlists and its areas. */
+.site-block { margin-top: 28px; }
+.site-block:first-of-type { margin-top: 8px; }
+.site-name { font-size: 20px; margin: 0 4px 4px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+/* A little screen; the thick edge is where the top of the picture points. */
+.mount-icon { display: inline-block; vertical-align: middle; box-sizing: border-box; border: 2px solid currentColor; border-radius: 3px; }
+.choice.disabled { opacity: 0.55; cursor: not-allowed; }
