@@ -20,21 +20,44 @@ permissions:
   packages: write # needed to upload the ready-built add-on
 
 jobs:
-  android:
-    uses: ./.github/workflows/android.yml
+  # Tests the add-on and publishes it ready-built (ghcr.io) for Home Assistant.
   addon:
     uses: ./.github/workflows/addon.yml
     with:
       publish: true
 
+  # Builds the two apps and the add-on zip here and attaches them straight to
+  # the release. Nothing passes through GitHub's "artifact" storage on the way,
+  # so a full artifact store can't stop a release.
   publish:
-    needs: [android, addon]
+    needs: [addon]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
         with:
-          path: files
-          merge-multiple: true
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test the shared code
+        working-directory: android
+        run: ./gradlew :core:test :admin:testDebugUnitTest
+
+      - name: Build the APKs
+        working-directory: android
+        run: ./gradlew :admin:assembleDebug :player:assembleDebug
+
+      - name: Put the release files together
+        run: |
+          mkdir -p files
+          cp android/admin/build/outputs/apk/debug/admin-debug.apk files/KioskAdmin-for-phone.apk
+          cp android/player/build/outputs/apk/debug/player-debug.apk files/KioskPlayer-for-TV.apk
+          bash homeassistant/package-addon.sh
+          cp homeassistant/dist/kiosk_server-addon.zip files/
 
       - uses: softprops/action-gh-release@v2
         with:
