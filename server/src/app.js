@@ -8,10 +8,11 @@
 //   /api/playlists...  named playlists (landscape or portrait) and their items
 //   /api/devices...    pair (QR code or PIN), set up, remove TV players
 //   /api/player/...    TV players: register, check pairing, get playlist, heartbeat
-//   /media/:id         download a file (streamed from Drive)
+//   /media/:id         download a file (streamed from Drive, or a playback copy)
 
 const express = require('express');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -20,6 +21,9 @@ const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, set
 const auth = require('./auth');
 const { MediaCache } = require('./media-cache');
 const { checkHours, summarizeHours, isOpenAt } = require('./hours');
+const { createTranscoder } = require('./transcode');
+const { LOCAL_PANEL } = require('./notify');
+const { chooseRendition, playbackWarning, normalizeDecoderCaps, PROFILE_IDS } = require('./renditions');
 
 // File types the player can show, by MIME type and by file extension.
 const TYPE_BY_MIME = { 'video/mp4': 'video', 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image' };
@@ -74,6 +78,8 @@ function createApp({
   siteName = null, // this server's own site, e.g. "Head office"; TVs at other sites come through relays
   homeAssistant = null, // notify.js, when running as a Home Assistant add-on
   monitorIntervalMs = 60 * 1000, // how often to look for offline screens (0 = never; tests call checkScreens)
+  // Playback copies. Omit it and copies stay off (tests). The real server turns them on.
+  transcode = null,
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
@@ -106,6 +112,72 @@ function createApp({
   const pruneCache = () => {
     if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media WHERE removed_at IS NULL`).all());
   };
+  const transcodeOptions = transcode && typeof transcode === 'object' ? transcode : {};
+  const renditionDir = transcodeOptions.dir || path.join(dataDir, 'renditions');
+
+  // A copy of the original for ffmpeg to read. The Drive file and the cache file are not written.
+  function freeBytes(dir) {
+    try {
+      const stats = fs.statfsSync(dir);
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  }
+
+  async function fetchOriginal(media) {
+    const cache = cacheOn() ? cacheStore : null;
+    if (cache && cache.has(media)) return { path: cache.pathFor(media), temporary: false };
+    fs.mkdirSync(renditionDir, { recursive: true });
+    if (freeBytes(renditionDir) < media.size + 64 * 1024 * 1024) {
+      throw new Error('Not enough free space to make a playback copy');
+    }
+    const dest = path.join(renditionDir, `.src-${media.id}-${media.md5}${path.extname(media.filename).toLowerCase() || '.bin'}`);
+    const download = await google.downloadStream(media.drive_file_id);
+    const hash = crypto.createHash('md5');
+    const timer = setTimeout(() => download.stream.destroy(new Error('timed out reading the original')), 10 * 60 * 1000);
+    try {
+      await pipeline(download.stream, new Transform({
+        transform(chunk, encoding, callback) {
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+      }), fs.createWriteStream(dest));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (hash.digest('hex') !== media.md5) {
+      fs.rmSync(dest, { force: true });
+      throw new Error('Downloaded file did not match its fingerprint');
+    }
+    // Keep the download in the local cache so the TVs don't fetch it from Drive again.
+    if (cache) {
+      const cached = cache.pathFor(media);
+      fs.renameSync(dest, cached);
+      return { path: cached, temporary: false };
+    }
+    return { path: dest, temporary: true };
+  }
+
+  const transcoder = createTranscoder({
+    db,
+    dir: renditionDir,
+    downloadOriginal: fetchOriginal,
+    enabledDefault: Boolean(transcodeOptions.enabled),
+    hevc4kDefault: Boolean(transcodeOptions.hevc4k),
+    inline: Boolean(transcodeOptions.inline),
+    probe: transcodeOptions.probe || null,
+    runFfmpeg: transcodeOptions.run || null,
+    log,
+    getSetting: (key) => getSetting(db, key),
+    threads: transcodeOptions.threads,
+    timeoutMs: transcodeOptions.timeoutMs,
+    backlogDelayMs: transcodeOptions.backlogDelayMs,
+    backlogGapMs: transcodeOptions.backlogGapMs,
+    retryDelayMs: transcodeOptions.retryDelayMs,
+    maxAttempts: transcodeOptions.maxAttempts,
+  });
+  transcoder.resume();
   // A Drive folder chosen on the web Settings page wins over the start-up setting.
   const savedFolder = getSetting(db, 'drive_folder_id');
   if (savedFolder && google.setFolderId) google.setFolderId(savedFolder);
@@ -270,6 +342,7 @@ function createApp({
         db.prepare(`UPDATE media SET removed_at = ?, removed_reason = ? WHERE id = ?`).run(Date.now(), reason, id);
       }
     })();
+    for (const id of ids) transcoder.forget(id); // its playback copies go too; made again if restored
     pruneCache();
   }
 
@@ -313,7 +386,11 @@ function createApp({
       // The content changed, so players showing it must download it again.
       if (existing.md5 !== file.md5Checksum) bumpPlaylistVersions(db, playlistsUsingMedia(db, existing.id));
     }
-    return db.prepare(`SELECT ${mediaColumns} FROM media WHERE drive_file_id = ?`).get(file.id);
+    const row = db.prepare(`SELECT ${mediaColumns} FROM media WHERE drive_file_id = ?`).get(file.id);
+    // Expired and removed files stay remembered (so the sync doesn't bring them back) but get no copies.
+    const removed = row && db.prepare(`SELECT removed_at FROM media WHERE id = ?`).get(row.id).removed_at;
+    if (row && row.type === 'video' && !removed) transcoder.schedule(row);
+    return row;
   }
 
   // Makes our catalogue match the Drive folder: new files are added to the
@@ -325,25 +402,71 @@ function createApp({
       syncInFlight = (async () => {
         const files = await google.listFolder();
         const seen = new Set();
+        const removed = [];
         db.transaction(() => {
           for (const file of files) if (upsertMedia(file)) seen.add(file.id);
           for (const row of db.prepare(`SELECT id, drive_file_id FROM media`).all()) {
             if (seen.has(row.drive_file_id)) continue;
+            transcoder.forget(row.id);
             bumpPlaylistVersions(db, playlistsUsingMedia(db, row.id));
+            removed.push(row.id);
             db.prepare(`DELETE FROM media WHERE id = ?`).run(row.id);
           }
         })();
+        for (const id of removed) transcoder.forget(id);
         lastSyncAt = Date.now();
         pruneCache();
+        await transcoder.idle();
       })().finally(() => (syncInFlight = null));
     }
     return syncInFlight;
   }
 
+  const mediaPublic = mediaColumns.split(',').map((name) => name.trim());
+
+  function presentMedia(row) {
+    if (!row) return null;
+    const full = db.prepare(`SELECT * FROM media WHERE id = ?`).get(row.id) || row;
+    const out = {};
+    for (const key of mediaPublic) out[key] = full[key];
+    out.playback_warning = playbackWarning(full, transcoder.list(full.id), {
+      transcodeEnabled: transcoder.requested(),
+      ffmpegAvailable: transcoder.ffmpegAvailable(),
+    });
+    return out;
+  }
+
+  function presentMany(rows) {
+    if (!rows.length) return [];
+    const ids = rows.map((row) => row.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const fullRows = db.prepare(`SELECT * FROM media WHERE id IN (${placeholders})`).all(...ids);
+    const renditionRows = db.prepare(
+      `SELECT media_id, profile, status, width, height, fps, size, md5, source_md5, error FROM renditions WHERE media_id IN (${placeholders})`
+    ).all(...ids);
+    const byId = new Map(fullRows.map((row) => [row.id, row]));
+    const grouped = new Map();
+    for (const rendition of renditionRows) {
+      const list = grouped.get(rendition.media_id) || [];
+      list.push(rendition);
+      grouped.set(rendition.media_id, list);
+    }
+    const transcodeEnabled = transcoder.requested();
+    const ffmpegAvailable = transcoder.ffmpegAvailable();
+    return ids.map((id) => {
+      const full = byId.get(id);
+      if (!full) return null;
+      const out = {};
+      for (const key of mediaPublic) out[key] = full[key];
+      out.playback_warning = playbackWarning(full, grouped.get(id) || [], { transcodeEnabled, ffmpegAvailable });
+      return out;
+    }).filter(Boolean);
+  }
+
   function libraryResponse(syncError) {
-    const items = db.prepare(`SELECT ${mediaColumns} FROM media WHERE removed_at IS NULL ORDER BY created_at DESC`).all();
+    const items = db.prepare(`SELECT id FROM media WHERE removed_at IS NULL ORDER BY created_at DESC`).all();
     const removed = db.prepare(`SELECT ${removedColumns} FROM media WHERE removed_at IS NOT NULL ORDER BY removed_at DESC`).all();
-    return { items, removed, synced_at: lastSyncAt || null, sync_error: syncError };
+    return { items: presentMany(items), removed, synced_at: lastSyncAt || null, sync_error: syncError };
   }
 
   // Lists the library. Re-reads Drive first if it's been more than a minute,
@@ -419,7 +542,8 @@ function createApp({
     }
     const saved = upsertMedia(file);
     db.prepare(`UPDATE media SET starts_at = ?, expires_at = ? WHERE id = ?`).run(schedule.startsAt, schedule.expiresAt, saved.id);
-    res.status(201).json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(saved.id));
+    await transcoder.idle();
+    res.status(201).json(presentMedia(saved));
   });
 
   // Set or clear a file's start and end dates (either or both).
@@ -435,7 +559,7 @@ function createApp({
     db.prepare(`UPDATE media SET starts_at = ?, expires_at = ? WHERE id = ?`).run(schedule.startsAt, schedule.expiresAt, media.id);
     // A changed start date can change what screens play.
     bumpPlaylistVersions(db, playlistsUsingMedia(db, media.id));
-    res.json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(media.id));
+    res.json(presentMedia(media));
   });
 
   // "Remove from Kiosk": out of the library, playlists and screens. The file
@@ -455,7 +579,8 @@ function createApp({
     if (schedule.error) return res.status(400).json({ error: schedule.error });
     db.prepare(`UPDATE media SET removed_at = NULL, removed_reason = NULL, starts_at = ?, expires_at = ? WHERE id = ?`)
       .run(schedule.startsAt, schedule.expiresAt, media.id);
-    res.json(db.prepare(`SELECT ${mediaColumns} FROM media WHERE id = ?`).get(media.id));
+    if (media.type === 'video') transcoder.schedule(media); // make its playback copies again
+    res.json(presentMedia(media));
   });
 
   // Download. Served from the local cache when there is a copy; otherwise
@@ -464,6 +589,19 @@ function createApp({
   app.get('/media/:id', auth.requireUserOrDevice(db), async (req, res) => {
     const media = db.prepare(`SELECT * FROM media WHERE id = ? AND removed_at IS NULL`).get(req.params.id);
     if (!media) return res.status(404).json({ error: 'Not found' });
+    // A playback copy, when the playlist asked for one. The original is still at /media/:id.
+    if (req.query.rendition !== undefined) {
+      const profile = String(req.query.rendition);
+      if (!PROFILE_IDS.includes(profile)) return res.status(404).json({ error: 'Unknown rendition' });
+      const rendition = transcoder.get(media.id, profile);
+      // source_md5 must be this upload. A copy of the previous file is not served.
+      if (!rendition || rendition.status !== 'ready' || rendition.source_md5 !== media.md5) {
+        return res.status(404).json({ error: 'That copy is not ready' });
+      }
+      return res.sendFile(transcoder.pathFor(media.id, profile), {
+        headers: { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' },
+      });
+    }
     const cache = cacheOn() ? cacheStore : null;
     if (cache && cache.has(media)) {
       return res.sendFile(cache.pathFor(media), { headers: { 'Content-Type': media.mime } });
@@ -481,11 +619,18 @@ function createApp({
     res.status(download.status);
     res.set({ 'Content-Type': media.mime, 'Accept-Ranges': 'bytes' });
     for (const [name, value] of Object.entries(download.headers)) if (value) res.set(name, value);
-    // Only a whole-file download can become the cached copy.
+    // Only a whole-file download can become the cached copy. Copy each chunk
+    // as it passes, instead of listening for "data" beside the pipeline —
+    // those two readers can drop bytes when the machine is busy.
     const recorder = cache && download.status === 200 ? cache.startRecording(media) : null;
-    if (recorder) download.stream.on('data', (chunk) => recorder.write(chunk));
+    const pass = new Transform({
+      transform(chunk, encoding, callback) {
+        if (recorder) recorder.write(chunk);
+        callback(null, chunk);
+      },
+    });
     try {
-      await pipeline(download.stream, res);
+      await pipeline(download.stream, pass, res);
       if (recorder) await recorder.finish();
     } catch (err) {
       // Usually the TV disconnected mid-download; it will resume later.
@@ -636,6 +781,8 @@ function createApp({
       // false outside the location's working hours (the TV is dark then).
       open_now: isOpenAt(hoursOf(loc), Date.now(), d.time_zone || serverTimeZone),
       after_hours: d.after_hours || 'black',
+      playback_error: d.playback_error || null,
+      decoders: deviceCaps(d),
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
@@ -824,13 +971,14 @@ function createApp({
   // ---------- Notifications through Home Assistant ----------
 
   const notifyTargets = () => getSetting(db, 'notify_targets') || [];
-  const NOTIFY_DATA = { url: '/hassio/ingress/local_kiosk_server' }; // tapping opens Kiosk Signage in the app
 
   async function notify(title, message, tag) {
     const targets = notifyTargets();
     if (!homeAssistant || !targets.length) return false;
+    // Tapping the notification opens Kiosk Signage in the Home Assistant app.
+    const url = homeAssistant.panelPath ? await homeAssistant.panelPath() : LOCAL_PANEL;
     const results = await Promise.allSettled(
-      targets.map((t) => homeAssistant.send(t, { title, message, data: { ...NOTIFY_DATA, tag } })),
+      targets.map((t) => homeAssistant.send(t, { title, message, data: { url, tag } })),
     );
     results.filter((r) => r.status === 'rejected').forEach((r) => log(`Notification failed: ${r.reason.message}`));
     return results.some((r) => r.status === 'fulfilled');
@@ -918,12 +1066,18 @@ function createApp({
       sign_in: { phone_app: Boolean(googleWebClientId), web_code: Boolean(google.deviceSignInAvailable) },
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
       notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
+      transcode: {
+        ffmpeg: transcoder.ffmpegAvailable(),
+        enabled: transcoder.requested(),
+        hevc_4k: transcoder.hevc4k(),
+        active: transcoder.enabled(),
+      },
     };
   }
 
   app.get('/api/settings', requireUsers, (req, res) => res.json(settingsView()));
 
-  app.patch('/api/settings', requireUsers, (req, res) => {
+  app.patch('/api/settings', requireUsers, async (req, res) => {
     const body = req.body || {};
     if (body.drive_folder_id !== undefined) {
       const id = String(body.drive_folder_id || '').trim();
@@ -943,6 +1097,16 @@ function createApp({
       }
       setSetting(db, 'notify_targets', [...new Set(list)]);
     }
+    if (body.transcode_videos !== undefined) {
+      if (typeof body.transcode_videos !== 'boolean') return res.status(400).json({ error: 'transcode_videos must be true or false' });
+      setSetting(db, 'transcode_videos', body.transcode_videos);
+    }
+    if (body.transcode_4k_hevc !== undefined) {
+      if (typeof body.transcode_4k_hevc !== 'boolean') return res.status(400).json({ error: 'transcode_4k_hevc must be true or false' });
+      setSetting(db, 'transcode_4k_hevc', body.transcode_4k_hevc);
+    }
+    if (body.transcode_videos === false) transcoder.shutdown();
+    else if (body.transcode_videos === true || body.transcode_4k_hevc === true) await transcoder.resume();
     res.json(settingsView());
   });
 
@@ -990,15 +1154,16 @@ function createApp({
     const body = req.body || {};
     const appVersion = typeof body.app_version === 'string' ? body.app_version : null;
     const model = typeof body.model === 'string' ? body.model.trim().slice(0, 80) || null : null;
+    const caps = normalizeDecoderCaps(body.decoders);
     const insert = db.prepare(
-      `INSERT INTO devices (token, pairing_code, app_version, model, site, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO devices (token, pairing_code, app_version, model, site, decoder_caps, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = randomPairingCode();
       try {
         const now = Date.now();
-        insert.run(token, code, appVersion, model, siteOf(req), now, now);
+        insert.run(token, code, appVersion, model, siteOf(req), caps ? JSON.stringify(caps) : null, now, now);
         return res.status(201).json({ token, pairing_code: code, qr_payload: `kiosk-pair:${code}` });
       } catch (err) {
         if (err.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err; // otherwise: code taken, try another
@@ -1020,7 +1185,34 @@ function createApp({
   });
 
   // What this TV should play, and how to turn the picture for its screen.
-  // "version" changes whenever the playlist, its files or this TV's settings change.
+  // "version" changes whenever the playlist, its files, the chosen copy, or this TV's settings change.
+  function deviceCaps(device) {
+    if (!device.decoder_caps) return null;
+    try {
+      const parsed = JSON.parse(device.decoder_caps);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Older apps never send decoder info: they get the 1080p copy, or the original
+  // if that copy does not exist yet. Newer apps get the copy that fits.
+  function fileForPlayer(item, device) {
+    const chosen = item.type === 'video'
+      ? chooseRendition(transcoder.list(item.media_id), deviceCaps(device), item.md5)
+      : null;
+    if (!chosen) {
+      return { url: `/media/${item.media_id}`, md5: item.md5, size: item.size, rendition: null };
+    }
+    return {
+      url: `/media/${item.media_id}?rendition=${chosen.profile}`,
+      md5: chosen.md5,
+      size: chosen.size,
+      rendition: chosen.profile,
+    };
+  }
+
   function playerPlaylist(device) {
     const playlist = device.playlist_id ? findPlaylist(device.playlist_id) : null;
     const now = Date.now();
@@ -1032,25 +1224,35 @@ function createApp({
     // Starting within a day: the TV downloads these ahead, but doesn't play them yet.
     const upcoming = all.filter((item) => startOf(item) > now && startOf(item) <= now + UPCOMING_MS && !ended(item))
       .filter((item, i, list) => !items.some((x) => x.media_id === item.media_id) && list.findIndex((x) => x.media_id === item.media_id) === i);
-    const toPlayer = (r) => ({
-      id: r.media_id,
-      type: r.type,
-      filename: r.filename,
-      url: `/media/${r.media_id}`,
-      md5: r.md5,
-      size: r.size,
-      orientation: r.orientation,
-      duration_seconds: r.type === 'image' ? r.image_seconds : null,
-    });
-    const ids = (list) => list.map((item) => item.media_id).join(',');
+    // Each video is sent as the playback copy that suits this TV (or the original).
+    const toPlayer = (r) => {
+      const file = fileForPlayer(r, device);
+      return {
+        id: r.media_id,
+        type: r.type,
+        filename: r.filename,
+        url: file.url,
+        md5: file.md5,
+        size: file.size,
+        orientation: r.orientation,
+        duration_seconds: r.type === 'image' ? r.image_seconds : null,
+        rendition: file.rendition,
+      };
+    };
+    const playing = items.map(toPlayer);
+    const ahead = upcoming.map(toPlayer);
+    const ids = (list) => list.map((item) => item.id).join(',');
+    // Only the copy we are actually sending. A later, unused copy finishing does not
+    // change this, and the media ids are not repeated inside the rendition tag.
+    const choices = playing.map((file) => file.rendition || 'orig').join(',');
     return {
-      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${ids(items)}` +
-        (upcoming.length ? `~${ids(upcoming)}` : ''),
+      version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${choices}.${ids(playing)}` +
+        (ahead.length ? `~${ids(ahead)}` : ''),
       name: device.name,
       orientation: device.orientation,
       playlist_name: playlist ? playlist.name : null,
-      items: items.map(toPlayer),
-      upcoming: upcoming.map(toPlayer),
+      items: playing,
+      upcoming: ahead,
       // The location's working hours; the TV goes dark outside them (null = always on).
       hours: hoursOf(locationOf(device)),
     };
@@ -1064,10 +1266,17 @@ function createApp({
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
     expireDue(); // so the version below already leaves out files that just expired
     const body = req.body || {};
-    db.prepare(
-      `UPDATE devices SET last_seen = ?, current_media_id = ?, free_bytes = ?, app_version = ?,
-       download_done = ?, download_total = ?, site = ?, time_zone = ?, after_hours = ? WHERE id = ?`
-    ).run(
+    const caps = normalizeDecoderCaps(body.decoders);
+    let playbackError;
+    if (Object.prototype.hasOwnProperty.call(body, 'playback_error')) {
+      const raw = body.playback_error;
+      playbackError = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 500) : null;
+    }
+    const sets = [
+      'last_seen = ?', 'current_media_id = ?', 'free_bytes = ?', 'app_version = ?',
+      'download_done = ?', 'download_total = ?', 'site = ?', 'time_zone = ?', 'after_hours = ?',
+    ];
+    const params = [
       Date.now(),
       Number.isInteger(body.current_media_id) ? body.current_media_id : null,
       Number.isInteger(body.free_bytes) ? body.free_bytes : null,
@@ -1077,9 +1286,19 @@ function createApp({
       siteOf(req),
       typeof body.time_zone === 'string' ? body.time_zone.slice(0, 64) : req.device.time_zone,
       ['black', 'standby'].includes(body.after_hours) ? body.after_hours : req.device.after_hours,
-      req.device.id
-    );
-    res.json({ ok: true, version: playerPlaylist(req.device).version });
+    ];
+    if (caps) {
+      sets.push('decoder_caps = ?');
+      params.push(JSON.stringify(caps));
+    }
+    if (playbackError !== undefined) {
+      sets.push('playback_error = ?');
+      params.push(playbackError);
+    }
+    params.push(req.device.id);
+    db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.device.id);
+    res.json({ ok: true, version: playerPlaylist(device).version });
   });
 
   // Anything that throws ends up here, so the apps always get JSON back.
@@ -1102,6 +1321,7 @@ function createApp({
   app.locals.db = db;
   app.locals.syncDriveFolder = syncDriveFolder;
   app.locals.checkScreens = checkScreens;
+  app.locals.transcoder = transcoder;
   return app;
 }
 

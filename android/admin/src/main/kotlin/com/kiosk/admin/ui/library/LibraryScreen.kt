@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,6 +64,7 @@ import com.kiosk.admin.ui.common.SectionLabel
 import com.kiosk.admin.ui.common.ShowMessage
 import com.kiosk.admin.ui.common.formatBytes
 import com.kiosk.admin.ui.common.timeAgo
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.MediaType
@@ -123,7 +125,7 @@ fun LibraryScreen(
 
     Scaffold(
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Library", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Library") }, actions = { AccountButton(ctx) }) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { showAdd = true },
@@ -144,7 +146,7 @@ fun LibraryScreen(
             ).filter { it.second.isNotEmpty() }
 
             LazyColumn(
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 120.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 item(key = "drive") { DriveCard(library.syncedAt, library.syncError, state.refreshing, onRefresh) }
@@ -242,7 +244,7 @@ fun LibraryScreen(
 private fun DriveCard(syncedAt: Long?, syncError: String?, refreshing: Boolean, onRefresh: () -> Unit) {
     KioskCard {
         Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+            Surface(shape = KioskShapes.Small, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(Icons.Outlined.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
@@ -297,6 +299,15 @@ private fun MediaRow(m: Media, onSetExpiry: () -> Unit, onRemove: () -> Unit) {
                     showsUntil(e),
                     style = MaterialTheme.typography.labelMedium,
                     color = if (expiresSoon(e)) LocalKioskColors.current.attention else MaterialTheme.colorScheme.primary,
+                )
+            }
+            m.playbackWarning?.let { warning ->
+                Text(
+                    warning,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -360,9 +371,9 @@ fun MediaThumb(type: MediaType, shape: ScreenShape?, sizeDp: Int, label: String?
 
 @Composable
 private fun AddContentSheet(onUpload: () -> Unit, onClose: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Add content", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Surface(onClick = onUpload, shape = RoundedCornerShape(18.dp), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
+        Surface(onClick = onUpload, shape = KioskShapes.Large, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Column {
@@ -374,7 +385,7 @@ private fun AddContentSheet(onUpload: () -> Unit, onClose: () -> Unit) {
                 }
             }
         }
-        Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Surface(shape = KioskShapes.Large, color = MaterialTheme.colorScheme.surfaceVariant) {
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Column {

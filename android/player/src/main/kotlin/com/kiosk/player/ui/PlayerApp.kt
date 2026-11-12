@@ -91,7 +91,13 @@ fun PlayerApp(vm: PlayerViewModel) {
                 is PlayerUi.Finding -> FindingScreen(state, onChoose = vm::chooseFound, onAgain = vm::findServer, onType = vm::typeAddress, onBack = vm::backToSetup)
                 is PlayerUi.Pairing -> PairingScreen(state, onSettings = { settingsOpen = true }, onStartDemo = vm::startDemoPlayback)
                 is PlayerUi.Waiting -> CenterMessage(state.name?.uppercase(), state.title, state.detail, state.progress, onSettings = { settingsOpen = true })
-                is PlayerUi.Playing -> PlaybackScreen(state, onNowPlaying = { vm.currentMediaId = it }, onOpenSettings = { settingsOpen = true })
+                is PlayerUi.Playing -> PlaybackScreen(
+                    state,
+                    onNowPlaying = { vm.currentMediaId = it },
+                    onOpenSettings = { settingsOpen = true },
+                    onPlaybackProblem = vm::notePlaybackProblem,
+                    onPlaybackHealthy = vm::notePlaybackHealthy,
+                )
                 is PlayerUi.Closed -> ClosedScreen(onOpenSettings = { settingsOpen = true })
             }
             if (settingsOpen) {

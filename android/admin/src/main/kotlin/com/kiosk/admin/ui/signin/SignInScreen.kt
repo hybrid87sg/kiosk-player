@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -55,6 +56,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.kiosk.admin.KioskAdminApplication
 import com.kiosk.admin.ui.common.KioskCard
 import com.kiosk.admin.ui.common.LocalSnackbar
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.core.model.Role
 import com.kiosk.core.network.ApiException
 import com.kiosk.core.network.normaliseBaseUrl
@@ -108,6 +110,7 @@ fun SignInScreen(app: KioskAdminApplication) {
             Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 32.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
@@ -129,7 +132,7 @@ fun SignInScreen(app: KioskAdminApplication) {
             }
 
             error?.let { message ->
-                Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(14.dp)) {
+                Surface(color = MaterialTheme.colorScheme.errorContainer, shape = KioskShapes.Medium) {
                     Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
                         Text(message, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)

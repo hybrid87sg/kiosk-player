@@ -9,12 +9,17 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -26,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -51,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,8 +73,11 @@ import com.kiosk.admin.ui.common.ShapeIcon
 import com.kiosk.admin.ui.common.ShowMessage
 import com.kiosk.admin.ui.common.formatBytes
 import com.kiosk.admin.ui.common.timeAgo
+import com.kiosk.admin.ui.theme.CardPadding
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.admin.ui.theme.LocalKioskColors
 import com.kiosk.core.model.Device
+import com.kiosk.core.model.formatH264Level
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerSetup
 import com.kiosk.core.model.PlaylistSummary
@@ -103,16 +113,16 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Players", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Players") }, actions = { AccountButton(ctx) }) },
     ) { padding ->
         LazyColumn(
             Modifier.padding(padding),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
                 KioskCard {
-                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.padding(CardPadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Add a player", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
                             "Open Kiosk Player on the TV and let it find the server; it then appears under New TVs waiting. " +
@@ -130,7 +140,8 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                         ) {
                             Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
-                            Text("  Scan QR code")
+                            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                            Text("Scan QR code")
                         }
                         TextButton(onClick = { showPin = true }, modifier = Modifier.fillMaxWidth()) { Text("Enter code instead") }
                         if (ctx.session.isDemo) {
@@ -259,41 +270,73 @@ private fun WaitingCard(w: WaitingDevice, showSite: Boolean, onAdd: () -> Unit) 
 private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
     val extra = LocalKioskColors.current
     KioskCard {
-        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(d.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Column(Modifier.padding(start = CardPadding, end = CardPadding, top = CardPadding, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    d.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = KioskShapes.Small,
                     color = if (d.online) extra.successContainer else MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = if (d.online) extra.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 ) {
-                    Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         Box(Modifier.size(8.dp).background(if (d.online) extra.success else MaterialTheme.colorScheme.onSurfaceVariant, CircleShape))
                         Text(
                             when {
-                                !d.openNow -> if (d.afterHours == "standby") "  After hours · standby" else "  After hours"
-                                d.online -> "  Online"
-                                else -> "  Offline · ${timeAgo(d.lastSeen)}"
+                                !d.openNow -> if (d.afterHours == "standby") "After hours · standby" else "After hours"
+                                d.online -> "Online"
+                                else -> "Offline · ${timeAgo(d.lastSeen)}"
                             },
                             style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1, softWrap = false,
                         )
                     }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ShapeIcon(d.orientation.shape, 18.dp, MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${d.orientation.label} · ${d.playlistName ?: "No playlist"}", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "${d.orientation.label} · ${d.playlistName ?: "No playlist"}", Modifier.weight(1f, fill = false),
+                    style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
             }
             Text(
                 d.currentFilename?.let { "Now playing: $it" } ?: "Waiting for content",
                 style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             d.freeBytes?.let {
                 Text("Storage: ${formatBytes(it)} free", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            d.decoders?.takeIf { it.displayWidth > 0 }?.let { caps ->
+                val level = caps.h264Level?.let { " · H.264 level ${formatH264Level(it)}" }.orEmpty()
+                val hevc = if (caps.hevc) " · HEVC" else ""
+                Text(
+                    "Screen ${caps.displayWidth}×${caps.displayHeight}$level$hevc",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            d.playbackError?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Row {
-                TextButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onRemove) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = onEdit, modifier = Modifier.heightIn(min = 48.dp)) { Text("Edit") }
+                TextButton(onClick = onRemove, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -319,7 +362,8 @@ private fun PlayerSetupForm(
     val chosen = playlists.firstOrNull { it.id == playlistId }
 
     Column(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp),
+        Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp).padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (form is PlayerForm.New) {
@@ -353,8 +397,8 @@ private fun PlayerSetupForm(
                 Surface(
                     selected = mounting == m,
                     onClick = { mounting = m },
-                    modifier = Modifier.weight(1f).height(100.dp),
-                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.weight(1f).heightIn(min = 100.dp),
+                    shape = KioskShapes.Medium,
                     color = if (mounting == m) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                     border = BorderStroke(if (mounting == m) 2.dp else 1.dp, if (mounting == m) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
                 ) {
@@ -379,7 +423,7 @@ private fun PlayerSetupForm(
         }
         playlists.forEach { p ->
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = KioskShapes.Medium,
                 color = if (playlistId == p.id) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(if (playlistId == p.id) 2.dp else 1.dp, if (playlistId == p.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth().selectable(selected = playlistId == p.id, role = Role.RadioButton) { playlistId = p.id },
@@ -387,14 +431,14 @@ private fun PlayerSetupForm(
                 Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = playlistId == p.id, onClick = null)
                     Column(Modifier.padding(start = 4.dp)) {
-                        Text(p.name, style = MaterialTheme.typography.titleSmall)
+                        Text(p.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${p.orientation.label} · ${p.itemCount} items", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
         if (chosen != null && chosen.orientation != mounting.shape) {
-            Surface(shape = RoundedCornerShape(12.dp), color = LocalKioskColors.current.attentionContainer) {
+            Surface(shape = KioskShapes.Small, color = LocalKioskColors.current.attentionContainer) {
                 Text(
                     "${chosen.name} is made for ${chosen.orientation.label.lowercase()} screens, but this screen is " +
                         "${mounting.shape.label.lowercase()}. Its files will play with black bars.",

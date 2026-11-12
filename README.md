@@ -29,6 +29,11 @@ Your videos and pictures live in a **Google Drive shared drive**. Anything you d
 app's Library. Each TV downloads its playlist and plays from its own storage, so it keeps playing if the
 internet drops.
 
+4K videos are kept as they are in Drive. The server also makes smaller copies so a weak Android TV box
+can play them smoothly: 1080p H.264 for most boxes, 720p if a box cannot do 1080p, and an optional 4K
+HEVC copy for a box that can decode it. Each player reports what it can decode, and downloads the copy
+that fits. On a slow Home Assistant machine (a Raspberry Pi), turn **Make playback copies** off.
+
 ---
 
 ## Setup guide
@@ -125,34 +130,36 @@ Do it while signed in with your **Workspace** account.
    folder ID**. Copy it into your settings sheet.
 5. Drop one test video (`.mp4`) and one picture (`.jpg` or `.png`) into it.
 
-### Part 3: The Home Assistant add-on (about 15 minutes)
+### Part 3: The Home Assistant add-on (about 10 minutes)
 
-1. **Download the add-on.** From this repository's
-   [**Releases**](https://github.com/hybrid87sg/kiosk-player/releases), download
-   `kiosk_server-addon.zip` and unzip it. You get a folder called `kiosk_server`.
-2. **Make Home Assistant's folders reachable from your computer.** In Home Assistant, go to
-   **Settings → Add-ons → Add-on store**, install **Samba share**, set a username and password on its
-   **Configuration** tab, and click **Start**.
-3. **Open the shared folders on your computer.**
+1. **Add the Kiosk add-on repository.** In Home Assistant, go to **Settings → Add-ons → Add-on store**,
+   open the **⋮** menu (top right) and choose **Repositories**. Paste this address, click **Add**, then
+   **Close**:
+
+   ```
+   https://github.com/hybrid87sg/kiosk-addons
+   ```
+
+2. **Install it.** Refresh the page, find **Kiosk Signage Server** in the store, open it and click
+   **Install**. Home Assistant downloads the add-on ready-made, so this takes about a minute.
+3. **Start it once.** Click **Start**. It stops again and its **Log** asks for settings. That's expected:
+   this first start creates its config folder.
+4. **Make Home Assistant's folders reachable from your computer.** In the **Add-on store**, install
+   **Samba share**, set a username and password on its **Configuration** tab, and click **Start**.
+5. **Open the shared folders on your computer.**
    - **Windows:** in File Explorer's address bar, type `\\homeassistant.local`
      (or `\\<Home Assistant IP>`).
    - **Mac:** in Finder, choose **Go → Connect to Server** and enter `smb://homeassistant.local`.
-4. **Copy** the `kiosk_server` folder into the **addons** folder.
-5. **Install it.** In Home Assistant, go to **Settings → Add-ons → Add-on store**, open the **⋮** menu
-   (top right), click **Check for updates**, and refresh the page. **Kiosk Signage Server** appears under
-   **Local add-ons**. Open it and click **Install**. Building takes a few minutes, longer on a Raspberry Pi.
-6. **Start it once.** Click **Start**. It stops again and its **Log** asks for settings. That's expected:
-   this first start creates its config folder.
-7. **Copy the key file.** On your computer, open the **addon_configs** shared folder, then
-   **`local_kiosk_server`**, and copy `service-account.json` into it.
-8. **Fill in the Configuration tab** with the values from your settings sheet, then click **Save**:
+6. **Copy the key file.** Open the **addon_configs** shared folder, then the folder whose name ends in
+   **`_kiosk_server`**, and copy `service-account.json` into it.
+7. **Fill in the Configuration tab** with the values from your settings sheet, then click **Save**:
 
    ![The add-on's Configuration tab](docs/images/ha-addon-configuration.svg)
 
    Leave **Mode** as `main`. **Site name** is optional (e.g. `Head office`); it matters once you
    [add another site](#adding-another-site). If you did Part 1, step 9, also fill in
    **Web sign-in client ID** and **Web sign-in client secret**.
-9. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
+8. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
    **Start**. The **Log** tab should end with `Kiosk server running on port 3000`.
 
 ### Part 4: The two addresses (about 5 minutes)
@@ -337,7 +344,7 @@ TVs over the local network. If a site's internet goes down, its TVs keep playing
 2. **At the new site, install Tailscale.** Install the **Tailscale** add-on in that site's Home Assistant
    and log in with the same Tailscale account. In the Tailscale add-on's **Configuration**, turn
    **userspace networking** off, so other add-ons can use Tailscale too, then restart it.
-3. **Install the Kiosk add-on there** (Part 3, steps 1–6). You don't need the Google settings or the key
+3. **Install the Kiosk add-on there** (Part 3, steps 1–3). You don't need the Google settings or the key
    file there. In **Configuration**, set:
    - **Mode**: `relay`
    - **Site name**: e.g. `Orchard branch`
@@ -365,7 +372,7 @@ connect with Tailscale, and sign in with Google.
 | What you see | What to do |
 |---|---|
 | Add-on log: `Missing settings: …` | Fill in those boxes on the **Configuration** tab, then **Save** and **Start**. |
-| Add-on log: `Can't find the service account key file` | Put `service-account.json` in **addon_configs → local_kiosk_server**, named exactly like the setting. |
+| Add-on log: `Can't find the service account key file` | Put `service-account.json` in **addon_configs**, in the folder ending in **_kiosk_server**, named exactly like the setting. |
 | Phone: "Can't reach the server" | Is the Tailscale app on? Does `…:3000/api/health` open in the phone's browser? |
 | Phone: "isn't set up for Google sign-in yet" | The **Google web client ID** setting is empty. |
 | Phone: Google sign-in fails or shows a developer error | Check the Android client in Part 1, step 6: package `com.kiosk.admin` and the exact SHA-1. |

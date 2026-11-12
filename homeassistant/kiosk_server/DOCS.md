@@ -15,19 +15,29 @@ You need the one-time Google setup, which gives you:
 
 ## Install
 
-1. Install the **Samba share** add-on (Settings → Add-ons → Add-on store) and
-   start it, so you can copy files to Home Assistant from your computer.
-2. Copy the whole `kiosk_server` folder into the **addons** share.
-3. Go to Settings → Add-ons → Add-on store, open the ⋮ menu (top right),
-   choose **Check for updates**, and find **Kiosk Signage Server** under
-   **Local add-ons**. Click **Install**. Building takes a few minutes.
-4. Start the add-on once. It stops straight away and its log asks for settings;
+1. Go to **Settings → Add-ons → Add-on store**, open the **⋮** menu (top right)
+   and choose **Repositories**. Paste `https://github.com/hybrid87sg/kiosk-addons`,
+   click **Add**, then **Close**, and refresh the page.
+2. Find **Kiosk Signage Server** in the store, open it and click **Install**.
+   Home Assistant downloads it ready-made; nothing is built on your device.
+3. Start the add-on once. It stops straight away and its log asks for settings;
    this also creates its config folder.
-5. Copy your service account key into the **addon_configs** share, inside the
-   `local_kiosk_server` folder, and name it `service-account.json`.
-6. Open the add-on's **Configuration** tab, fill in the settings, click **Save**,
+4. Copy your service account key into the add-on's config folder and name it
+   `service-account.json`. To reach the folder, install the **Samba share**
+   add-on, start it, and open the **addon_configs** share from your computer.
+   The folder's name ends in **`_kiosk_server`**.
+5. Open the add-on's **Configuration** tab, fill in the settings, click **Save**,
    then **Start**. The **Log** tab should say `Kiosk server running on port 3000`.
-7. Switch on **Start on boot** and **Watchdog**.
+6. Switch on **Start on boot** and **Watchdog**.
+
+**Updates:** when a new version is out, Home Assistant shows an **Update** button
+on this add-on's page. Your settings, key file and data are kept.
+
+**Installing by hand instead:** copy the `kiosk_server` folder from a release's
+`kiosk_server-addon.zip` into the **addons** share, choose **Check for updates**
+in the store's ⋮ menu, and install it from **Local add-ons**. Home Assistant
+then builds it on your device, which takes a few minutes. An add-on installed
+this way is a separate add-on from the store one, with its own settings and data.
 
 ## The web interface: the main control
 
@@ -76,6 +86,32 @@ with their site.
 Your phone needs a way into your home network. The simplest is the **Tailscale**
 add-on plus the Tailscale app on your phone. Then use the Home Assistant
 machine's Tailscale address in Kiosk Admin.
+
+## Playback copies
+
+Videos are often 4K. Weak Android TV boxes play 1080p H.264 smoothly and struggle
+with anything heavier. **Make playback copies** stays off until you turn it on,
+so installing an update does not start encoding the videos you already have. Once it is on, the
+add-on uses ffmpeg to make:
+
+- a **1080p H.264** copy (High profile, level 4.1, constant frame rate), which
+  is what most boxes download
+- a **720p** copy, for a box that reports it cannot decode 1080p
+- optionally a **4K HEVC** copy (8-bit), only for a box with a 4K screen that
+  says it can decode HEVC
+
+The original file in Google Drive is not changed. Kiosk Player tells the server
+what it can decode, and downloads the copy that fits. An older player app gets
+the 1080p copy, or the original until that copy is ready.
+
+Making copies uses a lot of processor time. Each copy runs at low priority, on
+one core by default (**Encoder threads**), and is stopped if it runs longer
+than two hours. After a restart, copies of videos already in the library start
+one at a time, with a short pause between them, so a Raspberry Pi can finish
+booting. On a slow machine, turn **Make playback copies** off in the add-on's
+Configuration tab (or on the web Settings page) if Home Assistant becomes
+unresponsive. Leave **Also make a 4K HEVC copy** off unless this machine is a
+faster computer.
 
 ## Keep a local copy of each file
 

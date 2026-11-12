@@ -10,11 +10,15 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
@@ -50,6 +54,7 @@ import com.kiosk.admin.ui.common.EmptyState
 import com.kiosk.admin.ui.common.KioskCard
 import com.kiosk.admin.ui.common.ShapeIcon
 import com.kiosk.admin.ui.common.ShowMessage
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.core.model.PlaylistSummary
 import com.kiosk.core.model.ScreenShape
 
@@ -75,7 +80,7 @@ fun PlaylistsScreen(
     var showNew by remember { mutableStateOf(false) }
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Playlists", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Playlists") }, actions = { AccountButton(ctx) }) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { showNew = true },
@@ -89,7 +94,7 @@ fun PlaylistsScreen(
         } else {
             LazyColumn(
                 Modifier.padding(padding),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 120.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item {
@@ -159,7 +164,7 @@ fun PlaylistForm(
     var name by rememberSaveable { mutableStateOf(initialName) }
     var shape by rememberSaveable { mutableStateOf(initialShape) }
     var nameError by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         OutlinedTextField(
             value = name,
@@ -206,7 +211,7 @@ fun ShapeChoice(
         selected = selected,
         onClick = onClick,
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
+        shape = KioskShapes.Medium,
         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
     ) {

@@ -2,6 +2,13 @@
 # builds it on your machine: for normal PCs (amd64) and Raspberry Pi (arm64).
 # The ready-to-copy add-on zip appears as a download on the run's page.
 # The "Release" workflow also uses this to attach the add-on to a release.
+#
+# With "publish" ticked (the Release workflow always ticks it), the built add-on
+# is also uploaded to GitHub's container registry as
+#   ghcr.io/hybrid87sg/kiosk-server:<version>
+# Home Assistant downloads it from there when someone installs or updates the
+# add-on from the public add-on repository (hybrid87sg/kiosk-addons). The files
+# for that repository appear as the "kiosk-addons-store" download on the run's page.
 name: Home Assistant add-on
 
 on:
@@ -11,7 +18,16 @@ on:
       - "homeassistant/**"
       - ".github/workflows/addon.yml"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Also publish the ready-built add-on (ghcr.io) for Home Assistant to download"
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,8 +73,65 @@ jobs:
           curl -sf -X POST -H 'content-type: application/json' -d '{"model":"CI box"}' localhost:3001/api/player/register | grep pairing_code
           docker logs relay
 
+      # Downloads are kept for 3 days: GitHub gives the account a fixed amount of
+      # storage, and keeping every push's files for a month filled it. On an
+      # ordinary push a failed upload doesn't fail the check (the build itself
+      # passed); for a release or a run started by hand it still does, because
+      # those need the files.
       - uses: actions/upload-artifact@v4
+        continue-on-error: ${{ github.event_name == 'push' }}
         with:
           name: kiosk_server-addon
           path: homeassistant/dist/kiosk_server-addon.zip
-          retention-days: 30
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        continue-on-error: ${{ github.event_name == 'push' }}
+        with:
+          name: kiosk-addons-store
+          path: homeassistant/dist/store
+          retention-days: 3
+
+  # Uploads the add-on, ready-built for PCs and Raspberry Pi, under its version number.
+  publish:
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Put the add-on together
+        run: bash homeassistant/package-addon.sh
+
+      - name: Read the add-on's version
+        id: version
+        run: |
+          version="$(sed -n 's/^version: *"\{0,1\}\([0-9][0-9A-Za-z.-]*\)"\{0,1\} *$/\1/p' homeassistant/kiosk_server/config.yaml)"
+          test -n "$version" || { echo "No version found in config.yaml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Home Assistant asks for the tag that matches the add-on's version.
+      - name: Build and upload (PC and Raspberry Pi)
+        run: |
+          docker buildx build --push \
+            --platform linux/amd64,linux/arm64 \
+            --label "io.hass.type=addon" \
+            --label "io.hass.version=${{ steps.version.outputs.version }}" \
+            --label "org.opencontainers.image.title=Kiosk Signage Server" \
+            --label "org.opencontainers.image.version=${{ steps.version.outputs.version }}" \
+            -t "ghcr.io/hybrid87sg/kiosk-server:${{ steps.version.outputs.version }}" \
+            -t "ghcr.io/hybrid87sg/kiosk-server:latest" \
+            homeassistant/dist/kiosk_server

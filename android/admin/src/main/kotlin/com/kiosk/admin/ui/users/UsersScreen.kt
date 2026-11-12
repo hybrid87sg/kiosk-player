@@ -6,18 +6,27 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -57,6 +66,7 @@ import com.kiosk.admin.ui.common.KioskCard
 import com.kiosk.admin.ui.common.KioskViewModel
 import com.kiosk.admin.ui.common.SectionLabel
 import com.kiosk.admin.ui.common.ShowMessage
+import com.kiosk.admin.ui.theme.KioskShapes
 import com.kiosk.core.data.AdminRepository
 import com.kiosk.core.model.Role
 import com.kiosk.core.model.User
@@ -106,17 +116,18 @@ fun UsersRoute(ctx: ScreenContext) {
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        topBar = { TopAppBar(title = { Text("Users", fontWeight = FontWeight.Bold) }, actions = { AccountButton(ctx) }) },
+        topBar = { TopAppBar(title = { Text("Users") }, actions = { AccountButton(ctx) }) },
     ) { padding ->
         LazyColumn(
             Modifier.padding(padding),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
                 Button(onClick = { showInvite = true }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                     Icon(Icons.Outlined.Add, contentDescription = null)
-                    Text("  Invite someone")
+                    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                    Text("Invite someone")
                 }
             }
             item {
@@ -136,9 +147,9 @@ fun UsersRoute(ctx: ScreenContext) {
                 }
             }
             item {
-                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(shape = KioskShapes.Large, color = MaterialTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SectionLabel("What each role can do", Modifier.padding(0.dp))
+                        SectionLabel("What each role can do")
                         Role.entries.forEach { r ->
                             Text("${r.label} · ${roleDescriptions[r]}", style = MaterialTheme.typography.bodyMedium)
                         }
@@ -166,7 +177,10 @@ private fun UserRow(u: User, isMe: Boolean, onRole: (Role) -> Unit, onRemove: ()
                 Text("You · ${u.role.label}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Box {
-                    OutlinedButton(onClick = { menu = true }, modifier = Modifier.height(36.dp)) { Text(u.role.label + "  ▾") }
+                    OutlinedButton(onClick = { menu = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text(u.role.label)
+                        Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
+                    }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         Role.entries.forEach { r ->
                             DropdownMenuItem(text = { Text(r.label) }, onClick = { menu = false; if (r != u.role) onRole(r) })
@@ -188,7 +202,7 @@ private fun InviteForm(onInvite: (String, Role) -> Unit, onCancel: () -> Unit) {
     var email by rememberSaveable { mutableStateOf("") }
     var role by rememberSaveable { mutableStateOf(Role.CONTENT_UPLOADER) }
     val valid = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$").matches(email.trim())
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Invite someone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         OutlinedTextField(
             value = email, onValueChange = { email = it },
@@ -199,7 +213,7 @@ private fun InviteForm(onInvite: (String, Role) -> Unit, onCancel: () -> Unit) {
         Text("Role", style = MaterialTheme.typography.labelLarge)
         Role.entries.forEach { r ->
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = KioskShapes.Medium,
                 color = if (role == r) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(if (role == r) 2.dp else 1.dp, if (role == r) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth().selectable(selected = role == r, role = SemanticsRole.RadioButton) { role = r },

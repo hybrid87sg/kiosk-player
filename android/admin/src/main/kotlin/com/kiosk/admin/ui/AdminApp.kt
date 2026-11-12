@@ -7,12 +7,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
@@ -21,6 +25,7 @@ import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -48,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kiosk.admin.AdminSession
 import com.kiosk.admin.KioskAdminApplication
@@ -152,11 +158,11 @@ private fun MainScreen(app: KioskAdminApplication, session: AdminSession) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AccountSheet(session: AdminSession, onSwitchRole: (Role) -> Unit, onSignOut: () -> Unit, onClose: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Avatar(session.email, 48)
-            Column {
-                Text(session.email, style = MaterialTheme.typography.titleMedium)
+            Column(Modifier.weight(1f)) {
+                Text(session.email, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     session.role.label + if (session.isDemo) " · Demo mode" else "",
                     style = MaterialTheme.typography.bodyMedium,
@@ -174,7 +180,8 @@ private fun AccountSheet(session: AdminSession, onSwitchRole: (Role) -> Unit, on
         }
         OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(52.dp)) {
             Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null)
-            Text(if (session.isDemo) "  Leave demo" else "  Sign out")
+            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+            Text(if (session.isDemo) "Leave demo" else "Sign out")
         }
         TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Close") }
     }
@@ -200,8 +207,8 @@ fun Avatar(email: String, sizeDp: Int, highlighted: Boolean = true) {
 fun AccountButton(ctx: ScreenContext) {
     AssistChip(
         onClick = ctx.openAccount,
-        label = { Text(ctx.session.role.label + if (ctx.session.isDemo) " · Demo" else "") },
+        label = { Text(ctx.session.role.label + if (ctx.session.isDemo) " · Demo" else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
         leadingIcon = { Avatar(ctx.session.email, 24) },
-        modifier = Modifier.padding(end = 8.dp),
+        modifier = Modifier.padding(end = 8.dp).widthIn(max = 168.dp),
     )
 }
