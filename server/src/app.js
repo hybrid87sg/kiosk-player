@@ -23,6 +23,7 @@ const { MediaCache } = require('./media-cache');
 const { checkHours, summarizeHours, isOpenAt } = require('./hours');
 const { createTranscoder } = require('./transcode');
 const { LOCAL_PANEL } = require('./notify');
+const { parseServiceAccountKey, explainDriveError } = require('./google');
 const { chooseRendition, playbackWarning, normalizeDecoderCaps, PROFILE_IDS } = require('./renditions');
 
 // File types the player can show, by MIME type and by file extension.
@@ -77,6 +78,7 @@ function createApp({
   syncIntervalMs = 5 * 60 * 1000,
   siteName = null, // this server's own site, e.g. "Head office"; TVs at other sites come through relays
   homeAssistant = null, // notify.js, when running as a Home Assistant add-on
+  googleKeyFile = null, // where a Google key added on the Settings page is kept; null = it can't be added there
   monitorIntervalMs = 60 * 1000, // how often to look for offline screens (0 = never; tests call checkScreens)
   // Playback copies. Omit it and copies stay off (tests). The real server turns them on.
   transcode = null,
@@ -88,6 +90,13 @@ function createApp({
   if (!serverId) setSetting(db, 'server_id', (serverId = crypto.randomUUID()));
   // Which site a TV is at: relays add the "X-Kiosk-Site" header; TVs talking
   // to this server directly are at this server's own site.
+  // What went wrong with Google Drive, as one sentence that says what to do.
+  // The log gets the short reason too, not Google's whole request dump.
+  function driveProblem(err) {
+    const reason = explainDriveError(err, google.keyEmail ? google.keyEmail() : null);
+    log(`Google Drive: ${(err && err.message) || err} -> ${reason}`);
+    return reason;
+  }
   const siteOf = (req) => String(req.get('x-kiosk-site') || '').trim().slice(0, 80) || siteName || null;
 
   // Locations are keyed by site; '' is this server's own site while it has no name.
@@ -480,8 +489,7 @@ function createApp({
       try {
         await syncDriveFolder();
       } catch (err) {
-        log(err);
-        syncError = 'Could not reach Google Drive; showing the last known list';
+        syncError = `${driveProblem(err)} Showing the last known list.`;
       }
     }
     res.json(libraryResponse(syncError));
@@ -492,8 +500,7 @@ function createApp({
     try {
       await syncDriveFolder();
     } catch (err) {
-      log(err);
-      return res.status(502).json({ error: 'Could not reach Google Drive' });
+      return res.status(502).json({ error: driveProblem(err) });
     }
     res.json(libraryResponse(null));
   });
@@ -530,10 +537,10 @@ function createApp({
       if (meter.errored) {
         return res.status(meter.errored.status || 400).json({ error: 'Upload failed: ' + meter.errored.message });
       }
-      log(err);
+      const reason = driveProblem(err);
       req.unpipe(meter);
       req.resume(); // throw away the rest of the phone's upload so the reply gets through
-      return res.status(502).json({ error: 'Could not save the file to Google Drive' });
+      return res.status(502).json({ error: `Could not save the file to Google Drive. ${reason}` });
     }
     if (meter.errored || size === 0) {
       // Drive accepted something, but it was cut short or empty; don't keep it.
@@ -1060,6 +1067,13 @@ function createApp({
       version: SERVER_VERSION,
       drive_folder_id: google.getFolderId ? google.getFolderId() : null,
       drive_folder_changed_on_web: getSetting(db, 'drive_folder_id') !== undefined,
+      // The key itself is never sent back, only which service account it belongs to.
+      google_key: {
+        present: Boolean(google.keyEmail && google.keyEmail()),
+        email: google.keyEmail ? google.keyEmail() : null,
+        can_change: Boolean(googleKeyFile && google.setServiceAccountKey),
+        added_here: Boolean(googleKeyFile && fs.existsSync(googleKeyFile)),
+      },
       cache: cacheStore
         ? { available: true, enabled: cacheOn(), ...cacheStore.stats() }
         : { available: false, enabled: false, files: 0, bytes: 0 },
@@ -1110,14 +1124,39 @@ function createApp({
     res.json(settingsView());
   });
 
+  // The Google key (the service account's .json file), uploaded or pasted on
+  // the Settings page. It is checked, kept in the server's own data folder
+  // where only the server reads it, and used straight away.
+  app.put('/api/settings/google-key', requireUsers, (req, res) => {
+    if (!googleKeyFile || !google.setServiceAccountKey) {
+      return res.status(400).json({ error: 'The Google key can\'t be changed here on this server' });
+    }
+    let key;
+    try {
+      key = parseServiceAccountKey((req.body || {}).key);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    try {
+      google.setServiceAccountKey(key);
+    } catch (err) {
+      return res.status(400).json({ error: 'That key couldn\'t be read. Download a new key and try again.' });
+    }
+    const temp = `${googleKeyFile}.new`;
+    fs.writeFileSync(temp, JSON.stringify({ type: 'service_account', ...key }), { mode: 0o600 });
+    fs.renameSync(temp, googleKeyFile);
+    lastSyncAt = 0; // read Drive with the new key next time the library is opened
+    log(`Google key saved for ${key.client_email}`);
+    res.json(settingsView());
+  });
+
   // "Test connection": can the server read the Drive folder right now?
   app.post('/api/settings/test-drive', requireUsers, async (req, res) => {
     try {
       const files = await google.listFolder();
       res.json({ ok: true, files: files.length });
     } catch (err) {
-      log(err);
-      res.status(502).json({ ok: false, error: 'Could not read the Drive folder. Check the folder ID and that the service account is a member of the shared drive.' });
+      res.status(502).json({ ok: false, error: driveProblem(err) });
     }
   });
 

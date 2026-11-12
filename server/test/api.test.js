@@ -1022,3 +1022,78 @@ test('the notification link follows the add-on\'s name in Home Assistant', async
   const outside = createHomeAssistant({ baseUrl: 'http://ha/api', token: 'secret', fetchImpl });
   assert.equal(await outside.panelPath(), '/hassio/ingress/local_kiosk_server');
 });
+
+test('the Google key can be added on the Settings page, and is never sent back', async (t) => {
+  const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-key-'));
+  t.after(() => fs.rmSync(keyDir, { recursive: true, force: true }));
+  const googleKeyFile = path.join(keyDir, 'google-key.json');
+  const { call, signIn, google } = await startServer(t, { googleKeyFile });
+  const boss = await signIn(BOSS);
+  const put = (key, token = boss) => call('PUT', '/api/settings/google-key', { token, json: { key } });
+
+  let settings = await (await call('GET', '/api/settings', { token: boss })).json();
+  assert.deepEqual(settings.google_key, { present: true, email: 'robot@test.iam.gserviceaccount.com', can_change: true, added_here: false });
+
+  // Things that aren't a key are turned away with a reason, and nothing is saved.
+  for (const bad of ['', 'hello', '[]', JSON.stringify({ type: 'authorized_user' }), JSON.stringify({ type: 'service_account', client_email: 'a@b.c' })]) {
+    const res = await put(bad);
+    assert.equal(res.status, 400);
+    assert.ok((await res.json()).error.length > 10);
+  }
+  assert.equal(fs.existsSync(googleKeyFile), false);
+
+  const key = { type: 'service_account', project_id: 'p', client_email: 'new-robot@p.iam.gserviceaccount.com', private_key: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n' };
+  const saved = await put(JSON.stringify(key));
+  assert.equal(saved.status, 200);
+  const text = await saved.text();
+  assert.doesNotMatch(text, /PRIVATE KEY/);
+  settings = JSON.parse(text);
+  assert.deepEqual(settings.google_key, { present: true, email: 'new-robot@p.iam.gserviceaccount.com', can_change: true, added_here: true });
+  assert.equal(google.keyEmail(), 'new-robot@p.iam.gserviceaccount.com');
+  assert.equal(JSON.parse(fs.readFileSync(googleKeyFile, 'utf8')).client_email, 'new-robot@p.iam.gserviceaccount.com');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(googleKeyFile).mode & 0o077, 0);
+
+  // Only Spongebob (superadmin) may change it.
+  await call('POST', '/api/users', { token: boss, json: { email: 'uploader@example.com', role: 'content_uploader' } });
+  const uploader = await signIn('uploader@example.com');
+  assert.equal((await put(JSON.stringify(key), uploader)).status, 403);
+});
+
+test('without a place to keep it, the Google key can\'t be changed on the page', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const settings = await (await call('GET', '/api/settings', { token: boss })).json();
+  assert.equal(settings.google_key.can_change, false);
+  assert.equal((await call('PUT', '/api/settings/google-key', { token: boss, json: { key: '{}' } })).status, 400);
+});
+
+test('Drive problems are explained in plain words', () => {
+  const { explainDriveError, createGoogle } = require('../src/google');
+  const robot = 'robot@p.iam.gserviceaccount.com';
+  assert.match(explainDriveError(Object.assign(new Error('File not found: 1_abc.'), { code: 404, status: 404 }), robot), /share the folder with robot@p\.iam\.gserviceaccount\.com as Editor/);
+  assert.match(explainDriveError(Object.assign(new Error('Service Accounts do not have storage quota.'), { status: 403, errors: [{ reason: 'storageQuotaExceeded' }] }), robot), /no storage of its own/);
+  assert.match(explainDriveError(Object.assign(new Error('Google Drive API has not been used in project 1 before or it is disabled.'), { status: 403 }), robot), /Enable "Google Drive API"/);
+  assert.match(explainDriveError(Object.assign(new Error('invalid_grant: Invalid JWT Signature.'), { status: 400 }), robot), /didn't accept the key/);
+  assert.match(explainDriveError(Object.assign(new Error('nope'), { status: 403 }), null), /client_email in the key file/);
+  assert.match(explainDriveError(new Error('getaddrinfo ENOTFOUND'), robot), /Could not reach Google Drive/);
+
+  // The real client starts without a key and says so until one is set.
+  const google = createGoogle({ webClientId: 'w', folderId: 'f' });
+  assert.equal(google.keyEmail(), null);
+  return assert.rejects(google.listFolder(), (err) => {
+    assert.equal(err.code, 'NO_GOOGLE_KEY');
+    assert.match(explainDriveError(err, null), /Settings → Google key/);
+    return true;
+  });
+});
+
+test('a Drive folder the server can\'t see is explained on the page, not just "unreachable"', async (t) => {
+  const { call, signIn, google } = await startServer(t);
+  const boss = await signIn(BOSS);
+  google.listFolder = async () => { throw Object.assign(new Error('File not found: 1_abc.'), { code: 404, status: 404 }); };
+  const res = await call('POST', '/api/settings/test-drive', { token: boss });
+  assert.equal(res.status, 502);
+  assert.match((await res.json()).error, /share the folder with robot@test\.iam\.gserviceaccount\.com/);
+  const library = await (await call('GET', '/api/media', { token: boss })).json();
+  assert.match(library.sync_error, /can't find the Drive folder.*Showing the last known list\./);
+});

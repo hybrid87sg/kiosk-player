@@ -8,6 +8,7 @@
 //   downloadStream(fileId, range)   -> { status, headers, stream }
 //   deleteFile(fileId)                             moves a file to Drive's trash (only used to clean up a failed upload; Kiosk never deletes library files from Drive)
 //   getFolderId() / setFolderId(id)                which Drive folder is used
+//   keyEmail() / setServiceAccountKey(key)         the service account in use; the key can be added later
 //   deviceSignInAvailable                          true if the web code sign-in is set up
 //   startDeviceSignIn()             -> { deviceCode, userCode, verificationUrl, interval, expiresIn }
 //   pollDeviceSignIn(deviceCode)    -> { status: 'pending' | 'slow_down' | 'denied' | 'expired' | 'done', email? }
@@ -22,19 +23,77 @@ const { OAuth2Client } = require('google-auth-library');
 
 const FILE_FIELDS = 'id, name, mimeType, size, md5Checksum, imageMediaMetadata(width, height, rotation), videoMediaMetadata(width, height)';
 
-function createGoogle({ webClientId, deviceClientId, deviceClientSecret, serviceAccountFile, folderId }) {
+/**
+ * Checks the text of a service account key file. Returns { client_email, private_key },
+ * or throws with a message a person can act on.
+ */
+function parseServiceAccountKey(text) {
+  let key;
+  try {
+    key = JSON.parse(String(text || ''));
+  } catch {
+    throw new Error('That isn\'t a key file: it should be the whole .json file Google gave you, starting with { and ending with }.');
+  }
+  if (!key || typeof key !== 'object' || key.type !== 'service_account') {
+    throw new Error('That file isn\'t a service account key. Use the .json file from the service account\'s Keys tab.');
+  }
+  if (typeof key.client_email !== 'string' || !key.client_email.includes('@')
+    || typeof key.private_key !== 'string' || !key.private_key.includes('PRIVATE KEY')) {
+    throw new Error('That key file is missing its client_email or private_key. Download a new key and try again.');
+  }
+  return { client_email: key.client_email, private_key: key.private_key };
+}
+
+/**
+ * Turns a failed Drive call into one sentence that says what to do.
+ * `email` is the service account's address, when known.
+ */
+function explainDriveError(err, email) {
+  const robot = email || 'the service account\'s email (client_email in the key file)';
+  if (err && err.code === 'NO_GOOGLE_KEY') return 'The Google key hasn\'t been added yet. Add it under Settings → Google key.';
+  const status = Number(err && (err.status || err.code)) || 0;
+  const text = `${(err && err.message) || ''} ${JSON.stringify((err && err.errors) || (err && err.cause && err.cause.errors) || '')}`;
+  if (/storageQuota|storage quota/i.test(text)) {
+    return 'Google refused the upload: the service account has no storage of its own. Use a shared drive, or add files through Google Drive instead.';
+  }
+  if (/accessNotConfigured|has not been used in project|is disabled/i.test(text)) {
+    return 'The Google Drive API is switched off for your Google Cloud project. Enable "Google Drive API" under APIs & Services → Library.';
+  }
+  if (/invalid_grant|invalid_client|Invalid JWT|DECODER|PEM/i.test(text)) {
+    return 'Google didn\'t accept the key. It may have been deleted or replaced. Add the current key under Settings → Google key.';
+  }
+  if (status === 404) return `Google can't find the Drive folder. Check the folder ID, and share the folder with ${robot} as Editor (Content manager on a shared drive).`;
+  if (status === 403) return `Google says the server isn't allowed to do that. Share the Drive folder with ${robot} as Editor (Content manager on a shared drive).`;
+  return 'Could not reach Google Drive. Check the internet connection and try again.';
+}
+
+function createGoogle({ webClientId, deviceClientId, deviceClientSecret, serviceAccountFile, serviceAccountKey = null, folderId }) {
   let currentFolderId = folderId;
   // The server acts as the "service account" (a robot Google user) that has
-  // been added to the Shared Drive. supportsAllDrives is needed for Shared Drives.
-  const key = JSON.parse(fs.readFileSync(serviceAccountFile, 'utf8'));
-  const drive = makeDrive({
-    version: 'v3',
-    auth: new googleAuth.JWT({
-      email: key.client_email,
-      key: key.private_key,
-      scopes: ['https://www.googleapis.com/auth/drive'],
-    }),
-  });
+  // been given the Drive folder. supportsAllDrives is needed for Shared Drives.
+  // The key can arrive later (added on the Settings page), so the Drive client
+  // is built when a key is set, and calls before that fail with NO_GOOGLE_KEY.
+  let client = null;
+  let keyEmail = null;
+  function setServiceAccountKey(key) {
+    client = makeDrive({
+      version: 'v3',
+      auth: new googleAuth.JWT({
+        email: key.client_email,
+        key: key.private_key,
+        scopes: ['https://www.googleapis.com/auth/drive'],
+      }),
+    });
+    keyEmail = key.client_email;
+  }
+  const drive = {
+    get files() {
+      if (!client) throw Object.assign(new Error('No Google key yet'), { code: 'NO_GOOGLE_KEY' });
+      return client.files;
+    },
+  };
+  if (serviceAccountKey) setServiceAccountKey(serviceAccountKey);
+  else if (serviceAccountFile) setServiceAccountKey(parseServiceAccountKey(fs.readFileSync(serviceAccountFile, 'utf8')));
   const signInChecker = new OAuth2Client();
 
   async function verifyIdToken(idToken) {
@@ -145,6 +204,8 @@ function createGoogle({ webClientId, deviceClientId, deviceClientSecret, service
     deleteFile,
     getFolderId: () => currentFolderId,
     setFolderId: (id) => { currentFolderId = id; },
+    setServiceAccountKey,
+    keyEmail: () => keyEmail,
     deviceSignInAvailable: Boolean(deviceClientId && deviceClientSecret),
     startDeviceSignIn,
     pollDeviceSignIn,
@@ -170,4 +231,4 @@ function normalise(file) {
   return { id: file.id, name: file.name, mimeType: file.mimeType, size: Number(file.size), md5Checksum: file.md5Checksum, width, height };
 }
 
-module.exports = { createGoogle };
+module.exports = { createGoogle, parseServiceAccountKey, explainDriveError };

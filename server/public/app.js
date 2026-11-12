@@ -1251,6 +1251,85 @@ async function pageUsers(page) {
 
 // ---------- Settings ----------
 
+// Settings → Google key. The key is the service account's .json file. It can be
+// uploaded as a file or pasted as text; a switch picks which. The page only ever
+// learns which service account the saved key belongs to, never the key itself.
+function googleKeyCard(s, redraw) {
+  const k = s.google_key || { present: false, email: null, can_change: false, added_here: false };
+  const result = el('span', { class: 'meta', role: 'status' });
+  const save = async (text) => {
+    result.textContent = 'Saving…';
+    result.className = 'meta';
+    try {
+      const saved = await api('PUT', 'api/settings/google-key', { key: text });
+      toast(`Google key saved for ${saved.google_key.email}`);
+      redraw();
+    } catch (e) {
+      result.textContent = e.message;
+      result.className = 'error';
+    }
+  };
+
+  const file = el('input', { type: 'file', accept: '.json,application/json', id: 'google-key-file' });
+  const uploadPane = el('div', { class: 'key-pane' },
+    el('label', { class: 'field', for: 'google-key-file' }, 'Key file (.json)', file),
+    el('div', { class: 'row' },
+      el('button', {
+        class: 'btn primary',
+        onclick: async () => {
+          const chosen = file.files && file.files[0];
+          if (!chosen) { result.textContent = 'Choose the .json key file first.'; result.className = 'error'; return; }
+          if (chosen.size > 20000) { result.textContent = 'That file is too big to be a key file.'; result.className = 'error'; return; }
+          await save(await chosen.text());
+        },
+      }, 'Upload key')));
+
+  const pasted = el('textarea', {
+    id: 'google-key-text', rows: 6, spellcheck: false, autocomplete: 'off',
+    placeholder: '{ "type": "service_account", … }', style: 'font-family:monospace;font-size:12px',
+  });
+  const pastePane = el('div', { class: 'key-pane', hidden: true },
+    el('label', { class: 'field', for: 'google-key-text' }, 'Everything in the key file', pasted),
+    el('div', { class: 'row' },
+      el('button', {
+        class: 'btn primary',
+        onclick: async () => {
+          if (!pasted.value.trim()) { result.textContent = 'Paste the whole key file first.'; result.className = 'error'; return; }
+          await save(pasted.value);
+        },
+      }, 'Save key')));
+
+  let mode = 'upload';
+  try { mode = localStorage.getItem('kiosk-key-mode') === 'paste' ? 'paste' : 'upload'; } catch { /* keeps the default */ }
+  const tabs = {
+    upload: el('button', { class: 'seg', type: 'button', role: 'tab', onclick: () => pick('upload') }, 'Upload the file'),
+    paste: el('button', { class: 'seg', type: 'button', role: 'tab', onclick: () => pick('paste') }, 'Paste the text'),
+  };
+  function pick(next) {
+    mode = next;
+    try { localStorage.setItem('kiosk-key-mode', next); } catch { /* just not remembered */ }
+    uploadPane.hidden = next !== 'upload';
+    pastePane.hidden = next !== 'paste';
+    for (const [name, tab] of Object.entries(tabs)) tab.setAttribute('aria-selected', String(name === next));
+    result.textContent = '';
+  }
+  pick(mode);
+
+  return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px' },
+    el('h2', {}, 'Google key'),
+    el('p', { class: 'meta', style: 'margin:0' }, 'The service account’s key file from Google Cloud Console. The server uses it to read your Drive folder. It works like a password: it stays on this server and is never shown again.'),
+    k.present
+      ? el('p', { style: 'margin:0' }, '✓ Key in use for ', el('strong', { style: 'word-break:break-all' }, k.email), '. Share your Drive folder with this address as Editor (Content manager on a shared drive).')
+      : el('p', { class: 'warn', style: 'margin:0' }, 'No key yet. The library stays empty until you add one.'),
+    k.can_change
+      ? [
+        el('div', { class: 'segmented', role: 'tablist', 'aria-label': 'How to add the key' }, tabs.upload, tabs.paste),
+        uploadPane, pastePane, result,
+        k.added_here ? el('span', { class: 'meta' }, 'Added on this page; this is used instead of a key file in the add-on’s config folder.') : null,
+      ]
+      : el('span', { class: 'meta' }, 'On this server the key comes from its settings and can’t be changed here.'));
+}
+
 async function pageSettings(page) {
   async function draw() {
     const s = await api('GET', 'api/settings');
@@ -1300,7 +1379,9 @@ async function pageSettings(page) {
                 notifyResult),
             ]),
 
-      el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px' },
+      googleKeyCard(s, draw),
+
+      el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
         el('h2', {}, 'Google Drive folder'),
         el('p', { class: 'meta', style: 'margin:0' }, 'The shared drive (or folder) your videos and pictures come from. It’s the last part of its web address: drive.google.com/drive/folders/…'),
         el('label', { class: 'field' }, 'Drive folder ID', folder),
