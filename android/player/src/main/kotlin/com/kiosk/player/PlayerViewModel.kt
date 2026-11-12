@@ -395,8 +395,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             val current = _ui.value
             // Same content: keep playing without restarting, just clear the badge.
-            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.orientation) current.copy(badge = null)
-            else PlayerUi.Playing(items, playlist.orientation)
+            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) current.copy(badge = null)
+            else PlayerUi.Playing(items, playlist.mounting)
         }
     }
 

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +56,7 @@ import com.kiosk.admin.ui.AccountButton
 import com.kiosk.admin.ui.ScreenContext
 import com.kiosk.admin.ui.common.EmptyState
 import com.kiosk.admin.ui.common.KioskCard
+import com.kiosk.admin.ui.common.SectionLabel
 import com.kiosk.admin.ui.common.ShapeIcon
 import com.kiosk.admin.ui.common.ShowMessage
 import com.kiosk.admin.ui.theme.KioskShapes
@@ -66,7 +71,7 @@ fun PlaylistsRoute(ctx: ScreenContext, onOpen: (Long) -> Unit) {
     ShowMessage(message, vm::messageShown)
     // Coming back from a playlist: refresh counts and "plays on".
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.load() }
-    PlaylistsScreen(ctx, playlists, onOpen, onCreate = { name, shape -> vm.create(name, shape, onOpen) })
+    PlaylistsScreen(ctx, playlists, onOpen, onCreate = { name, shape, site -> vm.create(name, shape, site, onOpen) })
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,9 +80,14 @@ fun PlaylistsScreen(
     ctx: ScreenContext,
     playlists: List<PlaylistSummary>?,
     onOpen: (Long) -> Unit,
-    onCreate: (String, ScreenShape) -> Unit,
+    onCreate: (String, ScreenShape, String?) -> Unit,
 ) {
     var showNew by remember { mutableStateOf(false) }
+    // Playlists belong to a site. Every site has its automatic two, so the sites are all in the list.
+    val sited = playlists.orEmpty().filter { !it.unassigned }
+    val sites = sited.map { it.site }.distinct()
+    val older = playlists.orEmpty().filter { it.unassigned }
+    var newSite by remember(sites) { mutableStateOf(sites.firstOrNull()) }
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = { TopAppBar(title = { Text("Playlists") }, actions = { AccountButton(ctx) }) },
@@ -85,7 +95,7 @@ fun PlaylistsScreen(
             ExtendedFloatingActionButton(
                 onClick = { showNew = true },
                 icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                text = { Text("New playlist") },
+                text = { Text("Extra playlist") },
             )
         },
     ) { padding ->
@@ -99,14 +109,21 @@ fun PlaylistsScreen(
             ) {
                 item {
                     Text(
-                        "Each player plays one playlist. Make one per screen shape or location.",
+                        "Each site's screens play its Landscape or Portrait playlist by themselves. An extra playlist is for a screen that should show something different.",
                         Modifier.padding(horizontal = 4.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (playlists.isEmpty()) item { EmptyState("No playlists yet", "Tap New playlist to make one.") }
-                items(playlists, key = { it.id }) { p -> PlaylistCard(p) { onOpen(p.id) } }
+                if (playlists.isEmpty()) item { EmptyState("No playlists yet", "They appear once the server is reachable.") }
+                sites.forEach { site ->
+                    item(key = "site-${site.orEmpty()}") { SectionLabel(site ?: "This site", Modifier.padding(top = 8.dp)) }
+                    items(sited.filter { it.site == site }, key = { it.id }) { p -> PlaylistCard(p) { onOpen(p.id) } }
+                }
+                if (older.isNotEmpty()) {
+                    item(key = "older") { SectionLabel("Older playlists", Modifier.padding(top = 8.dp)) }
+                    items(older, key = { it.id }) { p -> PlaylistCard(p) { onOpen(p.id) } }
+                }
             }
         }
     }
@@ -114,12 +131,34 @@ fun PlaylistsScreen(
     if (showNew) {
         ModalBottomSheet(onDismissRequest = { showNew = false }) {
             PlaylistForm(
-                title = "New playlist",
+                title = "Extra playlist for ${newSite ?: "this site"}",
                 initialName = "",
                 initialShape = ScreenShape.LANDSCAPE,
                 button = "Create",
-                onSubmit = { name, shape -> showNew = false; onCreate(name, shape) },
+                onSubmit = { name, shape -> showNew = false; onCreate(name, shape, newSite) },
                 onCancel = { showNew = false },
+                extra = {
+                    // With several sites, choose which one the playlist is for.
+                    if (sites.size > 1) {
+                        Text("Site", style = MaterialTheme.typography.labelLarge)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            sites.forEach { site ->
+                                Row(
+                                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                        .selectable(selected = newSite == site, role = Role.RadioButton) { newSite = site },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(selected = newSite == site, onClick = null)
+                                    Text(site ?: "This site", Modifier.padding(start = 8.dp))
+                                }
+                            }
+                        }
+                    }
+                    Text(
+                        "Screens don't play an extra playlist by themselves. After making it, edit a player and choose it there.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
             )
         }
     }
@@ -136,7 +175,7 @@ private fun PlaylistCard(p: PlaylistSummary, onClick: () -> Unit) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(p.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        "${p.orientation.label} · ${p.itemCount} item${if (p.itemCount == 1) "" else "s"}",
+                        (if (p.auto) "Automatic · " else "") + "${p.orientation.label} · ${p.itemCount} item${if (p.itemCount == 1) "" else "s"}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(playsOn(p.devices.mapNotNull { it.name }), style = MaterialTheme.typography.bodySmall)

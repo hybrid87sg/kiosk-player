@@ -14,7 +14,6 @@ import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
 import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.AdminApi
-import com.kiosk.core.network.DeviceBody
 import com.kiosk.core.network.GoogleSignInBody
 import com.kiosk.core.network.ItemBody
 import com.kiosk.core.network.ItemsBody
@@ -23,6 +22,7 @@ import com.kiosk.core.network.RoleBody
 import com.kiosk.core.network.ServerConnection
 import com.kiosk.core.network.UserBody
 import com.kiosk.core.network.apiCall
+import com.kiosk.core.network.deviceBody
 import com.kiosk.core.network.scheduleBody
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -77,8 +77,8 @@ class RemoteAdminRepository(
     override suspend fun playlists(): List<PlaylistSummary> = apiCall { api.playlists() }
     override suspend fun playlist(id: Long): PlaylistDetail = apiCall { api.playlist(id) }
 
-    override suspend fun createPlaylist(name: String, orientation: ScreenShape): PlaylistDetail =
-        apiCall { api.createPlaylist(PlaylistBody(name, orientation)) }
+    override suspend fun createPlaylist(name: String, orientation: ScreenShape, site: String?): PlaylistDetail =
+        apiCall { api.createPlaylist(PlaylistBody(name, orientation, site)) }
 
     override suspend fun updatePlaylist(id: Long, name: String, orientation: ScreenShape): PlaylistDetail =
         apiCall { api.updatePlaylist(id, PlaylistBody(name, orientation)) }
@@ -92,10 +92,10 @@ class RemoteAdminRepository(
     override suspend fun waitingDevices(): List<WaitingDevice> = apiCall { api.waitingDevices() }
 
     override suspend fun claimDevice(code: String, setup: PlayerSetup): Device =
-        apiCall { api.claim(setup.toBody(code)) }
+        apiCall { api.claim(deviceBody(code, setup)) }
 
     override suspend fun updateDevice(id: Long, setup: PlayerSetup): Device =
-        apiCall { api.updateDevice(id, setup.toBody(code = null)) }
+        apiCall { api.updateDevice(id, deviceBody(code = null, setup)) }
 
     override suspend fun removeDevice(id: Long) { apiCall { api.deleteDevice(id) } }
 
@@ -104,8 +104,6 @@ class RemoteAdminRepository(
     override suspend fun changeRole(id: Long, role: Role): User = apiCall { api.changeRole(id, RoleBody(role)) }
     override suspend fun removeUser(id: Long) { apiCall { api.deleteUser(id) } }
 
-    private fun PlayerSetup.toBody(code: String?) =
-        DeviceBody(code = code, name = name, location = location, orientation = orientation, playlistId = playlistId)
 }
 
 /**

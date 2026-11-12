@@ -66,4 +66,23 @@ class DemoAdminRepositoryTest {
         assertEquals(listOf(7L, 6L), saved.items.map { it.mediaId })
         assertTrue(saved.devices.any { it.name == "Front window" })
     }
+
+    @Test fun aScreenWithNoPlaylistOfItsOwnFollowsTheAutomaticOne() = runTest {
+        val wide = repo.claimDevice("k7p-29q", PlayerSetup("Ceiling", null, Mounting.LANDSCAPE_FLIPPED, null))
+        assertEquals("Landscape", wide.playlistName)
+        assertTrue(wide.playlistAuto)
+        assertEquals(Mounting.LANDSCAPE_FLIPPED, wide.mounting)
+        // Turned on its side, it moves to the Portrait playlist by itself.
+        val tall = repo.updateDevice(wide.id, PlayerSetup("Ceiling", null, Mounting.PORTRAIT_LEFT, null))
+        assertEquals("Portrait", tall.playlistName)
+        val auto = repo.playlists().first { it.auto && it.orientation == ScreenShape.PORTRAIT }
+        assertTrue(auto.devices.any { it.id == wide.id })
+        // The automatic two can't be deleted.
+        try {
+            repo.deletePlaylist(auto.id)
+            org.junit.Assert.fail("an automatic playlist was deleted")
+        } catch (e: com.kiosk.core.network.ApiException) {
+            assertEquals(409, e.status)
+        }
+    }
 }

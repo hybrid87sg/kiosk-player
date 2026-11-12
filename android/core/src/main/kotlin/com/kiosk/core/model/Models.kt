@@ -29,7 +29,22 @@ enum class Mounting(val label: String, val shape: ScreenShape, val rotationDegre
     @SerialName("landscape") LANDSCAPE("Landscape", ScreenShape.LANDSCAPE, 0),
     @SerialName("portrait_right") PORTRAIT_RIGHT("Portrait, turned right", ScreenShape.PORTRAIT, 90),
     @SerialName("portrait_left") PORTRAIT_LEFT("Portrait, turned left", ScreenShape.PORTRAIT, 270),
+
+    /**
+     * A landscape screen mounted upside down. The server never sends this name: it sends
+     * "landscape" with a separate "flipped" flag, so apps from before this still work.
+     * See [mountingOf].
+     */
+    @SerialName("landscape_flipped") LANDSCAPE_FLIPPED("Landscape, upside down", ScreenShape.LANDSCAPE, 180),
 }
+
+/** Puts the server's orientation and its "flipped" flag together. */
+fun mountingOf(orientation: Mounting, flipped: Boolean): Mounting =
+    if (flipped && orientation == Mounting.LANDSCAPE) Mounting.LANDSCAPE_FLIPPED else orientation
+
+/** The orientation to send to the server; upside down travels as a flag beside it. */
+val Mounting.serverOrientation: Mounting get() = if (this == Mounting.LANDSCAPE_FLIPPED) Mounting.LANDSCAPE else this
+val Mounting.isFlipped: Boolean get() = this == Mounting.LANDSCAPE_FLIPPED
 
 @Serializable
 enum class MediaType {
@@ -110,6 +125,12 @@ data class PlaylistSummary(
     val version: Int,
     @SerialName("item_count") val itemCount: Int,
     val devices: List<DeviceRef> = emptyList(),
+    /** The site it belongs to. Null is the server's own site, unless [unassigned]. */
+    val site: String? = null,
+    /** One of a site's two automatic playlists (Landscape, Portrait), which its screens follow. */
+    val auto: Boolean = false,
+    /** From before playlists belonged to sites, and not in use. */
+    val unassigned: Boolean = false,
 )
 
 @Serializable
@@ -138,6 +159,9 @@ data class PlaylistDetail(
     @SerialName("item_count") val itemCount: Int,
     val devices: List<DeviceRef> = emptyList(),
     val items: List<PlaylistItem> = emptyList(),
+    val site: String? = null,
+    val auto: Boolean = false,
+    val unassigned: Boolean = false,
 )
 
 @Serializable
@@ -168,7 +192,16 @@ data class Device(
     @SerialName("playback_error") val playbackError: String? = null,
     /** What the TV said it can decode, from its last heartbeat. */
     val decoders: DeviceCapabilities? = null,
-)
+    /** A landscape screen mounted upside down. Use [mounting] to read it. */
+    val flipped: Boolean = false,
+    /** False when the TV's app is too old to turn the picture upside down. */
+    @SerialName("can_flip") val canFlip: Boolean = true,
+    /** True when the screen follows its site's Landscape or Portrait playlist ([playlistId] is null). */
+    @SerialName("playlist_auto") val playlistAuto: Boolean = false,
+) {
+    /** How the screen is mounted, including upside down. */
+    val mounting: Mounting get() = mountingOf(orientation, flipped)
+}
 
 /** A TV showing its pairing code right now, waiting to be added. */
 @Serializable
@@ -192,7 +225,9 @@ data class User(
 data class PlayerSetup(
     val name: String,
     val location: String?,
+    /** May be [Mounting.LANDSCAPE_FLIPPED]. */
     val orientation: Mounting,
+    /** Null = Automatic: follow the site's Landscape or Portrait playlist. */
     val playlistId: Long?,
 )
 
@@ -261,7 +296,11 @@ data class PlayerPlaylist(
     val upcoming: List<PlayerItem> = emptyList(),
     /** The location's working hours ("mon"…"sun"); null = always on. */
     val hours: Map<String, DayHours?>? = null,
-)
+    /** A landscape screen mounted upside down. Use [mounting] to read it. */
+    val flipped: Boolean = false,
+) {
+    val mounting: Mounting get() = mountingOf(orientation, flipped)
+}
 
 /** Opening and closing time on one day, e.g. "08:00" and "18:00". */
 @Serializable

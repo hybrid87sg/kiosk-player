@@ -113,8 +113,11 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to playlists") } },
                 title = { Text(saved?.name ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 actions = {
-                    IconButton(onClick = { showSettings = true }, enabled = saved != null) {
-                        Icon(Icons.Outlined.Edit, contentDescription = "Playlist settings")
+                    // A site's automatic playlist has nothing to set: its name and shape are fixed.
+                    if (saved?.auto != true) {
+                        IconButton(onClick = { showSettings = true }, enabled = saved != null) {
+                            Icon(Icons.Outlined.Edit, contentDescription = "Playlist settings")
+                        }
                     }
                 },
             )
@@ -152,7 +155,7 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
                                 Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     ShapeIcon(saved.orientation, 16.dp, MaterialTheme.colorScheme.onPrimaryContainer)
                                     Text(
-                                        "  ${saved.orientation.label} screens",
+                                        "  ${saved.orientation.label} screens" + if (saved.auto) " · Automatic" else "",
                                         style = MaterialTheme.typography.labelLarge,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     )

@@ -6,6 +6,8 @@ import com.kiosk.core.model.Library
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.Mounting
+import com.kiosk.core.model.isFlipped
+import com.kiosk.core.model.serverOrientation
 import com.kiosk.core.model.PlayerSetup
 import com.kiosk.core.model.PlaylistDetail
 import com.kiosk.core.model.PlaylistEntry
@@ -35,7 +37,10 @@ class DemoAdminRepository(
     override val isDemo = true
 
     private data class DemoMedia(val media: Media, val shapeKnownAt: Long)
-    private data class DemoPlaylist(val id: Long, var name: String, var orientation: ScreenShape, var version: Int, var items: List<PlaylistEntry>)
+    private data class DemoPlaylist(
+        val id: Long, var name: String, var orientation: ScreenShape, var version: Int, var items: List<PlaylistEntry>,
+        val auto: Boolean = false, // one of the site's automatic two
+    )
 
     private var nextId = 100L
     private val start = now()
@@ -52,7 +57,15 @@ class DemoAdminRepository(
     private val playlists = mutableListOf(
         DemoPlaylist(1, "Lobby screens", ScreenShape.LANDSCAPE, 1, listOf(PlaylistEntry(1, 10), PlaylistEntry(2, 10), PlaylistEntry(3, 8))),
         DemoPlaylist(2, "Reception portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(6, 12), PlaylistEntry(7, 10))),
+        // The site's automatic two: a screen with no playlist of its own plays the one that fits it.
+        DemoPlaylist(3, "Landscape", ScreenShape.LANDSCAPE, 1, listOf(PlaylistEntry(4, 10), PlaylistEntry(5, 10)), auto = true),
+        DemoPlaylist(4, "Portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(7, 10)), auto = true),
     )
+
+    /** What a screen plays: the playlist it is pinned to, or else the automatic one of its shape. */
+    private fun playlistOf(d: Device): DemoPlaylist? =
+        d.playlistId?.let { pid -> playlists.firstOrNull { it.id == pid } }
+            ?: playlists.firstOrNull { it.auto && it.orientation == d.mounting.shape }
     private val devices = mutableListOf(
         Device(
             1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4",
@@ -183,7 +196,8 @@ class DemoAdminRepository(
 
     private fun DemoPlaylist.summary() = PlaylistSummary(
         id, name, orientation, version, items.size,
-        devices.filter { it.playlistId == id }.map { DeviceRef(it.id, it.name) },
+        devices.filter { playlistOf(it)?.id == id }.map { DeviceRef(it.id, it.name) },
+        auto = auto,
     )
 
     private fun DemoPlaylist.detail(): PlaylistDetail {
@@ -203,10 +217,13 @@ class DemoAdminRepository(
 
     private fun findPlaylist(id: Long) = playlists.firstOrNull { it.id == id } ?: throw ApiException("Not found", 404)
 
-    override suspend fun playlists(): List<PlaylistSummary> { pause(); return playlists.sortedBy { it.name }.map { it.summary() } }
+    override suspend fun playlists(): List<PlaylistSummary> {
+        pause()
+        return playlists.sortedWith(compareBy({ !it.auto }, { it.name })).map { it.summary() }
+    }
     override suspend fun playlist(id: Long): PlaylistDetail { pause(); return findPlaylist(id).detail() }
 
-    override suspend fun createPlaylist(name: String, orientation: ScreenShape): PlaylistDetail {
+    override suspend fun createPlaylist(name: String, orientation: ScreenShape, site: String?): PlaylistDetail {
         pause()
         if (name.isBlank()) throw ApiException("Give the playlist a name", 400)
         val p = DemoPlaylist(nextId++, name.trim(), orientation, 1, emptyList())
@@ -218,6 +235,9 @@ class DemoAdminRepository(
         pause()
         if (name.isBlank()) throw ApiException("Give the playlist a name", 400)
         val p = findPlaylist(id)
+        if (p.auto && (name.trim() != p.name || orientation != p.orientation)) {
+            throw ApiException("This is a site's automatic playlist: its name and shape can't be changed. Change what's in it instead.", 409)
+        }
         p.name = name.trim(); p.orientation = orientation; p.version++
         return p.detail()
     }
@@ -232,6 +252,9 @@ class DemoAdminRepository(
 
     override suspend fun deletePlaylist(id: Long) {
         pause()
+        if (findPlaylist(id).auto) {
+            throw ApiException("This is a site's automatic playlist and can't be deleted. Take its files out to leave it empty.", 409)
+        }
         val users = devices.filter { it.playlistId == id }
         if (users.isNotEmpty()) {
             throw ApiException("Still playing on ${users.joinToString { it.name.orEmpty() }}. Move those players to another playlist first.", 409)
@@ -239,7 +262,7 @@ class DemoAdminRepository(
         playlists.remove(findPlaylist(id))
     }
 
-    private fun Device.withPlaylistName() = copy(playlistName = playlistId?.let { pid -> playlists.firstOrNull { it.id == pid }?.name })
+    private fun Device.withPlaylistName() = copy(playlistName = playlistOf(this)?.name, playlistAuto = playlistId == null)
 
     override suspend fun devices(): List<Device> {
         pause()
@@ -258,8 +281,8 @@ class DemoAdminRepository(
         if (setup.name.isBlank()) throw ApiException("Give the player a name", 400)
         waiting.removeAll { it.pairingCode == clean }
         val d = Device(
-            nextId++, setup.name.trim(), setup.location?.trim()?.ifBlank { null }, setup.orientation, setup.playlistId,
-            online = true, lastSeen = now(), freeBytes = 28_100_000_000,
+            nextId++, setup.name.trim(), setup.location?.trim()?.ifBlank { null }, setup.orientation.serverOrientation, setup.playlistId,
+            online = true, lastSeen = now(), freeBytes = 28_100_000_000, flipped = setup.orientation.isFlipped,
         )
         devices += d
         return d.withPlaylistName()
@@ -271,7 +294,7 @@ class DemoAdminRepository(
         val i = devices.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: throw ApiException("Not found", 404)
         devices[i] = devices[i].copy(
             name = setup.name.trim(), location = setup.location?.trim()?.ifBlank { null },
-            orientation = setup.orientation, playlistId = setup.playlistId,
+            orientation = setup.orientation.serverOrientation, flipped = setup.orientation.isFlipped, playlistId = setup.playlistId,
         )
         return devices[i].withPlaylistName()
     }
