@@ -43,14 +43,21 @@ jobs:
           cp android/admin/build/outputs/apk/debug/admin-debug.apk apks/KioskAdmin-for-phone.apk
           cp android/player/build/outputs/apk/debug/player-debug.apk apks/KioskPlayer-for-TV.apk
 
+      # Downloads are kept for 3 days: GitHub gives the account a fixed amount of
+      # storage, and keeping every push's files for a month filled it. On an
+      # ordinary push a failed upload doesn't fail the check (the build itself
+      # passed); for a release or a run started by hand it still does, because
+      # those need the files.
       - uses: actions/upload-artifact@v4
+        continue-on-error: ${{ github.event_name == 'push' }}
         with:
           name: Kiosk-Admin-for-phone
           path: apks/KioskAdmin-for-phone.apk
-          retention-days: 30
+          retention-days: 3
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: ${{ github.event_name == 'push' }}
         with:
           name: Kiosk-Player-for-TV
           path: apks/KioskPlayer-for-TV.apk
-          retention-days: 30
+          retention-days: 3
