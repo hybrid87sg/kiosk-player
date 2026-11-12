@@ -23,6 +23,9 @@ import com.kiosk.core.network.ApiException
 import com.kiosk.core.player.heavyVideoWarning
 import kotlinx.coroutines.delay
 
+/** The demo's first location; its playlists and first screen live here. */
+private const val DEMO_LOCATION = "Main lobby"
+
 /**
  * Demo mode: a pretend server kept in memory, filled with sample data, so the
  * app can be tried without a server or Google setup. It behaves like the real
@@ -39,7 +42,8 @@ class DemoAdminRepository(
     private data class DemoMedia(val media: Media, val shapeKnownAt: Long)
     private data class DemoPlaylist(
         val id: Long, var name: String, var orientation: ScreenShape, var version: Int, var items: List<PlaylistEntry>,
-        val auto: Boolean = false, // one of the site's automatic two
+        val auto: Boolean = false, // one of the location's automatic two
+        val location: String = DEMO_LOCATION,
     )
 
     private var nextId = 100L
@@ -56,16 +60,28 @@ class DemoAdminRepository(
     )
     private val playlists = mutableListOf(
         DemoPlaylist(1, "Lobby screens", ScreenShape.LANDSCAPE, 1, listOf(PlaylistEntry(1, 10), PlaylistEntry(2, 10), PlaylistEntry(3, 8))),
-        DemoPlaylist(2, "Reception portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(6, 12), PlaylistEntry(7, 10))),
-        // The site's automatic two: a screen with no playlist of its own plays the one that fits it.
+        DemoPlaylist(2, "Reception portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(6, 12), PlaylistEntry(7, 10)), location = "Branch office"),
+        // A location's automatic two: a screen with no playlist of its own plays the one that fits it.
         DemoPlaylist(3, "Landscape", ScreenShape.LANDSCAPE, 1, listOf(PlaylistEntry(4, 10), PlaylistEntry(5, 10)), auto = true),
         DemoPlaylist(4, "Portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(7, 10)), auto = true),
+        DemoPlaylist(5, "Landscape", ScreenShape.LANDSCAPE, 1, emptyList(), auto = true, location = "Branch office"),
+        DemoPlaylist(6, "Portrait", ScreenShape.PORTRAIT, 1, listOf(PlaylistEntry(6, 12)), auto = true, location = "Branch office"),
     )
+    private val locationIds = mutableMapOf(DEMO_LOCATION to 1L, "Branch office" to 2L)
+
+    /** A location typed when setting up a screen is made on the spot, with its automatic two. */
+    private fun ensureLocation(name: String) {
+        if (name in locationIds) return
+        locationIds[name] = nextId++
+        ScreenShape.entries.forEach { shape ->
+            playlists += DemoPlaylist(nextId++, shape.label, shape, 1, emptyList(), auto = true, location = name)
+        }
+    }
 
     /** What a screen plays: the playlist it is pinned to, or else the automatic one of its shape. */
     private fun playlistOf(d: Device): DemoPlaylist? =
         d.playlistId?.let { pid -> playlists.firstOrNull { it.id == pid } }
-            ?: playlists.firstOrNull { it.auto && it.orientation == d.mounting.shape }
+            ?: playlists.firstOrNull { it.auto && it.orientation == d.mounting.shape && it.location == d.location }
     private val devices = mutableListOf(
         Device(
             1, "Back wall", "Main lobby", Mounting.LANDSCAPE, 1, online = true, lastSeen = start, currentFilename = "Lobby promo.mp4",
@@ -126,7 +142,7 @@ class DemoAdminRepository(
 
     private suspend fun pause() { if (latencyMs > 0) delay(latencyMs) }
 
-    override suspend fun signInWithGoogle(idToken: String) = Session("demo", myEmail, Role.SUPERADMIN)
+    override suspend fun signIn(username: String, password: String) = Session("demo", myEmail, Role.SUPERADMIN)
     override suspend fun signOut() {}
 
     override suspend fun library(): Library {
@@ -197,7 +213,7 @@ class DemoAdminRepository(
     private fun DemoPlaylist.summary() = PlaylistSummary(
         id, name, orientation, version, items.size,
         devices.filter { playlistOf(it)?.id == id }.map { DeviceRef(it.id, it.name) },
-        auto = auto,
+        locationId = locationIds.getValue(location), location = location, auto = auto,
     )
 
     private fun DemoPlaylist.detail(): PlaylistDetail {
@@ -212,6 +228,7 @@ class DemoAdminRepository(
                     )
                 }
             },
+            locationId = s.locationId, location = s.location, auto = s.auto,
         )
     }
 
@@ -219,14 +236,16 @@ class DemoAdminRepository(
 
     override suspend fun playlists(): List<PlaylistSummary> {
         pause()
-        return playlists.sortedWith(compareBy({ !it.auto }, { it.name })).map { it.summary() }
+        return playlists.sortedWith(compareBy({ it.location }, { !it.auto }, { it.name })).map { it.summary() }
     }
     override suspend fun playlist(id: Long): PlaylistDetail { pause(); return findPlaylist(id).detail() }
 
-    override suspend fun createPlaylist(name: String, orientation: ScreenShape, site: String?): PlaylistDetail {
+    override suspend fun createPlaylist(name: String, orientation: ScreenShape, locationId: Long): PlaylistDetail {
         pause()
         if (name.isBlank()) throw ApiException("Give the playlist a name", 400)
-        val p = DemoPlaylist(nextId++, name.trim(), orientation, 1, emptyList())
+        val location = locationIds.entries.firstOrNull { it.value == locationId }?.key
+            ?: throw ApiException("Choose the location this playlist is for", 400)
+        val p = DemoPlaylist(nextId++, name.trim(), orientation, 1, emptyList(), location = location)
         playlists += p
         return p.detail()
     }
@@ -236,7 +255,7 @@ class DemoAdminRepository(
         if (name.isBlank()) throw ApiException("Give the playlist a name", 400)
         val p = findPlaylist(id)
         if (p.auto && (name.trim() != p.name || orientation != p.orientation)) {
-            throw ApiException("This is a site's automatic playlist: its name and shape can't be changed. Change what's in it instead.", 409)
+            throw ApiException("This is a location's automatic playlist: its name and shape can't be changed. Change what's in it instead.", 409)
         }
         p.name = name.trim(); p.orientation = orientation; p.version++
         return p.detail()
@@ -253,7 +272,7 @@ class DemoAdminRepository(
     override suspend fun deletePlaylist(id: Long) {
         pause()
         if (findPlaylist(id).auto) {
-            throw ApiException("This is a site's automatic playlist and can't be deleted. Take its files out to leave it empty.", 409)
+            throw ApiException("This is a location's automatic playlist and can't be deleted. Take its files out to leave it empty.", 409)
         }
         val users = devices.filter { it.playlistId == id }
         if (users.isNotEmpty()) {
@@ -280,8 +299,10 @@ class DemoAdminRepository(
         if (clean.length != 6) throw ApiException("No player is showing that code", 404)
         if (setup.name.isBlank()) throw ApiException("Give the player a name", 400)
         waiting.removeAll { it.pairingCode == clean }
+        val location = setup.location?.trim()?.ifBlank { null } ?: throw ApiException("Choose a location for this screen", 400)
+        ensureLocation(location)
         val d = Device(
-            nextId++, setup.name.trim(), setup.location?.trim()?.ifBlank { null }, setup.orientation.serverOrientation, setup.playlistId,
+            nextId++, setup.name.trim(), location, setup.orientation.serverOrientation, setup.playlistId,
             online = true, lastSeen = now(), freeBytes = 28_100_000_000, flipped = setup.orientation.isFlipped,
         )
         devices += d
@@ -292,8 +313,10 @@ class DemoAdminRepository(
         pause()
         if (setup.name.isBlank()) throw ApiException("Give the player a name", 400)
         val i = devices.indexOfFirst { it.id == id }.takeIf { it >= 0 } ?: throw ApiException("Not found", 404)
+        val location = setup.location?.trim()?.ifBlank { null } ?: throw ApiException("Choose a location for this screen", 400)
+        ensureLocation(location)
         devices[i] = devices[i].copy(
-            name = setup.name.trim(), location = setup.location?.trim()?.ifBlank { null },
+            name = setup.name.trim(), location = location,
             orientation = setup.orientation.serverOrientation, flipped = setup.orientation.isFlipped, playlistId = setup.playlistId,
         )
         return devices[i].withPlaylistName()
@@ -306,12 +329,21 @@ class DemoAdminRepository(
 
     override suspend fun users(): List<User> { pause(); return users.sortedBy { it.email } }
 
-    override suspend fun inviteUser(email: String, role: Role): User {
+    override suspend fun addUser(username: String, role: Role, password: String): User {
         pause()
-        val clean = email.trim().lowercase()
-        if (!Regex("^[^@\\s]+@[^@\\s]+$").matches(clean)) throw ApiException("Enter a valid email address", 400)
-        if (users.any { it.email == clean }) throw ApiException("That email is already a user", 409)
+        val clean = username.trim().lowercase()
+        if (!Regex("^[a-z0-9][a-z0-9._@-]{2,39}$").matches(clean)) {
+            throw ApiException("A username is 3 to 40 letters or digits (and . _ - @), starting with a letter or digit", 400)
+        }
+        if (password.length < 8) throw ApiException("Use a password of at least 8 characters", 400)
+        if (users.any { it.email == clean }) throw ApiException("That username is taken", 409)
         return User(nextId++, clean, role, now()).also { users += it }
+    }
+
+    override suspend fun setPassword(id: Long, password: String): User {
+        pause()
+        if (password.length < 8) throw ApiException("Use a password of at least 8 characters", 400)
+        return users.firstOrNull { it.id == id } ?: throw ApiException("Not found", 404)
     }
 
     override suspend fun changeRole(id: Long, role: Role): User {

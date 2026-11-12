@@ -3,6 +3,7 @@ package com.kiosk.core.data
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlaylistEntry
 import com.kiosk.core.model.PlayerSetup
+import com.kiosk.core.model.Role
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.network.ApiException
 import kotlinx.coroutines.test.runTest
@@ -121,7 +122,7 @@ class RemoteAdminRepositoryTest {
 
     @Test fun signInSavesTheTokenAndSignOutClearsIt() = runTest {
         server.enqueue(MockResponse().setBody("""{"token":"new","email":"a@b.c","role":"system_manager"}"""))
-        repo.signInWithGoogle("google-id-token")
+        repo.signIn("someone", "a-password-1")
         assertEquals("new", saved)
         server.enqueue(MockResponse().setBody("""{"ok":true}"""))
         repo.signOut()
@@ -161,23 +162,48 @@ class RemoteAdminRepositoryTest {
         assertTrue(body, !body.contains("code"))
     }
 
-    @Test fun playlistsCarryTheirSite() = runTest {
+    @Test fun playlistsCarryTheirLocation() = runTest {
         server.enqueue(MockResponse().setBody(
-            """[{"id":1,"name":"Landscape","orientation":"landscape","version":1,"item_count":0,"site":"Qoltured","auto":true,"unassigned":false},
-                {"id":2,"name":"Old ideas","orientation":"portrait","version":1,"item_count":0,"site":null,"auto":false,"unassigned":true}]""",
+            """[{"id":1,"name":"Landscape","orientation":"landscape","version":1,"item_count":0,"location_id":7,"location":"Qoltured","auto":true,"unassigned":false},
+                {"id":2,"name":"Old ideas","orientation":"portrait","version":1,"item_count":0,"location_id":null,"location":null,"auto":false,"unassigned":true}]""",
         ))
         val list = repo.playlists()
-        assertEquals("Qoltured", list[0].site)
+        assertEquals(7L, list[0].locationId)
+        assertEquals("Qoltured", list[0].location)
         assertTrue(list[0].auto)
         assertTrue(list[1].unassigned)
+        assertNull(list[1].locationId)
         server.takeRequest()
 
-        // An extra playlist is made for a site; a rename doesn't send the site.
-        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":3,"name":"Menu","orientation":"landscape","version":1,"item_count":0,"site":"Qoltured"}"""))
-        assertEquals("Qoltured", repo.createPlaylist("Menu", ScreenShape.LANDSCAPE, "Qoltured").site)
-        assertTrue(server.takeRequest().body.readUtf8().contains("\"site\":\"Qoltured\""))
-        server.enqueue(MockResponse().setBody("""{"id":3,"name":"Menus","orientation":"landscape","version":2,"item_count":0,"site":"Qoltured"}"""))
+        // An extra playlist is made for a location; a rename doesn't send the location.
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":3,"name":"Menu","orientation":"landscape","version":1,"item_count":0,"location_id":7,"location":"Qoltured"}"""))
+        assertEquals("Qoltured", repo.createPlaylist("Menu", ScreenShape.LANDSCAPE, 7).location)
+        assertTrue(server.takeRequest().body.readUtf8().contains("\"location_id\":7"))
+        server.enqueue(MockResponse().setBody("""{"id":3,"name":"Menus","orientation":"landscape","version":2,"item_count":0,"location_id":7,"location":"Qoltured"}"""))
         repo.updatePlaylist(3, "Menus", ScreenShape.LANDSCAPE)
-        assertTrue(!server.takeRequest().body.readUtf8().contains("site"))
+        assertTrue(!server.takeRequest().body.readUtf8().contains("location"))
+    }
+
+    @Test fun signingInSendsTheUsernameAndPassword() = runTest {
+        server.enqueue(MockResponse().setBody("""{"token":"tok-1","username":"patrick","email":"patrick","role":"system_manager"}"""))
+        val session = repo.signIn(" Patrick ", "starfish-rock-1")
+        assertEquals("patrick", session.email)
+        val request = server.takeRequest()
+        assertEquals("/api/auth/login", request.path)
+        val body = request.body.readUtf8()
+        assertTrue(body, body.contains("\"username\":\"Patrick\""))
+        assertTrue(body, body.contains("\"password\":\"starfish-rock-1\""))
+
+        // Adding someone, and giving them a new password.
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":5,"username":"dan","email":"dan","role":"content_uploader","has_password":true}"""))
+        assertEquals("dan", repo.addUser("dan", Role.CONTENT_UPLOADER, "krabby-patty-3").email)
+        val added = server.takeRequest().body.readUtf8()
+        assertTrue(added, added.contains("\"username\":\"dan\"") && added.contains("\"password\":\"krabby-patty-3\""))
+        server.enqueue(MockResponse().setBody("""{"id":5,"username":"dan","email":"dan","role":"content_uploader","has_password":true}"""))
+        repo.setPassword(5, "pineapple-9x")
+        val reset = server.takeRequest()
+        assertEquals("PATCH", reset.method)
+        assertEquals("/api/users/5", reset.path)
+        assertTrue(reset.body.readUtf8().contains("\"password\":\"pineapple-9x\""))
     }
 }

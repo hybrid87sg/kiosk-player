@@ -40,7 +40,7 @@ that fits. On a slow Home Assistant machine (a Raspberry Pi), turn **Make playba
 
 Allow about an hour the first time. You need:
 
-- a **Google Workspace** account (your company's Google account),
+- a **Google account** whose Drive holds your signage files (a Google Workspace account with a shared drive works best),
 - **Home Assistant OS** with the **Tailscale** add-on already working,
 - an **Android phone** and one or more **Android TV boxes**,
 - a computer, to copy files to Home Assistant.
@@ -56,59 +56,33 @@ Fill this in as you go. You'll need these values in Part 3.
 
 | Setting | Where it comes from | Example |
 |---|---|---|
-| Spongebob account email | Your Google Workspace account | `you@yourcompany.com` |
-| Web client ID | Part 1, step 5 | `1234…-abc….apps.googleusercontent.com` |
-| Web sign-in client ID + secret (optional) | Part 1, step 9 | `5678…-xyz….apps.googleusercontent.com` |
-| Service account email | Part 1, step 7 | `kiosk-drive@kiosk-signage.iam.gserviceaccount.com` |
-| Service account key file | Part 1, step 8 | `service-account.json` (**secret, never share it**) |
+| Service account email | Part 1, step 3 | `kiosk-drive@kiosk-signage.iam.gserviceaccount.com` |
+| Service account key file | Part 1, step 4 | `service-account.json` (**secret, never share it**) |
 | Drive folder ID | Part 2, step 4 | `0AbCdEfGhIjKlMnOpQ` |
 | Home network address | Part 4, step 1 | `192.168.1.20:3000` |
 | Tailscale address | Part 4, step 2 | `homeassistant.tail1234.ts.net:3000` |
 
 ---
 
-### Part 1: Google Cloud (about 20 minutes)
+### Part 1: Google Cloud (about 10 minutes)
 
-This tells Google about your apps, so people can sign in with Google and the server can use Drive.
-Do it while signed in with your **Workspace** account.
+This gives the server a way to read your Drive folder. Signing in to Kiosk doesn't involve Google:
+people use a username and password you make in Kiosk (Part 3).
 
 1. **Create a project.** Go to [console.cloud.google.com](https://console.cloud.google.com), open the project
    picker at the top, choose **New project**, name it `Kiosk Signage`, and click **Create**. Make sure the
    new project is selected at the top.
 2. **Switch on the Drive API.** Go to **APIs & Services → Library**, search for **Google Drive API**,
    open it, and click **Enable**.
-3. **Set up sign-in.** Go to **Google Auth Platform** (it's also linked from **APIs & Services → OAuth
-   consent screen**) and click **Get started**:
-   - **App name:** `Kiosk Admin`. **User support email:** your email.
-   - **Audience:** **Internal**. Only people in your Workspace can sign in, and Google doesn't need to
-     review the app.
-   - **Contact information:** your email. Agree, then click **Create**.
-4. **Open Clients.** In **Google Auth Platform → Clients**, click **Create client**.
-5. **Create the Web client, used by the server.** Choose **Web application** as the application type,
-   name it `Kiosk server`, and click **Create**. You don't need to add any URIs. Copy the **Client ID**
-   (it ends in `.apps.googleusercontent.com`) into your settings sheet. You don't need the client secret.
-6. **Create the Android client, used by the phone app.** Click **Create client** again and choose
-   **Android**:
-
-   ![Create the Android client](docs/images/google-android-client.svg)
-
-   - **Package name:** `com.kiosk.admin`
-   - **SHA-1 certificate fingerprint:** `C6:6E:87:04:EF:4A:7E:5C:34:5C:2A:74:CE:66:54:92:40:4E:37:26`
-     (the test key in [`android/keystore`](android/keystore/README.md)).
-   - Click **Create**. There's nothing to copy from this one.
-7. **Create the robot account (a "service account").** Go to **IAM & Admin → Service accounts →
+3. **Create the robot account (a "service account").** Go to **IAM & Admin → Service accounts →
    Create service account**, name it `kiosk-drive`, click **Create and continue**, skip the optional
    steps, and click **Done**. Copy its **email** into your settings sheet.
-8. **Download its key.** Click the service account, open the **Keys** tab, then **Add key → Create new
+4. **Download its key.** Click the service account, open the **Keys** tab, then **Add key → Create new
    key → JSON → Create**. A `.json` file downloads. Rename it to `service-account.json` and keep it
-   somewhere safe: it works like a password to your signage Drive.
+   somewhere safe: it works like a password to your signage Drive. Never send it to anyone or paste it
+   into a chat; if that happens, delete the key here and make a new one.
 
-9. **Optional: the web sign-in client.** You only need this if people should sign in to the web page at
-   `http://<address>:3000`; the Home Assistant sidebar page doesn't need it. In **Google Auth Platform → Clients →
-   Create client**, choose **TVs and Limited Input devices**, name it `Kiosk web`, and click **Create**.
-   Copy the **Client ID** and the **Client secret** into your settings sheet.
-
-> **If step 8 says key creation is blocked:** your Workspace has a policy that blocks service account keys.
+> **If step 4 says key creation is blocked:** your Workspace has a policy that blocks service account keys.
 > A Workspace admin can allow it in Cloud Console under **IAM & Admin → Organization policies →
 > "Disable service account key creation"** (`iam.disableServiceAccountKeyCreation`), set for this project only.
 
@@ -147,8 +121,7 @@ Do it while signed in with your **Workspace** account.
    ![The add-on's Configuration tab](docs/images/ha-addon-configuration.svg)
 
    Leave **Mode** as `main`. **Site name** is optional (e.g. `Head office`); it matters once you
-   [add another site](#adding-another-site). If you did Part 1, step 9, also fill in
-   **Web sign-in client ID** and **Web sign-in client secret**. Leave **Service account key file** as it is.
+   [add another site](#adding-another-site). Leave **Service account key file** as it is.
 4. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
    **Start**. The **Log** tab should end with `Kiosk server running on port 3000`.
 5. **Add the Google key.** Open **Kiosk Signage** in Home Assistant's sidebar and go to
@@ -159,6 +132,10 @@ Do it while signed in with your **Workspace** account.
    haven't already (Part 2, step 2), share your signage folder with that email as **Editor**
    (**Content manager** on a shared drive). Then press **Test connection** under **Google Drive folder**:
    it should say `✓ Connected`.
+
+7. **Make your own username.** Still in Kiosk Signage, go to **Users → Add someone**. Type a username,
+   a password of at least 8 characters, and choose **Spongebob** (everything). This is what you sign in
+   with on the phone. The sidebar page itself never asks: your Home Assistant login covers it.
 
 > **Prefer a file?** You can instead copy `service-account.json` into the **addon_configs** share (via the
 > **Samba share** add-on), in the folder ending in **`_kiosk_server`**. A key added on the Settings page is
@@ -199,14 +176,15 @@ flowchart TB
    `KioskAdmin-for-phone.apk` **on your phone** and open it. Allow **Install unknown apps** when Android
    asks.
 2. Open **Kiosk Admin**, enter the **Tailscale address** (e.g. `homeassistant.tail1234.ts.net:3000`),
-   and tap **Sign in with Google**. Choose the Spongebob account.
+   then the **username** and **password** you made in Part 3, step 7, and tap **Sign in**.
 
    ![Connecting the apps](docs/images/apps-connect.svg)
 
 3. **Library** shows your test files, sorted into **Landscape** and **Portrait**.
-4. **Locations** lists your site with its two playlists, **Landscape** and **Portrait**. They are made
-   for you: every screen plays the one that fits how it is mounted. Open **Landscape**, click
-   **Add from library**, then **Save playlist**. (On the phone, they are on the **Playlists** tab.)
+4. **Add a location**, the place your screens are in, e.g. `Main lobby`: on the web page, **Locations →
+   Add location**. It gets two playlists made for it, **Landscape** and **Portrait**, and every screen
+   there plays the one that fits how it is mounted. Open **Landscape**, click **Add from library**, then
+   **Save playlist**. (On the phone, they are on the **Playlists** tab.)
 
 ### Part 6: The TVs (about 5 minutes per TV)
 
@@ -234,11 +212,11 @@ flowchart TB
    Part 4, e.g. `192.168.1.20:3000`.)
 4. On the web interface (**Kiosk Signage** in Home Assistant's sidebar), the TV appears under
    **New screens waiting** with its model name and code. Click **Add**, then set it up:
-   - its **name** and **location**,
+   - its **name** and its **location** (required: that is where its playlist and working hours come from),
    - **how the screen is mounted**: landscape, landscape upside down, or portrait turned left or right,
-   - its **playlist**. Leave it on **Automatic** and the screen plays its site's Landscape or Portrait
-     playlist, whichever fits. To show something different on one screen, add an **extra playlist** for
-     the site under **Locations** and choose it here.
+   - its **playlist**. Leave it on **Automatic** and the screen plays its location's Landscape or
+     Portrait playlist, whichever fits. To show something different on one screen, add an **extra
+     playlist** for the location under **Locations** and choose it here.
 
    Click **Add screen**. On your phone, **Players** shows the same **New TVs waiting** list; you can also
    **Scan QR code** or **Enter code instead**.
@@ -251,7 +229,7 @@ Everything you can do in the phone app, and more, from any computer. There are t
 | Where | Who can use it | How to sign in |
 |---|---|---|
 | **Kiosk Signage** in Home Assistant's sidebar | Home Assistant admins (as Spongebob) | Already signed in through Home Assistant |
-| `http://<address>:3000` in any browser. The add-on's **Open web UI** button opens it too. | Anyone you invited, with their role. They don't need a Home Assistant account. | **Sign in with Google**, then enter the code shown at google.com/device (needs Part 1, step 9) |
+| `http://<address>:3000` in any browser. The add-on's **Open web UI** button opens it too. | Anyone you made a user for, with their role. They don't need a Home Assistant account. | **Sign in** with their Kiosk username and password. |
 
 **Which address?** At home, the home-network address (`http://192.168.1.20:3000`). Away from home, the
 Tailscale address (`http://homeassistant.tail1234.ts.net:3000`). For someone outside your network, install
@@ -262,10 +240,11 @@ can't get into Home Assistant itself without a Home Assistant login.
 
 What's on it:
 - **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage),
-  updated every 10 seconds and grouped by site and location, with each location's working hours. New TVs
+  updated every 10 seconds and grouped by location, with each location's working hours. New TVs
   appear under **New screens waiting**; click **Add**. **Add by code** is there too.
-- **Locations:** every location is listed in the side menu. Open one to see its screens, set its
-  **working hours**, rename it, or **move a screen here**. **+ Add location** makes a new one.
+- **Locations:** one block per location, with its **playlists**, its **working hours** and its screens.
+  Every location is also listed in the side menu; open one to rename it or **move a screen here**.
+  **+ Add location** makes a new one.
   **Delete location** asks you to type the location's name, and only works once no screens are left in it.
 - **Library:** drag files from your computer onto the page to upload them.
   - **Show from / until:** click a file's calendar button (or pick dates before uploading) to choose the
@@ -275,12 +254,12 @@ What's on it:
   - Expired and removed files wait under **Expired and removed**, where **Restore** brings them back.
   - **Kiosk never deletes anything from Google Drive.** Removed and expired files stay in the shared drive;
     tidy it up there yourself whenever you like.
-- **Playlists** live under **Locations**, a site at a time. Each site has an automatic **Landscape** and
-  **Portrait** playlist that its screens follow by themselves, plus any **extra playlists** you add for a
-  screen that should show something different. A main server that has no screens of its own, and only
-  manages the other sites, gets no playlists. The automatic two can't be renamed or deleted; you change
-  what's in them. Playlists that screens were playing before version 0.5.0 became their site's automatic
-  ones; unused ones are listed under **Older playlists**.
+- **Playlists** live under **Locations**. Each location has an automatic **Landscape** and **Portrait**
+  playlist that its screens follow by themselves, plus any **extra playlists** you add for a screen that
+  should show something different. The automatic two can't be renamed or deleted; you change what's in
+  them. Locations are one list for all your sites: a screen is in a location whichever Home Assistant it
+  connects through. A playlist that belongs to no location (from an older version, or left by a deleted
+  location) is listed under **Playlists without a location**, to move or delete.
 - **In a playlist:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
   Dates use the browser's local timezone; players include files only during that window.
 - **Settings** (Spongebob): pick who gets **notifications** when a screen goes offline, change the Drive
@@ -327,8 +306,8 @@ Home Assistant app.
 Have Home Assistants at other places too? Keep **one** of them as the main control. At each other site,
 the Kiosk add-on runs as a **relay**: that site's TVs talk to their own Home Assistant, which passes
 everything on to the main one over Tailscale. Every screen, at every site, shows up in the one web
-interface, and you use one user list and one library. Each site gets its own Landscape and Portrait
-playlist, so two sites can show different things.
+interface, and you use one user list, one library and one list of locations. Each location has its own
+Landscape and Portrait playlist, so two places can show different things.
 
 ```mermaid
 flowchart LR
@@ -366,9 +345,10 @@ TVs over the local network. If a site's internet goes down, its TVs keep playing
 5. **Add that site's TVs** as in Part 6. They find their local relay by themselves, and appear on the main
    web interface under **New screens waiting**, labelled with the site.
 
-### Inviting other people
+### Adding other people
 
-In the web interface or Kiosk Admin, go to **Users → Invite someone**, enter their Workspace email, and pick a role:
+In the web interface or Kiosk Admin, go to **Users → Add someone**. Give them a **username**, a
+**password** of at least 8 characters, and a role:
 
 | Role | Can do |
 |---|---|
@@ -376,8 +356,17 @@ In the web interface or Kiosk Admin, go to **Users → Invite someone**, enter t
 | **Patrick** | Players and content |
 | **Squidward** | Files and playlists |
 
-They can use the web interface from their computer (see above), or install the phone app the same way,
-connect with Tailscale, and sign in with Google.
+Tell them their username and password yourself; Kiosk keeps passwords scrambled and can't show one
+again. They can use the web interface from their computer (see above), or install the phone app the
+same way, connect with Tailscale, and sign in.
+
+- **Forgotten password:** Spongebob gives them a new one under **Users → New password**. If Spongebob's
+  own is forgotten, open Kiosk Signage from Home Assistant's sidebar (which needs no Kiosk password) and
+  set a new one there.
+- **Five wrong passwords** lock that username for five minutes.
+- **Removing someone** signs them out straight away.
+- On the same Wi-Fi as the server, passwords travel unencrypted, as with most home-network devices. Over
+  Tailscale they are encrypted. Use passwords you don't use anywhere else.
 
 ### Troubleshooting
 
@@ -387,10 +376,10 @@ connect with Tailscale, and sign in with Google.
 | Library is empty, or says `The Google key hasn't been added yet` | Add the key under **Settings → Google key** (upload or paste). |
 | Library says `Google can't find the Drive folder` | Check the folder ID under **Settings**, and share the folder with the email shown on the **Google key** card, as **Editor**. |
 | Phone: "Can't reach the server" | Is the Tailscale app on? Does `…:3000/api/health` open in the phone's browser? |
-| Phone: "isn't set up for Google sign-in yet" | The **Google web client ID** setting is empty. |
-| Phone: Google sign-in fails or shows a developer error | Check the Android client in Part 1, step 6: package `com.kiosk.admin` and the exact SHA-1. |
-| Web page says sign-in "isn't set up" | Fill in the web sign-in client ID and secret (Part 1, step 9), or use the Home Assistant sidebar page. |
-| Phone: "… is not allowed in yet" | Sign in with the Spongebob account, or ask Spongebob to invite you. |
+| Phone: "This server is older than this app" | Update the Kiosk add-on in Home Assistant to 0.6.0 or newer. |
+| Phone or web: "Wrong username or password" | Usernames are lower case. Spongebob can set a new password under **Users → New password**. |
+| "Too many wrong passwords" | Wait five minutes, or have Spongebob set a new password, which clears it. |
+| A screen shows nothing and says "No location yet" | Edit the screen and choose its location; its playlist comes from there. |
 | Library says "Could not reach Google Drive" | Check the Drive folder ID, and that the service account is a **Content manager** on the shared drive. |
 | A screen is black during the day | Check its location's **working hours** (Locations), and that the TV's clock and time zone are right. |
 | A TV doesn't wake up at opening time | Allow **turning the screen off** again in Kiosk Player's Settings, switch on HDMI-CEC on the TV (with a box), or use the display's own on/off timer. You get a notification 5 minutes after opening if it stays offline. |

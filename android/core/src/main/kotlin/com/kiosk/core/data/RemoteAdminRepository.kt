@@ -14,7 +14,8 @@ import com.kiosk.core.model.Session
 import com.kiosk.core.model.User
 import com.kiosk.core.model.WaitingDevice
 import com.kiosk.core.network.AdminApi
-import com.kiosk.core.network.GoogleSignInBody
+import com.kiosk.core.network.LoginBody
+import com.kiosk.core.network.PasswordBody
 import com.kiosk.core.network.ItemBody
 import com.kiosk.core.network.ItemsBody
 import com.kiosk.core.network.PlaylistBody
@@ -43,11 +44,11 @@ class RemoteAdminRepository(
 
     override val isDemo = false
 
-    /** Checks the address really is a Kiosk server, and gets its Google sign-in settings. */
+    /** Checks the address really is a Kiosk server, and how it wants people to sign in. */
     suspend fun serverConfig(): ServerConfig = apiCall { api.config() }
 
-    override suspend fun signInWithGoogle(idToken: String): Session {
-        val session = apiCall { api.signIn(GoogleSignInBody(idToken)) }
+    override suspend fun signIn(username: String, password: String): Session {
+        val session = apiCall { api.signIn(LoginBody(username.trim(), password)) }
         token = session.token
         onTokenChanged(session.token)
         return session
@@ -77,8 +78,8 @@ class RemoteAdminRepository(
     override suspend fun playlists(): List<PlaylistSummary> = apiCall { api.playlists() }
     override suspend fun playlist(id: Long): PlaylistDetail = apiCall { api.playlist(id) }
 
-    override suspend fun createPlaylist(name: String, orientation: ScreenShape, site: String?): PlaylistDetail =
-        apiCall { api.createPlaylist(PlaylistBody(name, orientation, site)) }
+    override suspend fun createPlaylist(name: String, orientation: ScreenShape, locationId: Long): PlaylistDetail =
+        apiCall { api.createPlaylist(PlaylistBody(name, orientation, locationId)) }
 
     override suspend fun updatePlaylist(id: Long, name: String, orientation: ScreenShape): PlaylistDetail =
         apiCall { api.updatePlaylist(id, PlaylistBody(name, orientation)) }
@@ -100,7 +101,9 @@ class RemoteAdminRepository(
     override suspend fun removeDevice(id: Long) { apiCall { api.deleteDevice(id) } }
 
     override suspend fun users(): List<User> = apiCall { api.users() }
-    override suspend fun inviteUser(email: String, role: Role): User = apiCall { api.addUser(UserBody(email, role)) }
+    override suspend fun addUser(username: String, role: Role, password: String): User =
+        apiCall { api.addUser(UserBody(username.trim(), role, password)) }
+    override suspend fun setPassword(id: Long, password: String): User = apiCall { api.setPassword(id, PasswordBody(password)) }
     override suspend fun changeRole(id: Long, role: Role): User = apiCall { api.changeRole(id, RoleBody(role)) }
     override suspend fun removeUser(id: Long) { apiCall { api.deleteUser(id) } }
 

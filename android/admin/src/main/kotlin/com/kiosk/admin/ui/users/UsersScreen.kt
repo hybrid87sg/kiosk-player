@@ -1,5 +1,6 @@
 package com.kiosk.admin.ui.users
 
+import com.kiosk.admin.ui.common.PasswordField
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -79,11 +80,17 @@ class UsersViewModel(private val repo: AdminRepository, onSignedOut: () -> Unit)
 
     init { launchSafely { _users.value = repo.users() } }
 
-    fun invite(email: String, role: Role, onDone: () -> Unit) = launchSafely {
-        val user = repo.inviteUser(email, role)
+    fun add(username: String, role: Role, password: String, onDone: () -> Unit) = launchSafely {
+        val user = repo.addUser(username, role, password)
         _users.value = repo.users()
         onDone()
-        say("Invited ${user.email}. They can sign in with Google now.")
+        say("${user.email} can sign in now. Tell them their username and password.")
+    }
+
+    fun setPassword(user: User, password: String, onDone: () -> Unit) = launchSafely {
+        repo.setPassword(user.id, password)
+        onDone()
+        say("${user.email} has a new password and was signed out everywhere")
     }
 
     fun changeRole(user: User, role: Role) = launchSafely {
@@ -113,6 +120,7 @@ fun UsersRoute(ctx: ScreenContext) {
     val message by vm.message.collectAsStateWithLifecycle()
     ShowMessage(message, vm::messageShown)
     var showInvite by remember { mutableStateOf(false) }
+    var passwordFor by remember { mutableStateOf<User?>(null) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -127,7 +135,7 @@ fun UsersRoute(ctx: ScreenContext) {
                 Button(onClick = { showInvite = true }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                     Icon(Icons.Outlined.Add, contentDescription = null)
                     Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-                    Text("Invite someone")
+                    Text("Add someone")
                 }
             }
             item {
@@ -140,7 +148,10 @@ fun UsersRoute(ctx: ScreenContext) {
                         KioskCard {
                             list.forEachIndexed { i, u ->
                                 if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                UserRow(u, isMe = u.email == ctx.session.email, onRole = { vm.changeRole(u, it) }, onRemove = { vm.remove(u) })
+                                UserRow(
+                                    u, isMe = u.email == ctx.session.email,
+                                    onRole = { vm.changeRole(u, it) }, onPassword = { passwordFor = u }, onRemove = { vm.remove(u) },
+                                )
                             }
                         }
                     }
@@ -161,13 +172,18 @@ fun UsersRoute(ctx: ScreenContext) {
 
     if (showInvite) {
         ModalBottomSheet(onDismissRequest = { showInvite = false }) {
-            InviteForm(onInvite = { email, role -> vm.invite(email, role) { showInvite = false } }, onCancel = { showInvite = false })
+            AddUserForm(onAdd = { username, role, password -> vm.add(username, role, password) { showInvite = false } }, onCancel = { showInvite = false })
+        }
+    }
+    passwordFor?.let { user ->
+        ModalBottomSheet(onDismissRequest = { passwordFor = null }) {
+            NewPasswordForm(user, onSave = { password -> vm.setPassword(user, password) { passwordFor = null } }, onCancel = { passwordFor = null })
         }
     }
 }
 
 @Composable
-private fun UserRow(u: User, isMe: Boolean, onRole: (Role) -> Unit, onRemove: () -> Unit) {
+private fun UserRow(u: User, isMe: Boolean, onRole: (Role) -> Unit, onPassword: () -> Unit, onRemove: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Row(Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Avatar(u.email, 40, highlighted = isMe)
@@ -187,6 +203,7 @@ private fun UserRow(u: User, isMe: Boolean, onRole: (Role) -> Unit, onRemove: ()
                         }
                     }
                 }
+                TextButton(onClick = onPassword, modifier = Modifier.heightIn(min = 48.dp)) { Text("New password") }
             }
         }
         if (!isMe) {
@@ -198,17 +215,23 @@ private fun UserRow(u: User, isMe: Boolean, onRole: (Role) -> Unit, onRemove: ()
 }
 
 @Composable
-private fun InviteForm(onInvite: (String, Role) -> Unit, onCancel: () -> Unit) {
-    var email by rememberSaveable { mutableStateOf("") }
+private fun AddUserForm(onAdd: (String, Role, String) -> Unit, onCancel: () -> Unit) {
+    var username by rememberSaveable { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     var role by rememberSaveable { mutableStateOf(Role.CONTENT_UPLOADER) }
-    val valid = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$").matches(email.trim())
+    val valid = Regex("^[A-Za-z0-9][A-Za-z0-9._@-]{2,39}$").matches(username.trim()) && password.length >= 8
     Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Invite someone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text("Add someone", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         OutlinedTextField(
-            value = email, onValueChange = { email = it },
-            label = { Text("Google account email") }, placeholder = { Text("name@yourcompany.com") },
-            singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            value = username, onValueChange = { username = it },
+            label = { Text("Username") }, placeholder = { Text("e.g. patrick") },
+            supportingText = { Text("3 to 40 letters or digits") },
+            singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false),
             modifier = Modifier.fillMaxWidth(),
+        )
+        PasswordField(
+            value = password, onValueChange = { password = it }, label = "Password",
+            supportingText = "At least 8 characters. Kiosk can't show it again, so note it down for them.",
         )
         Text("Role", style = MaterialTheme.typography.labelLarge)
         Role.entries.forEach { r ->
@@ -229,7 +252,24 @@ private fun InviteForm(onInvite: (String, Role) -> Unit, onCancel: () -> Unit) {
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onCancel) { Text("Cancel") }
-            Button(onClick = { onInvite(email.trim(), role) }, enabled = valid, modifier = Modifier.height(48.dp)) { Text("Send invite") }
+            Button(onClick = { onAdd(username.trim(), role, password) }, enabled = valid, modifier = Modifier.height(48.dp)) { Text("Add user") }
+        }
+    }
+}
+
+/** Spongebob gives someone a new password; they are signed out everywhere. */
+@Composable
+private fun NewPasswordForm(user: User, onSave: (String) -> Unit, onCancel: () -> Unit) {
+    var password by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("New password for ${user.email}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        PasswordField(
+            value = password, onValueChange = { password = it }, label = "New password",
+            supportingText = "At least 8 characters. Tell them the new password yourself.",
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+            Button(onClick = { onSave(password) }, enabled = password.length >= 8, modifier = Modifier.height(48.dp)) { Text("Set password") }
         }
     }
 }

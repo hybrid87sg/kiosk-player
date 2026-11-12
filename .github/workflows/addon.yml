@@ -53,12 +53,12 @@ jobs:
         run: |
           docker buildx build --platform linux/amd64 --load -t kiosk-addon homeassistant/dist/kiosk_server
           mkdir -p ha-data ha-config
-          echo '{"superadmin_email":"you@example.com","google_web_client_id":"test.apps.googleusercontent.com","drive_folder_id":"folder","service_account_file":"service-account.json","cache_media":true}' > ha-data/options.json
+          echo '{"drive_folder_id":"folder","service_account_file":"service-account.json","cache_media":true}' > ha-data/options.json
           openssl genrsa -out key.pem 2048 2>/dev/null
           node -e "const fs=require('fs');fs.writeFileSync('ha-config/service-account.json',JSON.stringify({type:'service_account',client_email:'robot@test.iam.gserviceaccount.com',private_key:fs.readFileSync('key.pem','utf8')}))"
           docker run -d --name kiosk -p 3000:3000 -v "$PWD/ha-data:/data" -v "$PWD/ha-config:/config" kiosk-addon
           for i in $(seq 1 30); do curl -sf localhost:3000/api/health && break; sleep 1; done
-          curl -sf localhost:3000/api/config | grep test.apps.googleusercontent.com
+          curl -sf localhost:3000/api/config | grep '"sign_in":"password"'
           curl -sf localhost:3000/ | grep "Kiosk Signage"
           docker logs kiosk
 

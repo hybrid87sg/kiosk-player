@@ -37,7 +37,7 @@ import retrofit2.http.Path
 
 internal interface AdminApi {
     @GET("api/config") suspend fun config(): ServerConfig
-    @POST("api/auth/google") suspend fun signIn(@Body body: GoogleSignInBody): Session
+    @POST("api/auth/login") suspend fun signIn(@Body body: LoginBody): Session
     @POST("api/auth/logout") suspend fun signOut(): OkReply
 
     @GET("api/media") suspend fun library(): Library
@@ -67,6 +67,7 @@ internal interface AdminApi {
 
     @GET("api/users") suspend fun users(): List<User>
     @POST("api/users") suspend fun addUser(@Body body: UserBody): User
+    @PATCH("api/users/{id}") suspend fun setPassword(@Path("id") id: Long, @Body body: PasswordBody): User
     @PATCH("api/users/{id}") suspend fun changeRole(@Path("id") id: Long, @Body body: RoleBody): User
     @DELETE("api/users/{id}") suspend fun deleteUser(@Path("id") id: Long): OkReply
 }
@@ -90,9 +91,15 @@ internal fun scheduleBody(startsAt: Long?, expiresAt: Long?): JsonObject = build
     put("starts_at", startsAt)
     put("expires_at", expiresAt)
 }
-@Serializable internal data class GoogleSignInBody(@SerialName("id_token") val idToken: String)
-/** [site] is only sent for a new playlist; leaving it out keeps a playlist where it is. */
-@Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape, val site: String? = null)
+@Serializable internal data class LoginBody(val username: String, val password: String)
+@Serializable internal data class PasswordBody(val password: String)
+/** [locationId] is only sent for a new playlist; leaving it out keeps a playlist where it is. */
+@Serializable
+internal data class PlaylistBody(
+    val name: String,
+    val orientation: ScreenShape,
+    @SerialName("location_id") val locationId: Long? = null,
+)
 @Serializable
 internal data class ItemBody(
     @SerialName("media_id") val mediaId: Long,
@@ -101,7 +108,7 @@ internal data class ItemBody(
     @SerialName("end_at") val endAt: Long? = null,
 )
 @Serializable internal data class ItemsBody(val items: List<ItemBody>)
-@Serializable internal data class UserBody(val email: String, val role: Role)
+@Serializable internal data class UserBody(val username: String, val role: Role, val password: String)
 @Serializable internal data class RoleBody(val role: Role)
 @Serializable
 internal data class AppVersionBody(

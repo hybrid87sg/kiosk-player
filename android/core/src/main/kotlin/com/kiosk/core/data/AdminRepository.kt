@@ -20,7 +20,8 @@ import java.io.InputStream
 interface AdminRepository {
     val isDemo: Boolean
 
-    suspend fun signInWithGoogle(idToken: String): Session
+    /** Signs in with a username and password made on the server's Users page. */
+    suspend fun signIn(username: String, password: String): Session
     suspend fun signOut()
 
     suspend fun library(): Library
@@ -38,8 +39,8 @@ interface AdminRepository {
 
     suspend fun playlists(): List<PlaylistSummary>
     suspend fun playlist(id: Long): PlaylistDetail
-    /** An extra playlist for [site] (null = the server's own site), besides its automatic two. */
-    suspend fun createPlaylist(name: String, orientation: ScreenShape, site: String? = null): PlaylistDetail
+    /** An extra playlist for a location, besides its automatic two. */
+    suspend fun createPlaylist(name: String, orientation: ScreenShape, locationId: Long): PlaylistDetail
     suspend fun updatePlaylist(id: Long, name: String, orientation: ScreenShape): PlaylistDetail
     suspend fun savePlaylistItems(id: Long, items: List<PlaylistEntry>): PlaylistDetail
     suspend fun deletePlaylist(id: Long)
@@ -53,7 +54,10 @@ interface AdminRepository {
     suspend fun removeDevice(id: Long)
 
     suspend fun users(): List<User>
-    suspend fun inviteUser(email: String, role: Role): User
+    /** Makes someone who can sign in. The password needs at least 8 characters. */
+    suspend fun addUser(username: String, role: Role, password: String): User
+    /** Gives someone a new password, which signs them out everywhere. */
+    suspend fun setPassword(id: Long, password: String): User
     suspend fun changeRole(id: Long, role: Role): User
     suspend fun removeUser(id: Long)
 }

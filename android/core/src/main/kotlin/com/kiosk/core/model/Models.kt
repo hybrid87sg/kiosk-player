@@ -57,7 +57,8 @@ enum class MediaType {
 /** Public settings from the server, read before signing in. */
 @Serializable
 data class ServerConfig(
-    @SerialName("google_web_client_id") val googleWebClientId: String? = null,
+    /** "password" from server 0.6.0 on: sign in with a username and password. Null on older servers. */
+    @SerialName("sign_in") val signIn: String? = null,
     /** "kiosk-signage" for a Kiosk server; used when a TV searches the network. */
     val kind: String? = null,
     /** "main" (manages everything) or "relay" (passes one site's TVs to the main server). */
@@ -66,6 +67,7 @@ data class ServerConfig(
     @SerialName("site_name") val siteName: String? = null,
 )
 
+/** [email] holds the username: the server still sends it under that name too. */
 @Serializable
 data class Session(val token: String, val email: String, val role: Role)
 
@@ -125,11 +127,13 @@ data class PlaylistSummary(
     val version: Int,
     @SerialName("item_count") val itemCount: Int,
     val devices: List<DeviceRef> = emptyList(),
-    /** The site it belongs to. Null is the server's own site, unless [unassigned]. */
-    val site: String? = null,
-    /** One of a site's two automatic playlists (Landscape, Portrait), which its screens follow. */
+    /** The location it belongs to; null when [unassigned]. */
+    @SerialName("location_id") val locationId: Long? = null,
+    /** That location's name. */
+    val location: String? = null,
+    /** One of a location's two automatic playlists (Landscape, Portrait), which its screens follow. */
     val auto: Boolean = false,
-    /** From before playlists belonged to sites, and not in use. */
+    /** It belongs to no location, so no screen plays it. */
     val unassigned: Boolean = false,
 )
 
@@ -159,7 +163,8 @@ data class PlaylistDetail(
     @SerialName("item_count") val itemCount: Int,
     val devices: List<DeviceRef> = emptyList(),
     val items: List<PlaylistItem> = emptyList(),
-    val site: String? = null,
+    @SerialName("location_id") val locationId: Long? = null,
+    val location: String? = null,
     val auto: Boolean = false,
     val unassigned: Boolean = false,
 )
@@ -196,7 +201,7 @@ data class Device(
     val flipped: Boolean = false,
     /** False when the TV's app is too old to turn the picture upside down. */
     @SerialName("can_flip") val canFlip: Boolean = true,
-    /** True when the screen follows its site's Landscape or Portrait playlist ([playlistId] is null). */
+    /** True when the screen follows its location's Landscape or Portrait playlist ([playlistId] is null). */
     @SerialName("playlist_auto") val playlistAuto: Boolean = false,
 ) {
     /** How the screen is mounted, including upside down. */
@@ -216,9 +221,12 @@ data class WaitingDevice(
 @Serializable
 data class User(
     val id: Long,
+    /** The username people sign in with (the server sends it as "email" as well as "username"). */
     val email: String,
     val role: Role,
     @SerialName("created_at") val createdAt: Long = 0,
+    /** False for someone who can't sign in until they are given a password. */
+    @SerialName("has_password") val hasPassword: Boolean = true,
 )
 
 /** Everything needed to set up a player, when pairing it or editing it later. */
@@ -227,7 +235,7 @@ data class PlayerSetup(
     val location: String?,
     /** May be [Mounting.LANDSCAPE_FLIPPED]. */
     val orientation: Mounting,
-    /** Null = Automatic: follow the site's Landscape or Portrait playlist. */
+    /** Null = Automatic: follow the location's Landscape or Portrait playlist. */
     val playlistId: Long?,
 )
 
