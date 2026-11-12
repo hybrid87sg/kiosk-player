@@ -6,7 +6,11 @@
 // notify.mobile_app_<your phone> (the Home Assistant app on a phone) or
 // notify.persistent_notification (the bell in Home Assistant's sidebar).
 
-function createHomeAssistant({ baseUrl, token, fetchImpl = fetch }) {
+const LOCAL_PANEL = '/hassio/ingress/local_kiosk_server';
+
+function createHomeAssistant({ baseUrl, token, supervisorUrl = null, fetchImpl = fetch }) {
+  let panel = null;
+
   async function call(method, path, body) {
     const res = await fetchImpl(`${baseUrl}${path}`, {
       method,
@@ -19,6 +23,28 @@ function createHomeAssistant({ baseUrl, token, fetchImpl = fetch }) {
   }
 
   return {
+    /**
+     * Where Kiosk Signage lives in Home Assistant's sidebar, for the link in a
+     * notification. The add-on's name there depends on how it was installed
+     * ("local_kiosk_server" when copied in by hand, "<code>_kiosk_server" from
+     * an add-on repository), so the Supervisor is asked once.
+     */
+    async panelPath() {
+      if (panel) return panel;
+      if (!supervisorUrl) return LOCAL_PANEL;
+      try {
+        const res = await fetchImpl(`${supervisorUrl}/addons/self/info`, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        const slug = res.ok ? (await res.json())?.data?.slug : null;
+        if (typeof slug === 'string' && /^[a-z0-9_]+$/.test(slug)) panel = `/hassio/ingress/${slug}`;
+      } catch {
+        // Asked again next time; the usual name is used meanwhile.
+      }
+      return panel || LOCAL_PANEL;
+    },
+
     /** The notify services Home Assistant offers, e.g. [{ id: 'mobile_app_pixel_8', name: 'Phone: pixel 8' }]. */
     async listTargets() {
       const domains = await call('GET', '/services');
@@ -45,4 +71,4 @@ function targetName(id) {
   return id.replace(/_/g, ' ');
 }
 
-module.exports = { createHomeAssistant, targetName };
+module.exports = { createHomeAssistant, targetName, LOCAL_PANEL };

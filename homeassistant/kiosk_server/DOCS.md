@@ -15,19 +15,29 @@ You need the one-time Google setup, which gives you:
 
 ## Install
 
-1. Install the **Samba share** add-on (Settings → Add-ons → Add-on store) and
-   start it, so you can copy files to Home Assistant from your computer.
-2. Copy the whole `kiosk_server` folder into the **addons** share.
-3. Go to Settings → Add-ons → Add-on store, open the ⋮ menu (top right),
-   choose **Check for updates**, and find **Kiosk Signage Server** under
-   **Local add-ons**. Click **Install**. Building takes a few minutes.
-4. Start the add-on once. It stops straight away and its log asks for settings;
+1. Go to **Settings → Add-ons → Add-on store**, open the **⋮** menu (top right)
+   and choose **Repositories**. Paste `https://github.com/hybrid87sg/kiosk-addons`,
+   click **Add**, then **Close**, and refresh the page.
+2. Find **Kiosk Signage Server** in the store, open it and click **Install**.
+   Home Assistant downloads it ready-made; nothing is built on your device.
+3. Start the add-on once. It stops straight away and its log asks for settings;
    this also creates its config folder.
-5. Copy your service account key into the **addon_configs** share, inside the
-   `local_kiosk_server` folder, and name it `service-account.json`.
-6. Open the add-on's **Configuration** tab, fill in the settings, click **Save**,
+4. Copy your service account key into the add-on's config folder and name it
+   `service-account.json`. To reach the folder, install the **Samba share**
+   add-on, start it, and open the **addon_configs** share from your computer.
+   The folder's name ends in **`_kiosk_server`**.
+5. Open the add-on's **Configuration** tab, fill in the settings, click **Save**,
    then **Start**. The **Log** tab should say `Kiosk server running on port 3000`.
-7. Switch on **Start on boot** and **Watchdog**.
+6. Switch on **Start on boot** and **Watchdog**.
+
+**Updates:** when a new version is out, Home Assistant shows an **Update** button
+on this add-on's page. Your settings, key file and data are kept.
+
+**Installing by hand instead:** copy the `kiosk_server` folder from a release's
+`kiosk_server-addon.zip` into the **addons** share, choose **Check for updates**
+in the store's ⋮ menu, and install it from **Local add-ons**. Home Assistant
+then builds it on your device, which takes a few minutes. An add-on installed
+this way is a separate add-on from the store one, with its own settings and data.
 
 ## The web interface: the main control
 

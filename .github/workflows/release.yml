@@ -17,12 +17,15 @@ on:
 
 permissions:
   contents: write # needed to create the release
+  packages: write # needed to upload the ready-built add-on
 
 jobs:
   android:
     uses: ./.github/workflows/android.yml
   addon:
     uses: ./.github/workflows/addon.yml
+    with:
+      publish: true
 
   publish:
     needs: [android, addon]
@@ -50,7 +53,7 @@ jobs:
             |---|---|---|
             | `KioskAdmin-for-phone.apk` | Your Android phone | Kiosk Admin app |
             | `KioskPlayer-for-TV.apk` | Each Android TV box | Kiosk Player app |
-            | `kiosk_server-addon.zip` | Home Assistant | The server, as an add-on (unzip into the **addons** share; see DOCS.md inside) |
+            | `kiosk_server-addon.zip` | Home Assistant | The server, as an add-on, for installing by hand. The easy way is the add-on repository: https://github.com/hybrid87sg/kiosk-addons |
 
             Both apps have a **Demo mode** with sample data, so they can be tried
             without a server. Connecting to the real server needs the add-on running

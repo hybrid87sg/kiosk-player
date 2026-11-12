@@ -22,6 +22,7 @@ const auth = require('./auth');
 const { MediaCache } = require('./media-cache');
 const { checkHours, summarizeHours, isOpenAt } = require('./hours');
 const { createTranscoder } = require('./transcode');
+const { LOCAL_PANEL } = require('./notify');
 const { chooseRendition, playbackWarning, normalizeDecoderCaps, PROFILE_IDS } = require('./renditions');
 
 // File types the player can show, by MIME type and by file extension.
@@ -970,13 +971,14 @@ function createApp({
   // ---------- Notifications through Home Assistant ----------
 
   const notifyTargets = () => getSetting(db, 'notify_targets') || [];
-  const NOTIFY_DATA = { url: '/hassio/ingress/local_kiosk_server' }; // tapping opens Kiosk Signage in the app
 
   async function notify(title, message, tag) {
     const targets = notifyTargets();
     if (!homeAssistant || !targets.length) return false;
+    // Tapping the notification opens Kiosk Signage in the Home Assistant app.
+    const url = homeAssistant.panelPath ? await homeAssistant.panelPath() : LOCAL_PANEL;
     const results = await Promise.allSettled(
-      targets.map((t) => homeAssistant.send(t, { title, message, data: { ...NOTIFY_DATA, tag } })),
+      targets.map((t) => homeAssistant.send(t, { title, message, data: { url, tag } })),
     );
     results.filter((r) => r.status === 'rejected').forEach((r) => log(`Notification failed: ${r.reason.message}`));
     return results.some((r) => r.status === 'fulfilled');

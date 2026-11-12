@@ -993,3 +993,32 @@ test('Home Assistant notify services are read from its API', async () => {
   assert.deepEqual(calls[1].slice(0, 3), ['POST', 'http://supervisor/core/api/services/notify/mobile_app_pixel_8', 'Bearer secret']);
   await assert.rejects(ha.send('../../config', { title: 'x', message: 'y' }));
 });
+
+test('the notification link follows the add-on\'s name in Home Assistant', async () => {
+  const { createHomeAssistant } = require('../src/notify');
+  let asked = 0;
+  let answer = () => new Response(JSON.stringify({ result: 'ok', data: { slug: 'a1b2c3d4_kiosk_server' } }), { status: 200 });
+  const fetchImpl = async (url, init) => {
+    asked++;
+    assert.equal(url, 'http://supervisor/addons/self/info');
+    assert.equal(init.headers.authorization, 'Bearer secret');
+    return answer();
+  };
+  const make = () => createHomeAssistant({ baseUrl: 'http://supervisor/core/api', supervisorUrl: 'http://supervisor', token: 'secret', fetchImpl });
+
+  // Installed from an add-on repository: the Supervisor says what it's called. Asked once.
+  const fromStore = make();
+  assert.equal(await fromStore.panelPath(), '/hassio/ingress/a1b2c3d4_kiosk_server');
+  assert.equal(await fromStore.panelPath(), '/hassio/ingress/a1b2c3d4_kiosk_server');
+  assert.equal(asked, 1);
+
+  // The Supervisor can't be asked, or answers oddly: the hand-copied add-on's name is used.
+  answer = () => new Response('no', { status: 403 });
+  assert.equal(await make().panelPath(), '/hassio/ingress/local_kiosk_server');
+  answer = () => new Response(JSON.stringify({ data: { slug: '../../evil' } }), { status: 200 });
+  assert.equal(await make().panelPath(), '/hassio/ingress/local_kiosk_server');
+  answer = () => { throw new Error('down'); };
+  assert.equal(await make().panelPath(), '/hassio/ingress/local_kiosk_server');
+  const outside = createHomeAssistant({ baseUrl: 'http://ha/api', token: 'secret', fetchImpl });
+  assert.equal(await outside.panelPath(), '/hassio/ingress/local_kiosk_server');
+});

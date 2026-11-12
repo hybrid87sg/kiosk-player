@@ -134,7 +134,11 @@ const app = createApp({
   siteName: settings.siteName,
   // As a Home Assistant add-on, Home Assistant hands us a token for its API (used for notifications).
   homeAssistant: process.env.SUPERVISOR_TOKEN
-    ? createHomeAssistant({ baseUrl: 'http://supervisor/core/api', token: process.env.SUPERVISOR_TOKEN })
+    ? createHomeAssistant({
+        baseUrl: 'http://supervisor/core/api',
+        supervisorUrl: 'http://supervisor',
+        token: process.env.SUPERVISOR_TOKEN,
+      })
     : null,
   transcode: {
     enabled: settings.transcodeVideos,
