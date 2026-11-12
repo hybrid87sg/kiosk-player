@@ -24,8 +24,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createApp, createIngressServer } = require('./app');
 const { transcodeOptIn } = require('./transcode');
-const { createGoogle } = require('./google');
-const { createRelay } = require('./relay');
+const { createGoogle, parseServiceAccountKey } = require('./google');
+const { createRelay, normalizeMainUrl } = require('./relay');
 const { createHomeAssistant } = require('./notify');
 
 function loadSettings() {
@@ -98,8 +98,7 @@ if (settings.mode === 'relay') {
     console.error(`Relay mode needs: ${missingRelay.join(', ')}. Fill them in using ${settings.source}.`);
     process.exit(1);
   }
-  let mainUrl = settings.mainServerUrl;
-  if (!/^https?:\/\//i.test(mainUrl)) mainUrl = `http://${mainUrl}`;
+  const mainUrl = normalizeMainUrl(settings.mainServerUrl);
   const relay = createRelay({ mainUrl, siteName: settings.siteName, dataDir: settings.dataDir });
   relay.listen(settings.port, '0.0.0.0', () => {
     console.log(`Kiosk relay for site "${settings.siteName}" running on port ${settings.port}, main server ${mainUrl}`);
@@ -112,18 +111,32 @@ const missing = [
   ['superadmin email', settings.superadminEmail],
   ['Google web client ID', settings.webClientId],
   ['Drive folder ID', settings.folderId],
-  ['service account key file', settings.serviceAccountFile],
 ].filter(([, value]) => !value).map(([name]) => name);
 if (missing.length) {
   console.error(`Missing settings: ${missing.join(', ')}. Fill them in using ${settings.source}.`);
   process.exit(1);
 }
-if (!fs.existsSync(settings.serviceAccountFile)) {
-  console.error(`Can't find the service account key file at ${settings.serviceAccountFile}.`);
-  process.exit(1);
-}
-
 fs.mkdirSync(settings.dataDir, { recursive: true });
+
+// The Google key. One added on the web Settings page (upload or paste) is kept
+// in the data folder and wins; otherwise the key file from the settings is
+// used. With neither, the server still starts so the key can be added on the page.
+const googleKeyFile = path.join(settings.dataDir, 'google-key.json');
+function loadGoogleKey() {
+  const candidates = [googleKeyFile, settings.serviceAccountFile].filter((file) => file && fs.existsSync(file));
+  for (const file of candidates) {
+    try {
+      return parseServiceAccountKey(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      console.error(`Can't use the key file at ${file}: ${err.message}`);
+    }
+  }
+  return null;
+}
+const serviceAccountKey = loadGoogleKey();
+if (!serviceAccountKey) {
+  console.log('No Google key yet. Open Kiosk Signage → Settings → Google key and upload or paste it.');
+}
 
 const app = createApp({
   dataDir: settings.dataDir,
@@ -132,6 +145,7 @@ const app = createApp({
   mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
   cacheMedia: settings.cache,
   siteName: settings.siteName,
+  googleKeyFile,
   // As a Home Assistant add-on, Home Assistant hands us a token for its API (used for notifications).
   homeAssistant: process.env.SUPERVISOR_TOKEN
     ? createHomeAssistant({
@@ -150,7 +164,7 @@ const app = createApp({
     webClientId: settings.webClientId,
     deviceClientId: settings.deviceClientId,
     deviceClientSecret: settings.deviceClientSecret,
-    serviceAccountFile: settings.serviceAccountFile,
+    serviceAccountKey,
     folderId: settings.folderId,
   }),
 });

@@ -232,3 +232,17 @@ dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column
 .nav:not(.collapsed) .brand { font-size: 17px; gap: 8px; padding-right: 0; }
 .meta.row.nowrap { flex-wrap: nowrap; align-items: flex-start; }
 .meta.row.nowrap > span[aria-hidden] { margin-top: 3px; }
+
+/* A two-way switch (Settings → Google key: upload the file / paste the text). */
+.segmented { display: inline-flex; align-self: flex-start; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; }
+.segmented .seg { min-height: 44px; padding: 0 16px; border: 0; background: transparent; color: var(--text-primary); font: inherit; font-weight: 600; cursor: pointer; }
+.segmented .seg + .seg { border-left: 1px solid var(--border-color); }
+.segmented .seg[aria-selected="true"] { background: var(--accent-primary); color: var(--accent-secondary); }
+.segmented .seg:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -3px; }
+.key-pane { display: flex; flex-direction: column; gap: 12px; }
+.key-pane[hidden] { display: none; }
+.key-pane textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; border: 1px solid var(--border-strong); border-radius: 12px;
+  padding: 10px 14px; background: var(--input-bg); color: var(--input-ink); color-scheme: light;
+}
+.key-pane input[type=file] { font-weight: 400; }

@@ -12,6 +12,7 @@ function createFakeGoogle() {
   let failing = false;
   let downloads = 0;
   let folderId = 'folder-original';
+  let keyEmail = 'robot@test.iam.gserviceaccount.com'; // the service account in use
   let deviceApproval = null; // email once someone "enters the code at google.com/device"
   let uploadDims = { width: 3840, height: 2160 }; // what Drive "measures" for uploads
 
@@ -76,6 +77,8 @@ function createFakeGoogle() {
 
     getFolderId: () => folderId,
     setFolderId: (id) => (folderId = id),
+    keyEmail: () => keyEmail,
+    setServiceAccountKey(key) { keyEmail = key.client_email; },
 
     deviceSignInAvailable: true,
     async startDeviceSignIn() {

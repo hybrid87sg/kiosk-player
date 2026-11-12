@@ -142,25 +142,27 @@ Do it while signed in with your **Workspace** account.
 
 2. **Install it.** Refresh the page, find **Kiosk Signage Server** in the store, open it and click
    **Install**. Home Assistant downloads the add-on ready-made, so this takes about a minute.
-3. **Start it once.** Click **Start**. It stops again and its **Log** asks for settings. That's expected:
-   this first start creates its config folder.
-4. **Make Home Assistant's folders reachable from your computer.** In the **Add-on store**, install
-   **Samba share**, set a username and password on its **Configuration** tab, and click **Start**.
-5. **Open the shared folders on your computer.**
-   - **Windows:** in File Explorer's address bar, type `\\homeassistant.local`
-     (or `\\<Home Assistant IP>`).
-   - **Mac:** in Finder, choose **Go → Connect to Server** and enter `smb://homeassistant.local`.
-6. **Copy the key file.** Open the **addon_configs** shared folder, then the folder whose name ends in
-   **`_kiosk_server`**, and copy `service-account.json` into it.
-7. **Fill in the Configuration tab** with the values from your settings sheet, then click **Save**:
+3. **Fill in the Configuration tab** with the values from your settings sheet, then click **Save**:
 
    ![The add-on's Configuration tab](docs/images/ha-addon-configuration.svg)
 
    Leave **Mode** as `main`. **Site name** is optional (e.g. `Head office`); it matters once you
    [add another site](#adding-another-site). If you did Part 1, step 9, also fill in
-   **Web sign-in client ID** and **Web sign-in client secret**.
-8. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
+   **Web sign-in client ID** and **Web sign-in client secret**. Leave **Service account key file** as it is.
+4. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
    **Start**. The **Log** tab should end with `Kiosk server running on port 3000`.
+5. **Add the Google key.** Open **Kiosk Signage** in Home Assistant's sidebar and go to
+   **Settings → Google key**. Choose **Upload the file** and pick `service-account.json`, or choose
+   **Paste the text** and paste everything that's in the file. The key stays on your Home Assistant and
+   is never shown again.
+6. **Share the Drive folder with the server.** The same card now shows the service account's email. If you
+   haven't already (Part 2, step 2), share your signage folder with that email as **Editor**
+   (**Content manager** on a shared drive). Then press **Test connection** under **Google Drive folder**:
+   it should say `✓ Connected`.
+
+> **Prefer a file?** You can instead copy `service-account.json` into the **addon_configs** share (via the
+> **Samba share** add-on), in the folder ending in **`_kiosk_server`**. A key added on the Settings page is
+> used instead of that file.
 
 ### Part 4: The two addresses (about 5 minutes)
 
@@ -342,9 +344,9 @@ TVs over the local network. If a site's internet goes down, its TVs keep playing
    (e.g. `Head office`). Note its Tailscale `100.x.y.z` address
    ([admin console](https://login.tailscale.com/admin/machines)).
 2. **At the new site, install Tailscale.** Install the **Tailscale** add-on in that site's Home Assistant
-   and log in with the same Tailscale account. In the Tailscale add-on's **Configuration**, turn
+   and log in with the **same Tailscale account** as the main site. Sharing a machine in from a different account isn't enough: a shared machine can't start connections, and a relay has to. In the Tailscale add-on's **Configuration**, turn
    **userspace networking** off, so other add-ons can use Tailscale too, then restart it.
-3. **Install the Kiosk add-on there** (Part 3, steps 1–3). You don't need the Google settings or the key
+3. **Install the Kiosk add-on there** (Part 3, steps 1–2). You don't need the Google settings or the key
    file there. In **Configuration**, set:
    - **Mode**: `relay`
    - **Site name**: e.g. `Orchard branch`
@@ -372,7 +374,8 @@ connect with Tailscale, and sign in with Google.
 | What you see | What to do |
 |---|---|
 | Add-on log: `Missing settings: …` | Fill in those boxes on the **Configuration** tab, then **Save** and **Start**. |
-| Add-on log: `Can't find the service account key file` | Put `service-account.json` in **addon_configs**, in the folder ending in **_kiosk_server**, named exactly like the setting. |
+| Library is empty, or says `The Google key hasn't been added yet` | Add the key under **Settings → Google key** (upload or paste). |
+| Library says `Google can't find the Drive folder` | Check the folder ID under **Settings**, and share the folder with the email shown on the **Google key** card, as **Editor**. |
 | Phone: "Can't reach the server" | Is the Tailscale app on? Does `…:3000/api/health` open in the phone's browser? |
 | Phone: "isn't set up for Google sign-in yet" | The **Google web client ID** setting is empty. |
 | Phone: Google sign-in fails or shows a developer error | Check the Android client in Part 1, step 6: package `com.kiosk.admin` and the exact SHA-1. |
@@ -387,7 +390,7 @@ connect with Tailscale, and sign in with Google.
 | A file shows **Checking shape…** | Drive is still processing a new video; it sorts itself within a few minutes. |
 | TV says "No server found" | Is the Kiosk add-on running, and is the TV on the same network as Home Assistant (not a guest Wi-Fi)? Or choose **Type the address**. |
 | TV shows "Can't reach the server" | If you typed an address, it must be the **home-network** one, not the Tailscale one. The TV also searches again by itself after 2 minutes. |
-| Relay page says it can't reach the main server | Check that both Home Assistants are online in Tailscale, that userspace networking is off in the relay site's Tailscale add-on, and the **Main server address** (`100.x.y.z:3000`). |
+| Relay page says it can't reach the main server | The page says which it is. **No answer:** both Home Assistants must be in the **same Tailscale account** (a machine that was only *shared* in from another account can't start connections), both online in Tailscale, and userspace networking off in the relay site's Tailscale add-on. **Nothing listening:** start the Kiosk add-on at the main site; the address is the main site's Tailscale address plus `:3000`. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
 
