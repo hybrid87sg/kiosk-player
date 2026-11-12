@@ -277,7 +277,8 @@ What's on it:
     tidy it up there yourself whenever you like.
 - **Playlists** live under **Locations**, a site at a time. Each site has an automatic **Landscape** and
   **Portrait** playlist that its screens follow by themselves, plus any **extra playlists** you add for a
-  screen that should show something different. The automatic two can't be renamed or deleted; you change
+  screen that should show something different. A main server that has no screens of its own, and only
+  manages the other sites, gets no playlists. The automatic two can't be renamed or deleted; you change
   what's in them. Playlists that screens were playing before version 0.5.0 became their site's automatic
   ones; unused ones are listed under **Older playlists**.
 - **In a playlist:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
