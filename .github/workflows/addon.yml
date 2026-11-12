@@ -74,19 +74,19 @@ jobs:
           docker logs relay
 
       # Downloads are kept for 3 days: GitHub gives the account a fixed amount of
-      # storage, and keeping every push's files for a month filled it. On an
-      # ordinary push a failed upload doesn't fail the check (the build itself
-      # passed); for a release or a run started by hand it still does, because
-      # those need the files.
+      # storage, and keeping every push's files for a month filled it. A failed
+      # upload doesn't fail this job, so a full store can't stop the add-on being
+      # published. A release still fails if the zip is missing, in its own
+      # "publish" step.
       - uses: actions/upload-artifact@v4
-        continue-on-error: ${{ github.event_name == 'push' }}
+        continue-on-error: true
         with:
           name: kiosk_server-addon
           path: homeassistant/dist/kiosk_server-addon.zip
           retention-days: 3
 
       - uses: actions/upload-artifact@v4
-        continue-on-error: ${{ github.event_name == 'push' }}
+        continue-on-error: true
         with:
           name: kiosk-addons-store
           path: homeassistant/dist/store
