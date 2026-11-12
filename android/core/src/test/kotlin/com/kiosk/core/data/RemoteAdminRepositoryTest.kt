@@ -137,4 +137,47 @@ class RemoteAdminRepositoryTest {
             assertTrue(e.message!!.startsWith("Can't reach the server"))
         }
     }
+
+    @Test fun aScreenFollowsItsSitesPlaylistAndCanBeUpsideDown() = runTest {
+        // The server sends "landscape" with a separate flag, so older apps keep working.
+        server.enqueue(MockResponse().setBody(
+            """[{"id":4,"name":"Ceiling","orientation":"landscape","flipped":true,"can_flip":true,"playlist_id":null,"playlist_name":"Landscape","playlist_auto":true,"site":"Qoltured"}]""",
+        ))
+        val device = repo.devices().single()
+        assertEquals(Mounting.LANDSCAPE, device.orientation)
+        assertEquals(Mounting.LANDSCAPE_FLIPPED, device.mounting)
+        assertTrue(device.playlistAuto)
+        assertNull(device.playlistId)
+        server.takeRequest()
+
+        // Saving it: upside down goes as a flag, and "Automatic" and "no location" go as null.
+        server.enqueue(MockResponse().setBody("""{"id":4,"name":"Ceiling","orientation":"landscape","flipped":true}"""))
+        repo.updateDevice(4, PlayerSetup("Ceiling", null, Mounting.LANDSCAPE_FLIPPED, null))
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue(body, body.contains("\"orientation\":\"landscape\""))
+        assertTrue(body, body.contains("\"flipped\":true"))
+        assertTrue(body, body.contains("\"playlist_id\":null"))
+        assertTrue(body, body.contains("\"location\":null"))
+        assertTrue(body, !body.contains("code"))
+    }
+
+    @Test fun playlistsCarryTheirSite() = runTest {
+        server.enqueue(MockResponse().setBody(
+            """[{"id":1,"name":"Landscape","orientation":"landscape","version":1,"item_count":0,"site":"Qoltured","auto":true,"unassigned":false},
+                {"id":2,"name":"Old ideas","orientation":"portrait","version":1,"item_count":0,"site":null,"auto":false,"unassigned":true}]""",
+        ))
+        val list = repo.playlists()
+        assertEquals("Qoltured", list[0].site)
+        assertTrue(list[0].auto)
+        assertTrue(list[1].unassigned)
+        server.takeRequest()
+
+        // An extra playlist is made for a site; a rename doesn't send the site.
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":3,"name":"Menu","orientation":"landscape","version":1,"item_count":0,"site":"Qoltured"}"""))
+        assertEquals("Qoltured", repo.createPlaylist("Menu", ScreenShape.LANDSCAPE, "Qoltured").site)
+        assertTrue(server.takeRequest().body.readUtf8().contains("\"site\":\"Qoltured\""))
+        server.enqueue(MockResponse().setBody("""{"id":3,"name":"Menus","orientation":"landscape","version":2,"item_count":0,"site":"Qoltured"}"""))
+        repo.updatePlaylist(3, "Menus", ScreenShape.LANDSCAPE)
+        assertTrue(!server.takeRequest().body.readUtf8().contains("site"))
+    }
 }

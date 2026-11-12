@@ -223,7 +223,10 @@ test('playlists: several named playlists, each landscape or portrait', async (t)
   // The same file can be in several playlists.
   await call('PUT', `/api/playlists/${recep.id}/items`, { token: boss, json: { items: [{ media_id: a.id }] } });
   const list = await (await call('GET', '/api/playlists', { token: boss })).json();
-  assert.deepEqual(list.map((p) => [p.name, p.orientation, p.item_count]), [['Lobby screens', 'landscape', 2], ['Reception portrait', 'portrait', 1]]);
+  assert.deepEqual(list.map((p) => [p.name, p.orientation, p.item_count, p.auto]), [
+    ['Landscape', 'landscape', 0, true], ['Portrait', 'portrait', 0, true], // the site's automatic two come first
+    ['Lobby screens', 'landscape', 2, false], ['Reception portrait', 'portrait', 1, false],
+  ]);
 
   // Rename and change shape.
   const renamed = await (await call('PATCH', `/api/playlists/${recep.id}`, { token: boss, json: { name: 'Reception' } })).json();
@@ -1131,4 +1134,148 @@ test('a relay says why it can\'t reach the main server', async (t) => {
   const status = await (await fetch(`http://127.0.0.1:${server.address().port}/api/relay/status`)).json();
   assert.equal(status.main.reachable, false);
   assert.match(status.main.reason, /nothing is listening/);
+});
+
+// A TV at a site: relays add the X-Kiosk-Site header; no header means this server's own site.
+async function addScreen(call, boss, { name, site = null, orientation = 'landscape', appVersion = '0.5.0', ...rest }) {
+  const headers = site ? { 'x-kiosk-site': site } : {};
+  const tv = await (await call('POST', '/api/player/register', { json: { app_version: appVersion }, headers: { ...headers } })).json();
+  const claimed = await (await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name, orientation, ...rest } })).json();
+  const playlist = async () => (await call('GET', '/api/player/playlist', { token: tv.token, headers: { ...headers } })).json();
+  return { ...tv, id: claimed.id, view: claimed, playlist };
+}
+
+test('every site has an automatic Landscape and Portrait playlist, and screens follow the one that fits', async (t) => {
+  const { call, signIn, upload } = await startServer(t, { siteName: 'Linsy' });
+  const boss = await signIn(BOSS);
+  const wide = await (await upload(boss, 'wide.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const tall = await (await upload(boss, 'tall.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+
+  const lobby = await addScreen(call, boss, { name: 'Lobby' });
+  const totem = await addScreen(call, boss, { name: 'Totem', orientation: 'portrait_left' });
+  const cafe = await addScreen(call, boss, { name: 'Cafe', site: 'Qoltured' });
+
+  // Nothing was assigned, yet each screen already has a playlist: its site's automatic one.
+  assert.equal(lobby.view.playlist_id, null);
+  assert.equal(lobby.view.playlist_auto, true);
+  assert.equal(lobby.view.playlist_name, 'Landscape');
+  assert.equal(totem.view.playlist_name, 'Portrait');
+
+  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(list.map((p) => [p.site, p.name, p.auto, p.devices.map((d) => d.name)]), [
+    ['Linsy', 'Landscape', true, ['Lobby']], ['Linsy', 'Portrait', true, ['Totem']],
+    ['Qoltured', 'Landscape', true, ['Cafe']], ['Qoltured', 'Portrait', true, []],
+  ]);
+  assert.deepEqual(await (await call('GET', '/api/sites', { token: boss })).json(), { own_site: 'Linsy', sites: ['Linsy', 'Qoltured'] });
+  const at = (site, name) => list.find((p) => p.site === site && p.name === name);
+
+  // Filling Linsy's Landscape reaches Linsy's landscape screen only.
+  await call('PUT', `/api/playlists/${at('Linsy', 'Landscape').id}/items`, { token: boss, json: { items: [{ media_id: wide.id }] } });
+  await call('PUT', `/api/playlists/${at('Linsy', 'Portrait').id}/items`, { token: boss, json: { items: [{ media_id: tall.id }] } });
+  assert.deepEqual((await lobby.playlist()).items.map((i) => i.id), [wide.id]);
+  assert.deepEqual((await totem.playlist()).items.map((i) => i.id), [tall.id]);
+  assert.deepEqual((await cafe.playlist()).items, []);
+
+  // Turning the lobby screen on its side moves it to the Portrait playlist by itself.
+  const before = (await lobby.playlist()).version;
+  await call('PATCH', `/api/devices/${lobby.id}`, { token: boss, json: { orientation: 'portrait_right' } });
+  const turned = await lobby.playlist();
+  assert.deepEqual(turned.items.map((i) => i.id), [tall.id]);
+  assert.notEqual(turned.version, before);
+  await call('PATCH', `/api/devices/${lobby.id}`, { token: boss, json: { orientation: 'landscape' } });
+
+  // The automatic two can't be renamed, reshaped, moved or deleted; their contents can change.
+  const auto = at('Linsy', 'Landscape');
+  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { name: 'Mine' } })).status, 409);
+  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { orientation: 'portrait' } })).status, 409);
+  assert.equal((await call('PATCH', `/api/playlists/${auto.id}`, { token: boss, json: { site: 'Qoltured' } })).status, 409);
+  assert.equal((await call('DELETE', `/api/playlists/${auto.id}`, { token: boss })).status, 409);
+
+  // An extra playlist at a site, and one screen pinned to it.
+  assert.equal((await call('POST', '/api/playlists', { token: boss, json: { name: 'X', orientation: 'landscape', site: 'Nowhere' } })).status, 400);
+  const menu = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Menu board', orientation: 'landscape', site: 'Qoltured' } })).json();
+  assert.deepEqual([menu.site, menu.auto], ['Qoltured', false]);
+  const own = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Window', orientation: 'landscape' } })).json();
+  assert.equal(own.site, 'Linsy'); // no site given: this server's own
+  await call('PUT', `/api/playlists/${menu.id}/items`, { token: boss, json: { items: [{ media_id: tall.id }, { media_id: wide.id }] } });
+  const pinned = await (await call('PATCH', `/api/devices/${cafe.id}`, { token: boss, json: { playlist_id: menu.id } })).json();
+  assert.deepEqual([pinned.playlist_id, pinned.playlist_auto, pinned.playlist_name], [menu.id, false, 'Menu board']);
+  assert.deepEqual((await cafe.playlist()).items.map((i) => i.id), [tall.id, wide.id]);
+  const again = await (await call('GET', '/api/playlists', { token: boss })).json();
+  assert.deepEqual(again.find((p) => p.id === menu.id).devices.map((d) => d.name), ['Cafe']);
+  assert.deepEqual(again.find((p) => p.site === 'Qoltured' && p.name === 'Landscape').devices, []);
+  assert.equal((await call('DELETE', `/api/playlists/${menu.id}`, { token: boss })).status, 409); // still on Cafe
+
+  // Back to Automatic, and the extra can go.
+  const back = await (await call('PATCH', `/api/devices/${cafe.id}`, { token: boss, json: { playlist_id: null } })).json();
+  assert.deepEqual([back.playlist_id, back.playlist_auto, back.playlist_name], [null, true, 'Landscape']);
+  assert.equal((await call('DELETE', `/api/playlists/${menu.id}`, { token: boss })).status, 200);
+});
+
+test('playlists from before sites: the ones in use become each site\'s automatic playlists', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-old-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  // An install as it was before: flat playlists, each picked per screen.
+  const { openDatabase } = require('../src/db');
+  const db = openDatabase(dataDir);
+  const now = Date.now();
+  const playlist = (name, orientation) => db.prepare(`INSERT INTO playlists (name, orientation, created_at) VALUES (?, ?, ?)`).run(name, orientation, now).lastInsertRowid;
+  const screen = (name, site, orientation, playlistId) => db.prepare(
+    `INSERT INTO devices (token, name, site, orientation, playlist_id, claimed, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)`
+  ).run(`tok-${name}`, name, site, orientation, playlistId, now);
+  const main = playlist('Main loop', 'landscape');
+  const promo = playlist('Promo', 'landscape');
+  const tall = playlist('Tall ads', 'portrait');
+  const unused = playlist('Old ideas', 'landscape');
+  screen('A', 'Qoltured', 'landscape', main);
+  screen('B', 'Qoltured', 'landscape', main);
+  screen('C', 'Qoltured', 'landscape', promo);
+  screen('D', 'Qoltured', 'portrait_left', tall);
+  screen('E', 'Linsy', 'landscape', null);
+  db.close();
+
+  const { call, signIn, app } = await startServer(t, { dataDir, siteName: 'Linsy' });
+  const boss = await signIn(BOSS);
+  const list = await (await call('GET', '/api/playlists', { token: boss })).json();
+  const row = (id) => list.find((p) => p.id === Number(id));
+  // The playlist most Qoltured landscape screens played is now Qoltured's Landscape; they follow it.
+  assert.deepEqual([row(main).site, row(main).name, row(main).auto, row(main).devices.map((d) => d.name)], ['Qoltured', 'Landscape', true, ['A', 'B']]);
+  assert.deepEqual([row(tall).site, row(tall).name, row(tall).auto], ['Qoltured', 'Portrait', true]);
+  // The other one in use stays as an extra, with its screen still pinned to it.
+  assert.deepEqual([row(promo).site, row(promo).name, row(promo).auto, row(promo).devices.map((d) => d.name)], ['Qoltured', 'Promo', false, ['C']]);
+  // One nobody played is kept, without a site.
+  assert.deepEqual([row(unused).unassigned, row(unused).site, row(unused).auto], [true, null, false]);
+  assert.equal(list[list.length - 1].id, Number(unused));
+  // A site with nothing assigned gets two new empty ones.
+  assert.deepEqual(list.filter((p) => p.site === 'Linsy').map((p) => [p.name, p.auto, p.item_count]), [['Landscape', true, 0], ['Portrait', true, 0]]);
+  const devices = await (await call('GET', '/api/devices', { token: boss })).json();
+  assert.deepEqual(devices.map((d) => [d.name, d.playlist_id, d.playlist_name]).sort(), [
+    ['A', null, 'Landscape'], ['B', null, 'Landscape'], ['C', Number(promo), 'Promo'], ['D', null, 'Portrait'], ['E', null, 'Landscape'],
+  ]);
+  // It is done once: an older playlist adopted into a site later isn't touched again.
+  const adopted = await (await call('PATCH', `/api/playlists/${unused}`, { token: boss, json: { site: 'Linsy' } })).json();
+  assert.deepEqual([adopted.site, adopted.unassigned], ['Linsy', false]);
+  assert.equal(app.locals.db.prepare(`SELECT COUNT(*) AS n FROM playlists WHERE auto = 1`).get().n, 4);
+});
+
+test('a landscape screen can be mounted upside down, if its TV app is new enough', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const tv = await addScreen(call, boss, { name: 'Ceiling', flipped: true });
+  assert.deepEqual([tv.view.orientation, tv.view.flipped, tv.view.can_flip], ['landscape', true, true]);
+  // Apps from before this still read "orientation"; the flip travels beside it.
+  const sent = await tv.playlist();
+  assert.deepEqual([sent.orientation, sent.flipped], ['landscape', true]);
+
+  // Turning it on its side clears the flip; only landscape can be upside down.
+  const side = await (await call('PATCH', `/api/devices/${tv.id}`, { token: boss, json: { orientation: 'portrait_left' } })).json();
+  assert.deepEqual([side.orientation, side.flipped], ['portrait_left', false]);
+  assert.equal((await (await call('PATCH', `/api/devices/${tv.id}`, { token: boss, json: { flipped: true } })).json()).flipped, false);
+  const back = await (await call('PATCH', `/api/devices/${tv.id}`, { token: boss, json: { orientation: 'landscape', flipped: true } })).json();
+  assert.equal(back.flipped, true);
+  assert.notEqual((await tv.playlist()).version, sent.version);
+  assert.equal((await call('PATCH', `/api/devices/${tv.id}`, { token: boss, json: { flipped: 'yes' } })).status, 400);
+
+  const old = await addScreen(call, boss, { name: 'Old box', appVersion: '0.4.0' });
+  assert.equal(old.view.can_flip, false);
 });

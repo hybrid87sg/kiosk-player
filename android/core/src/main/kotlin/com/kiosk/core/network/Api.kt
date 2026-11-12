@@ -8,6 +8,8 @@ import com.kiosk.core.model.Library
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerPlaylist
+import com.kiosk.core.model.PlayerSetup
+import com.kiosk.core.model.isFlipped
 import com.kiosk.core.model.PlayerStatus
 import com.kiosk.core.model.PlaylistDetail
 import com.kiosk.core.model.PlaylistSummary
@@ -59,8 +61,8 @@ internal interface AdminApi {
 
     @GET("api/devices") suspend fun devices(): List<Device>
     @GET("api/devices/waiting") suspend fun waitingDevices(): List<WaitingDevice>
-    @POST("api/devices/claim") suspend fun claim(@Body body: DeviceBody): Device
-    @PATCH("api/devices/{id}") suspend fun updateDevice(@Path("id") id: Long, @Body body: DeviceBody): Device
+    @POST("api/devices/claim") suspend fun claim(@Body body: JsonObject): Device
+    @PATCH("api/devices/{id}") suspend fun updateDevice(@Path("id") id: Long, @Body body: JsonObject): Device
     @DELETE("api/devices/{id}") suspend fun deleteDevice(@Path("id") id: Long): OkReply
 
     @GET("api/users") suspend fun users(): List<User>
@@ -89,7 +91,8 @@ internal fun scheduleBody(startsAt: Long?, expiresAt: Long?): JsonObject = build
     put("expires_at", expiresAt)
 }
 @Serializable internal data class GoogleSignInBody(@SerialName("id_token") val idToken: String)
-@Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape)
+/** [site] is only sent for a new playlist; leaving it out keeps a playlist where it is. */
+@Serializable internal data class PlaylistBody(val name: String, val orientation: ScreenShape, val site: String? = null)
 @Serializable
 internal data class ItemBody(
     @SerialName("media_id") val mediaId: Long,
@@ -109,14 +112,26 @@ internal data class AppVersionBody(
     val decoders: DeviceCapabilities? = null,
 )
 
-@Serializable
-internal data class DeviceBody(
-    val code: String? = null,
-    val name: String,
-    val location: String?,
-    val orientation: Mounting,
-    @SerialName("playlist_id") val playlistId: Long?,
-)
+/**
+ * A screen's settings. Built by hand so that "no location" and "no playlist of its own"
+ * are sent as null, which the server treats differently from leaving them out
+ * ("keep as it is"). Upside down is sent as a flag beside the orientation.
+ */
+internal fun deviceBody(code: String?, setup: PlayerSetup): JsonObject = buildJsonObject {
+    if (code != null) put("code", code)
+    put("name", setup.name)
+    put("location", setup.location)
+    put(
+        "orientation",
+        when (setup.orientation) {
+            Mounting.LANDSCAPE, Mounting.LANDSCAPE_FLIPPED -> "landscape"
+            Mounting.PORTRAIT_RIGHT -> "portrait_right"
+            Mounting.PORTRAIT_LEFT -> "portrait_left"
+        },
+    )
+    put("flipped", setup.orientation.isFlipped)
+    put("playlist_id", setup.playlistId)
+}
 
 @Serializable
 internal data class HeartbeatBody(

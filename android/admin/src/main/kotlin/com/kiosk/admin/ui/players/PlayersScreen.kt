@@ -86,7 +86,8 @@ import kotlinx.coroutines.launch
 
 /** Which form is open: setting up a newly scanned TV, or editing one. */
 private sealed interface PlayerForm {
-    data class New(val code: String) : PlayerForm
+    /** [site] is known when the TV was picked from the waiting list; it decides which playlists are offered. */
+    data class New(val code: String, val site: String? = null) : PlayerForm
     data class Edit(val device: Device) : PlayerForm
 }
 
@@ -156,7 +157,7 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                 item(key = "waiting") {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionLabel("New TVs waiting · ${state.waiting.size}")
-                        state.waiting.forEach { w -> WaitingCard(w, manySites) { form = PlayerForm.New(w.pairingCode) } }
+                        state.waiting.forEach { w -> WaitingCard(w, manySites) { form = PlayerForm.New(w.pairingCode, w.site) } }
                     }
                 }
             }
@@ -300,9 +301,9 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ShapeIcon(d.orientation.shape, 18.dp, MaterialTheme.colorScheme.onSurfaceVariant)
+                ShapeIcon(d.mounting.shape, 18.dp, MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    "${d.orientation.label} · ${d.playlistName ?: "No playlist"}", Modifier.weight(1f, fill = false),
+                    "${d.mounting.label} · ${d.playlistName?.let { if (d.playlistAuto) "$it (automatic)" else it } ?: "No playlist"}", Modifier.weight(1f, fill = false),
                     style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -354,12 +355,19 @@ private fun PlayerSetupForm(
     onCancel: () -> Unit,
 ) {
     val existing = (form as? PlayerForm.Edit)?.device
+    val formSite = existing?.site ?: (form as? PlayerForm.New)?.site
     var name by rememberSaveable { mutableStateOf(existing?.name.orEmpty()) }
     var location by rememberSaveable { mutableStateOf(existing?.location.orEmpty()) }
-    var mounting by rememberSaveable { mutableStateOf(existing?.orientation ?: Mounting.LANDSCAPE) }
-    var playlistId by rememberSaveable { mutableStateOf(existing?.playlistId ?: playlists.firstOrNull()?.id) }
+    var mounting by rememberSaveable { mutableStateOf(existing?.mounting ?: Mounting.LANDSCAPE) }
+    // Null means Automatic: the screen follows its site's Landscape or Portrait playlist.
+    var playlistId by rememberSaveable { mutableStateOf(existing?.playlistId) }
     var nameError by remember { mutableStateOf(false) }
     val chosen = playlists.firstOrNull { it.id == playlistId }
+    // A screen can instead be pinned to one of its site's extra playlists.
+    val extras = playlists.filter { p -> !p.auto && ((!p.unassigned && p.site == formSite) || p.id == playlistId) }
+    val siteName = formSite ?: "this site"
+    // Turning the picture upside down needs Kiosk Player 0.5.0 or newer on the TV.
+    val cantFlip = existing != null && !existing.canFlip
 
     Column(
         Modifier.fillMaxWidth().imePadding().navigationBarsPadding().verticalScroll(rememberScrollState())
@@ -392,22 +400,34 @@ private fun PlayerSetupForm(
         }
 
         Text("How the screen is mounted", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Mounting.entries.forEach { m ->
-                Surface(
-                    selected = mounting == m,
-                    onClick = { mounting = m },
-                    modifier = Modifier.weight(1f).heightIn(min = 100.dp),
-                    shape = KioskShapes.Medium,
-                    color = if (mounting == m) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-                    border = BorderStroke(if (mounting == m) 2.dp else 1.dp, if (mounting == m) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
-                ) {
-                    Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                        ShapeIcon(m.shape, 30.dp, MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            m.label, style = MaterialTheme.typography.labelMedium,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(top = 8.dp),
-                        )
+        // Two to a row, so the labels stay readable on a narrow phone.
+        Mounting.entries.chunked(2).forEach { pair ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                pair.forEach { m ->
+                    val off = m == Mounting.LANDSCAPE_FLIPPED && cantFlip && mounting != m
+                    Surface(
+                        selected = mounting == m,
+                        onClick = { mounting = m },
+                        enabled = !off,
+                        modifier = Modifier.weight(1f).heightIn(min = 88.dp),
+                        shape = KioskShapes.Medium,
+                        color = if (mounting == m) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(if (mounting == m) 2.dp else 1.dp, if (mounting == m) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+                    ) {
+                        Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            ShapeIcon(m.shape, 30.dp, MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                m.label, style = MaterialTheme.typography.labelMedium,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(top = 8.dp),
+                            )
+                            if (off) {
+                                Text(
+                                    "Needs Kiosk Player 0.5.0 or newer on this TV",
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -418,10 +438,25 @@ private fun PlayerSetupForm(
         )
 
         Text("Playlist", style = MaterialTheme.typography.labelLarge)
-        if (playlists.isEmpty()) {
-            Text("No playlists yet. Make one on the Playlists tab; the player waits for content until then.", style = MaterialTheme.typography.bodySmall)
+        // Automatic first, then this site's extra playlists.
+        Surface(
+            shape = KioskShapes.Medium,
+            color = if (playlistId == null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+            border = BorderStroke(if (playlistId == null) 2.dp else 1.dp, if (playlistId == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth().selectable(selected = playlistId == null, role = Role.RadioButton) { playlistId = null },
+        ) {
+            Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = playlistId == null, onClick = null)
+                Column(Modifier.padding(start = 4.dp)) {
+                    Text("Automatic", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Plays $siteName’s ${mounting.shape.label} playlist. If you turn the screen, it switches by itself.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
-        playlists.forEach { p ->
+        extras.forEach { p ->
             Surface(
                 shape = KioskShapes.Medium,
                 color = if (playlistId == p.id) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,

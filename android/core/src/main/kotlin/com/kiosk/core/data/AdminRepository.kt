@@ -38,7 +38,8 @@ interface AdminRepository {
 
     suspend fun playlists(): List<PlaylistSummary>
     suspend fun playlist(id: Long): PlaylistDetail
-    suspend fun createPlaylist(name: String, orientation: ScreenShape): PlaylistDetail
+    /** An extra playlist for [site] (null = the server's own site), besides its automatic two. */
+    suspend fun createPlaylist(name: String, orientation: ScreenShape, site: String? = null): PlaylistDetail
     suspend fun updatePlaylist(id: Long, name: String, orientation: ScreenShape): PlaylistDetail
     suspend fun savePlaylistItems(id: Long, items: List<PlaylistEntry>): PlaylistDetail
     suspend fun deletePlaylist(id: Long)

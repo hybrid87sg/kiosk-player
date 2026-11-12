@@ -204,8 +204,9 @@ flowchart TB
    ![Connecting the apps](docs/images/apps-connect.svg)
 
 3. **Library** shows your test files, sorted into **Landscape** and **Portrait**.
-4. **Playlists → New playlist**: name it (e.g. `Lobby screens`), choose its shape, **Add from library**,
-   then **Save playlist**.
+4. **Locations** lists your site with its two playlists, **Landscape** and **Portrait**. They are made
+   for you: every screen plays the one that fits how it is mounted. Open **Landscape**, click
+   **Add from library**, then **Save playlist**. (On the phone, they are on the **Playlists** tab.)
 
 ### Part 6: The TVs (about 5 minutes per TV)
 
@@ -234,8 +235,10 @@ flowchart TB
 4. On the web interface (**Kiosk Signage** in Home Assistant's sidebar), the TV appears under
    **New screens waiting** with its model name and code. Click **Add**, then set it up:
    - its **name** and **location**,
-   - **how the screen is mounted** (landscape, or portrait turned left or right),
-   - its **playlist**.
+   - **how the screen is mounted**: landscape, landscape upside down, or portrait turned left or right,
+   - its **playlist**. Leave it on **Automatic** and the screen plays its site's Landscape or Portrait
+     playlist, whichever fits. To show something different on one screen, add an **extra playlist** for
+     the site under **Locations** and choose it here.
 
    Click **Add screen**. On your phone, **Players** shows the same **New TVs waiting** list; you can also
    **Scan QR code** or **Enter code instead**.
@@ -272,7 +275,12 @@ What's on it:
   - Expired and removed files wait under **Expired and removed**, where **Restore** brings them back.
   - **Kiosk never deletes anything from Google Drive.** Removed and expired files stay in the shared drive;
     tidy it up there yourself whenever you like.
-- **Playlists:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
+- **Playlists** live under **Locations**, a site at a time. Each site has an automatic **Landscape** and
+  **Portrait** playlist that its screens follow by themselves, plus any **extra playlists** you add for a
+  screen that should show something different. The automatic two can't be renamed or deleted; you change
+  what's in them. Playlists that screens were playing before version 0.5.0 became their site's automatic
+  ones; unused ones are listed under **Older playlists**.
+- **In a playlist:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
   Dates use the browser's local timezone; players include files only during that window.
 - **Settings** (Spongebob): pick who gets **notifications** when a screen goes offline, change the Drive
   folder and test the connection, switch local copies on or off and clear them, and check which sign-in
@@ -318,7 +326,8 @@ Home Assistant app.
 Have Home Assistants at other places too? Keep **one** of them as the main control. At each other site,
 the Kiosk add-on runs as a **relay**: that site's TVs talk to their own Home Assistant, which passes
 everything on to the main one over Tailscale. Every screen, at every site, shows up in the one web
-interface, and you use one user list, one library and one set of playlists.
+interface, and you use one user list and one library. Each site gets its own Landscape and Portrait
+playlist, so two sites can show different things.
 
 ```mermaid
 flowchart LR

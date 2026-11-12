@@ -139,6 +139,13 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'time_zone', 'TEXT'); // the TV's own time zone, e.g. "Asia/Singapore"
   addColumnIfMissing(db, 'devices', 'after_hours', 'TEXT'); // what the TV does when closed: 'black' or 'standby'
   addColumnIfMissing(db, 'devices', 'alerted_at', 'INTEGER'); // when we notified that it's offline
+  addColumnIfMissing(db, 'devices', 'flipped', 'INTEGER'); // 1 = a landscape screen mounted upside down
+  // Playlists belong to a site. Each site has two automatic ones (auto = 1), Landscape
+  // and Portrait; a screen with no playlist of its own plays the one that fits it.
+  // site is empty ('') for this server's own site, and NULL for a playlist from before
+  // playlists belonged to sites that no screen was using.
+  addColumnIfMissing(db, 'playlists', 'site', 'TEXT');
+  addColumnIfMissing(db, 'playlists', 'auto', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'media', 'source_codec', 'TEXT');
   addColumnIfMissing(db, 'media', 'source_profile', 'TEXT');
   addColumnIfMissing(db, 'media', 'source_level', 'INTEGER');
