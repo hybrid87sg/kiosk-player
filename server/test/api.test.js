@@ -1107,3 +1107,28 @@ test('a relay\'s main server address gets port 3000 when none is typed', () => {
   assert.equal(normalizeMainUrl('https://kiosk.example.com'), 'https://kiosk.example.com');
   assert.equal(normalizeMainUrl(''), '');
 });
+
+test('a relay says why it can\'t reach the main server', async (t) => {
+  const { whyUnreachable, createRelay } = require('../src/relay');
+  const failed = (code) => Object.assign(new TypeError('fetch failed'), { cause: { code } });
+  assert.match(whyUnreachable(failed('ECONNREFUSED')), /nothing is listening.*:3000/);
+  assert.match(whyUnreachable(failed('EHOSTUNREACH')), /userspace networking/);
+  assert.match(whyUnreachable(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), /userspace networking/);
+  assert.match(whyUnreachable(failed('ENOTFOUND')), /Tailscale address/);
+  assert.match(whyUnreachable(new Error('odd')), /Can't reach it/);
+
+  // A real relay pointed at a port with nothing on it reports the reason on its status page.
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-relay-'));
+  const closed = await new Promise((resolve) => {
+    const probe = require('node:net').createServer().listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+  const relay = createRelay({ mainUrl: `http://127.0.0.1:${closed}`, siteName: 'Branch', dataDir, log: () => {}, pruneIntervalMs: 0 });
+  const server = await new Promise((resolve) => { const s = relay.listen(0, () => resolve(s)); });
+  t.after(async () => { await new Promise((resolve) => server.close(resolve)); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  const status = await (await fetch(`http://127.0.0.1:${server.address().port}/api/relay/status`)).json();
+  assert.equal(status.main.reachable, false);
+  assert.match(status.main.reason, /nothing is listening/);
+});

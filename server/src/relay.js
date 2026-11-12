@@ -48,6 +48,25 @@ function normalizeMainUrl(typed) {
   }
 }
 
+/**
+ * Why the main server couldn't be reached, as one sentence that says where to
+ * look. Node reports the low-level reason in err.cause.code.
+ */
+function whyUnreachable(err) {
+  const code = (err && err.cause && err.cause.code) || (err && err.code) || '';
+  const name = (err && err.name) || '';
+  if (code === 'ECONNREFUSED') {
+    return 'The main site answered, but nothing is listening at that address and port. Check that the Kiosk add-on is running at the main site, and that the address ends in :3000.';
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return 'That name can\'t be found from here. Use the main site\'s Tailscale address (100.x.x.x) instead of a name.';
+  }
+  if (name === 'TimeoutError' || name === 'AbortError' || /TIMEOUT|EHOSTUNREACH|ENETUNREACH/.test(code)) {
+    return 'No answer from that address. This add-on can\'t get onto Tailscale: in this site\'s Tailscale add-on, switch "userspace networking" off and restart it. Also check that Tailscale is connected at the main site.';
+  }
+  return 'Can\'t reach it. Check that Tailscale is running at both sites, and the main server address in this add-on\'s Configuration tab.';
+}
+
 function createRelay({ mainUrl, siteName, dataDir, log = console.log, pruneIntervalMs = 60 * 60 * 1000 }) {
   const main = mainUrl.replace(/\/+$/, '');
   fs.mkdirSync(dataDir, { recursive: true });
@@ -99,9 +118,13 @@ function createRelay({ mainUrl, siteName, dataDir, log = console.log, pruneInter
     try {
       const reply = await fetch(`${main}/api/config`, { signal: AbortSignal.timeout(5000) });
       const config = await reply.json();
-      mainStatus = { reachable: reply.ok, version: config.version || null, site_name: config.site_name || null, checked_at: Date.now() };
+      mainStatus = {
+        reachable: reply.ok, version: config.version || null, site_name: config.site_name || null, checked_at: Date.now(),
+        reason: reply.ok ? null : `Something answered at that address, but it isn't a Kiosk server (it said ${reply.status}). Check the address and that it ends in :3000.`,
+      };
     } catch (err) {
-      mainStatus = { reachable: false, version: null, error: err.message, checked_at: Date.now() };
+      mainStatus = { reachable: false, version: null, error: err.message, reason: whyUnreachable(err), checked_at: Date.now() };
+      log(`Main server ${main} not reachable: ${(err.cause && err.cause.code) || err.name || err.message}`);
     }
     const now = Date.now();
     res.json({
@@ -273,4 +296,4 @@ function createRelay({ mainUrl, siteName, dataDir, log = console.log, pruneInter
   return app;
 }
 
-module.exports = { createRelay, normalizeMainUrl };
+module.exports = { createRelay, normalizeMainUrl, whyUnreachable };

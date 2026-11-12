@@ -47,7 +47,7 @@
         link.textContent = s.main_url;
         link.href = s.main_url;
         box.replaceChildren(
-          row('Main Kiosk server', s.main.reachable ? `Connected (version ${s.main.version})` : "Can't reach it. Check that Tailscale is running at both sites, and the main server address in this add-on's Configuration tab.", !s.main.reachable),
+          row('Main Kiosk server', s.main.reachable ? `Connected (version ${s.main.version})` : (s.main.reason || "Can't reach it. Check that Tailscale is running at both sites, and the main server address in this add-on's Configuration tab."), !s.main.reachable),
           row('TVs at this site', `${s.tvs_seen} active in the last 10 minutes`),
           row('Copies of files kept here', `${s.cache.files} files, ${size(s.cache.bytes)}`),
           row('Relay version', s.version),
