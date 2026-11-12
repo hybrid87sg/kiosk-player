@@ -86,8 +86,7 @@ import kotlinx.coroutines.launch
 
 /** Which form is open: setting up a newly scanned TV, or editing one. */
 private sealed interface PlayerForm {
-    /** [site] is known when the TV was picked from the waiting list; it decides which playlists are offered. */
-    data class New(val code: String, val site: String? = null) : PlayerForm
+    data class New(val code: String) : PlayerForm
     data class Edit(val device: Device) : PlayerForm
 }
 
@@ -157,7 +156,7 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                 item(key = "waiting") {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionLabel("New TVs waiting · ${state.waiting.size}")
-                        state.waiting.forEach { w -> WaitingCard(w, manySites) { form = PlayerForm.New(w.pairingCode, w.site) } }
+                        state.waiting.forEach { w -> WaitingCard(w, manySites) { form = PlayerForm.New(w.pairingCode) } }
                     }
                 }
             }
@@ -168,8 +167,8 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
                 item { EmptyState("No players yet", "Scan the QR code on a TV running Kiosk Player to add it.") }
             } else {
                 devices.groupBy {
-                    val location = it.location?.takeIf { l -> l.isNotBlank() } ?: "No location"
-                    if (manySites) "${it.site ?: "This site"} › $location" else location
+                    // Locations are one list, whichever site a player connects through.
+                    it.location?.takeIf { l -> l.isNotBlank() } ?: "No location yet"
                 }.forEach { (location, group) ->
                     item(key = "loc-$location") {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -223,7 +222,9 @@ private fun PlayersScreen(ctx: ScreenContext, state: PlayersUiState, vm: Players
             PlayerSetupForm(
                 form = current,
                 playlists = state.playlists,
-                knownLocations = state.devices.orEmpty().mapNotNull { it.location }.distinct(),
+                // Every location has its automatic playlists, so the playlists name every location,
+                // including ones with no screens yet.
+                knownLocations = (state.playlists.mapNotNull { it.location } + state.devices.orEmpty().mapNotNull { it.location }).distinct(),
                 busy = state.busy,
                 onSubmit = { setup ->
                     when (current) {
@@ -355,17 +356,17 @@ private fun PlayerSetupForm(
     onCancel: () -> Unit,
 ) {
     val existing = (form as? PlayerForm.Edit)?.device
-    val formSite = existing?.site ?: (form as? PlayerForm.New)?.site
     var name by rememberSaveable { mutableStateOf(existing?.name.orEmpty()) }
     var location by rememberSaveable { mutableStateOf(existing?.location.orEmpty()) }
     var mounting by rememberSaveable { mutableStateOf(existing?.mounting ?: Mounting.LANDSCAPE) }
     // Null means Automatic: the screen follows its site's Landscape or Portrait playlist.
     var playlistId by rememberSaveable { mutableStateOf(existing?.playlistId) }
     var nameError by remember { mutableStateOf(false) }
+    var locationError by remember { mutableStateOf(false) }
     val chosen = playlists.firstOrNull { it.id == playlistId }
-    // A screen can instead be pinned to one of its site's extra playlists.
-    val extras = playlists.filter { p -> !p.auto && ((!p.unassigned && p.site == formSite) || p.id == playlistId) }
-    val siteName = formSite ?: "this site"
+    // A screen can instead be pinned to one of its location's extra playlists.
+    val where = location.trim()
+    val extras = playlists.filter { p -> !p.auto && ((!p.unassigned && p.location == where) || p.id == playlistId) }
     // Turning the picture upside down needs Kiosk Player 0.5.0 or newer on the TV.
     val cantFlip = existing != null && !existing.canFlip
 
@@ -389,13 +390,17 @@ private fun PlayerSetupForm(
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = location, onValueChange = { location = it },
+            value = location, onValueChange = { location = it; locationError = false },
             label = { Text("Location") }, placeholder = { Text("e.g. Main lobby") },
-            singleLine = true, modifier = Modifier.fillMaxWidth(),
+            singleLine = true, isError = locationError,
+            supportingText = {
+                Text(if (locationError) "Choose a location: that is where the playlist comes from" else "Pick one below, or type a new one")
+            },
+            modifier = Modifier.fillMaxWidth(),
         )
         if (knownLocations.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                knownLocations.forEach { loc -> FilterChip(selected = location == loc, onClick = { location = loc }, label = { Text(loc) }) }
+                knownLocations.forEach { loc -> FilterChip(selected = location == loc, onClick = { location = loc; locationError = false }, label = { Text(loc) }) }
             }
         }
 
@@ -450,7 +455,8 @@ private fun PlayerSetupForm(
                 Column(Modifier.padding(start = 4.dp)) {
                     Text("Automatic", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "Plays $siteName’s ${mounting.shape.label} playlist. If you turn the screen, it switches by itself.",
+                        if (where.isEmpty()) "Plays its location's ${mounting.shape.label} playlist."
+                        else "Plays $where's ${mounting.shape.label} playlist. If you turn the screen or move it, it switches by itself.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -487,8 +493,9 @@ private fun PlayerSetupForm(
             TextButton(onClick = onCancel) { Text("Cancel") }
             Button(
                 onClick = {
-                    if (name.isBlank()) nameError = true
-                    else onSubmit(PlayerSetup(name.trim(), location.trim().ifBlank { null }, mounting, playlistId))
+                    nameError = name.isBlank()
+                    locationError = location.isBlank()
+                    if (!nameError && !locationError) onSubmit(PlayerSetup(name.trim(), location.trim(), mounting, playlistId))
                 },
                 enabled = !busy,
                 modifier = Modifier.height(48.dp),

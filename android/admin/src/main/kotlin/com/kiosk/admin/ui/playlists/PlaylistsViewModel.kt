@@ -21,9 +21,9 @@ class PlaylistsViewModel(private val repo: AdminRepository, onSignedOut: () -> U
 
     fun load() = launchSafely { _playlists.value = repo.playlists() }
 
-    /** Makes an extra playlist for [site] (null = the server's own site). */
-    fun create(name: String, shape: ScreenShape, site: String?, onCreated: (Long) -> Unit) = launchSafely {
-        val created = repo.createPlaylist(name, shape, site)
+    /** Makes an extra playlist for a location. */
+    fun create(name: String, shape: ScreenShape, locationId: Long, onCreated: (Long) -> Unit) = launchSafely {
+        val created = repo.createPlaylist(name, shape, locationId)
         say("${created.name} created. Add files, then save.")
         onCreated(created.id)
     }

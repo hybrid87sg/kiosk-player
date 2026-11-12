@@ -1,6 +1,16 @@
 // Small building blocks shared by several screens.
 package com.kiosk.admin.ui.common
 
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -120,4 +130,30 @@ fun timeAgo(millis: Long?, now: Long = System.currentTimeMillis()): String {
         minutes < 48 * 60 -> "${minutes / 60} h ago"
         else -> "${minutes / (24 * 60)} days ago"
     }
+}
+
+/** A password box with a Show / Hide switch, so a new password can be checked before saving. */
+@Composable
+fun PasswordField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    supportingText: String? = null,
+    isError: Boolean = false,
+) {
+    var shown by rememberSaveable { mutableStateOf(false) }
+    val helper: (@Composable () -> Unit)? = if (supportingText != null) { { Text(supportingText) } } else null
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        isError = isError,
+        visualTransformation = if (shown) VisualTransformation.None else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        trailingIcon = { TextButton(onClick = { shown = !shown }) { Text(if (shown) "Hide" else "Show") } },
+        supportingText = helper,
+        modifier = modifier.fillMaxWidth(),
+    )
 }

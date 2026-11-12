@@ -1,6 +1,7 @@
 package com.kiosk.admin.ui.signin
 
-import android.content.Context
+import androidx.compose.runtime.remember
+import com.kiosk.admin.ui.common.PasswordField
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,19 +41,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.credentials.CredentialManager
-import androidx.credentials.CustomCredential
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import androidx.credentials.exceptions.GetCredentialException
-import androidx.credentials.exceptions.NoCredentialException
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.kiosk.admin.KioskAdminApplication
 import com.kiosk.admin.ui.common.KioskCard
 import com.kiosk.admin.ui.common.LocalSnackbar
@@ -65,15 +57,18 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SignInScreen(app: KioskAdminApplication) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var serverUrl by rememberSaveable { mutableStateOf(app.savedServerUrl) }
+    var username by rememberSaveable { mutableStateOf("") }
+    // Not saved across process death on purpose: a password shouldn't be written to disk.
+    var password by remember { mutableStateOf("") }
     var busy by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     var demoRole by rememberSaveable { mutableStateOf(Role.SUPERADMIN) }
 
     fun signIn() {
         if (serverUrl.isBlank()) { error = "Enter your server's address first"; return }
+        if (username.isBlank() || password.isEmpty()) { error = "Enter your username and password"; return }
         busy = true
         error = null
         scope.launch {
@@ -86,19 +81,14 @@ fun SignInScreen(app: KioskAdminApplication) {
                         "This is the relay for ${config.siteName ?: "another site"}. Sign in with the main Kiosk server's address instead.",
                     )
                 }
-                val clientId = config.googleWebClientId
-                    ?: throw ApiException("This server isn't set up for Google sign-in yet (GOOGLE_WEB_CLIENT_ID is missing).")
-                val idToken = googleIdToken(context, clientId)
-                val session = repo.signInWithGoogle(idToken)
+                if (config.signIn != "password") {
+                    throw ApiException("This server is older than this app. Update the Kiosk add-on to 0.6.0 or newer, then sign in again.")
+                }
+                val session = repo.signIn(username, password)
+                password = ""
                 app.startRealSession(url, repo, session.email, session.role)
             } catch (e: ApiException) {
                 error = e.message
-            } catch (e: GetCredentialCancellationException) {
-                error = null // the person closed the Google account picker
-            } catch (e: NoCredentialException) {
-                error = "No Google account found on this phone. Add one in the phone's Settings, then try again."
-            } catch (e: GetCredentialException) {
-                error = "Google sign-in didn't work: ${e.message}"
             } finally {
                 busy = false
             }
@@ -152,12 +142,21 @@ fun SignInScreen(app: KioskAdminApplication) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { username = it; error = null },
+                        label = { Text("Username") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    PasswordField(value = password, onValueChange = { password = it; error = null }, label = "Password")
                     Button(onClick = ::signIn, enabled = !busy, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                         if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                        else Text("Sign in with Google")
+                        else Text("Sign in")
                     }
                     Text(
-                        "Only accounts Spongebob has invited can sign in.",
+                        "Whoever runs Kiosk makes your username and password, on the Users page.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -185,18 +184,4 @@ fun SignInScreen(app: KioskAdminApplication) {
             }
         }
     }
-}
-
-/** Shows Google's account picker and returns the signed "ID token" for our server to check. */
-private suspend fun googleIdToken(context: Context, webClientId: String): String {
-    val option = GetGoogleIdOption.Builder()
-        .setFilterByAuthorizedAccounts(false)
-        .setServerClientId(webClientId)
-        .build()
-    val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
-    val credential = CredentialManager.create(context).getCredential(context, request).credential
-    if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-        return GoogleIdTokenCredential.createFrom(credential.data).idToken
-    }
-    throw ApiException("Google sign-in returned something unexpected. Please try again.")
 }

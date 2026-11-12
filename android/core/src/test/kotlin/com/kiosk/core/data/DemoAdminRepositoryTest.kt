@@ -2,6 +2,7 @@ package com.kiosk.core.data
 
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerSetup
+import com.kiosk.core.model.Role
 import com.kiosk.core.model.PlaylistEntry
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.network.ApiException
@@ -44,7 +45,7 @@ class DemoAdminRepositoryTest {
         } catch (e: ApiException) {
             assertTrue(e.message!!.contains("Back wall"))
         }
-        val empty = repo.createPlaylist("Menu boards", ScreenShape.PORTRAIT)
+        val empty = repo.createPlaylist("Menu boards", ScreenShape.PORTRAIT, repo.playlists().first().locationId!!)
         repo.deletePlaylist(empty.id)
         assertTrue(repo.playlists().none { it.id == empty.id })
     }
@@ -68,14 +69,14 @@ class DemoAdminRepositoryTest {
     }
 
     @Test fun aScreenWithNoPlaylistOfItsOwnFollowsTheAutomaticOne() = runTest {
-        val wide = repo.claimDevice("k7p-29q", PlayerSetup("Ceiling", null, Mounting.LANDSCAPE_FLIPPED, null))
+        val wide = repo.claimDevice("k7p-29q", PlayerSetup("Ceiling", "Main lobby", Mounting.LANDSCAPE_FLIPPED, null))
         assertEquals("Landscape", wide.playlistName)
         assertTrue(wide.playlistAuto)
         assertEquals(Mounting.LANDSCAPE_FLIPPED, wide.mounting)
         // Turned on its side, it moves to the Portrait playlist by itself.
-        val tall = repo.updateDevice(wide.id, PlayerSetup("Ceiling", null, Mounting.PORTRAIT_LEFT, null))
+        val tall = repo.updateDevice(wide.id, PlayerSetup("Ceiling", "Main lobby", Mounting.PORTRAIT_LEFT, null))
         assertEquals("Portrait", tall.playlistName)
-        val auto = repo.playlists().first { it.auto && it.orientation == ScreenShape.PORTRAIT }
+        val auto = repo.playlists().first { it.auto && it.orientation == ScreenShape.PORTRAIT && it.location == "Main lobby" }
         assertTrue(auto.devices.any { it.id == wide.id })
         // The automatic two can't be deleted.
         try {
@@ -84,5 +85,36 @@ class DemoAdminRepositoryTest {
         } catch (e: com.kiosk.core.network.ApiException) {
             assertEquals(409, e.status)
         }
+    }
+
+    @Test fun aScreenHasToBeInALocationAndANewOneGetsItsPlaylists() = runTest {
+        try {
+            repo.claimDevice("k7p-29q", PlayerSetup("Nowhere", null, Mounting.LANDSCAPE, null))
+            fail("a screen was added without a location")
+        } catch (e: ApiException) {
+            assertEquals(400, e.status)
+        }
+        val d = repo.claimDevice("k7p-29q", PlayerSetup("Cafe wall", "Qoltured", Mounting.LANDSCAPE, null))
+        assertEquals("Landscape", d.playlistName)
+        val made = repo.playlists().filter { it.location == "Qoltured" }
+        assertEquals(listOf("Landscape", "Portrait"), made.map { it.name })
+        assertTrue(made.all { it.auto && it.locationId != null })
+        // An extra playlist is made for a location.
+        val extra = repo.createPlaylist("Menu", ScreenShape.LANDSCAPE, made.first().locationId!!)
+        assertEquals("Qoltured", extra.location)
+    }
+
+    @Test fun peopleAreAddedWithAUsernameAndPassword() = runTest {
+        val added = repo.addUser("Patrick", Role.SYSTEM_MANAGER, "starfish-rock-1")
+        assertEquals("patrick", added.email)
+        for ((name, password) in listOf("ab" to "starfish-rock-1", "patrick2" to "short", "patrick" to "starfish-rock-1")) {
+            try {
+                repo.addUser(name, Role.CONTENT_UPLOADER, password)
+                fail("$name / $password was accepted")
+            } catch (e: ApiException) {
+                assertTrue(e.status == 400 || e.status == 409)
+            }
+        }
+        assertEquals(added.id, repo.setPassword(added.id, "jellyfish-net-2").id)
     }
 }

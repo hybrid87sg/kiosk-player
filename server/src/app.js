@@ -83,8 +83,7 @@ function orientationOf(width, height) {
 function createApp({
   dataDir,
   google,
-  googleWebClientId = null,
-  superadminEmail,
+  firstAdmin = null, // { username, password }: made a superadmin at start-up if that username doesn't exist yet
   mediaCacheDir = null, // where local copies of Drive files can be kept (see media-cache.js)
   cacheMedia = true, // whether to keep them, until changed on the web Settings page
   maxUploadBytes = 8 * 1024 ** 3,
@@ -123,11 +122,18 @@ function createApp({
   // Location names typed on screens before locations existed become real locations.
   db.prepare(
     `INSERT OR IGNORE INTO locations (site, name, created_at)
-     SELECT DISTINCT COALESCE(site, ''), location, ? FROM devices WHERE claimed = 1 AND location IS NOT NULL`
+     SELECT DISTINCT COALESCE(d.site, ''), d.location, ? FROM devices d
+     WHERE d.claimed = 1 AND d.location IS NOT NULL AND NOT EXISTS (SELECT 1 FROM locations l WHERE l.name = d.location)`
   ).run(Date.now());
+  // Locations are one list for the whole system. A screen is in the location that has
+  // its location name, whichever site (Home Assistant) it connects through. Should two
+  // sites each have a location of that name (from older versions), its own site's wins.
   const locationOf = (d) => (d.location
-    ? db.prepare(`SELECT * FROM locations WHERE site = ? AND name = ?`).get(d.site || '', d.location)
+    ? db.prepare(`SELECT * FROM locations WHERE name = ? ORDER BY site = ? DESC, id LIMIT 1`).get(d.location, d.site || '')
     : null);
+  // The same rule in SQL, for "the screens in location @loc_id": use it on the devices table.
+  const IN_LOCATION = `devices.location IS NOT NULL AND @loc_id = (
+    SELECT l.id FROM locations l WHERE l.name = devices.location ORDER BY l.site = COALESCE(devices.site, '') DESC, l.id LIMIT 1)`;
   const hoursOf = (loc) => (loc && loc.hours ? JSON.parse(loc.hours) : null);
   const serverTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
@@ -204,7 +210,18 @@ function createApp({
   // A Drive folder chosen on the web Settings page wins over the start-up setting.
   const savedFolder = getSetting(db, 'drive_folder_id');
   if (savedFolder && google.setFolderId) google.setFolderId(savedFolder);
-  if (superadminEmail) ensureSuperadmin(db, superadminEmail);
+
+  // The first superadmin, for a server run outside Home Assistant (where the sidebar
+  // page can't be used to make one). Made once; changing the password later is done in the app.
+  if (firstAdmin && firstAdmin.username && firstAdmin.password) {
+    const username = String(firstAdmin.username).trim().toLowerCase();
+    if (!auth.USERNAME.test(username) || auth.checkNewPassword(firstAdmin.password)) {
+      log('The first admin was not made: the username or password is not usable (the password needs at least 8 characters).');
+    } else if (!db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) {
+      db.prepare(`INSERT INTO users (email, role, password_hash, created_at) VALUES (?, 'superadmin', ?, ?)`)
+        .run(username, auth.hashPasswordSync(firstAdmin.password), Date.now());
+    }
+  }
 
   const requireContent = auth.requireRole(db, auth.CAN_MANAGE_CONTENT);
   const requireDevices = auth.requireRole(db, auth.CAN_MANAGE_DEVICES);
@@ -223,8 +240,10 @@ function createApp({
   // client ID that "Sign in with Google" must use for this server.
   app.get('/api/config', (req, res) =>
     res.json({
-      google_web_client_id: googleWebClientId,
-      web_code_sign_in: Boolean(google.deviceSignInAvailable),
+      // People sign in with a username and password made on the Users page.
+      sign_in: 'password',
+      google_web_client_id: null, // apps from before 0.6.0 look for this; they can no longer sign in
+      web_code_sign_in: false,
       version: SERVER_VERSION,
       // TVs search the network for this to find the server by themselves.
       kind: 'kiosk-signage',
@@ -234,24 +253,39 @@ function createApp({
     })
   );
 
-  // ---------- Sign in (admin app) ----------
+  // ---------- Sign in (phone app and web page) ----------
 
-  // The admin app signs in with Google and sends us Google's "ID token".
-  // We check it really came from Google for our app, then look the email up.
-  app.post('/api/auth/google', async (req, res) => {
-    const idToken = req.body && req.body.id_token;
-    if (!idToken) return res.status(400).json({ error: 'Missing id_token' });
-    let email;
-    try {
-      email = (await google.verifyIdToken(idToken)).email.toLowerCase();
-    } catch (err) {
-      return res.status(401).json({ error: 'Google sign-in could not be verified' });
+  // Five wrong passwords for a username lock it for five minutes, so a password
+  // can't be found by trying thousands of them.
+  const MAX_TRIES = 5;
+  const LOCK_MS = 5 * 60 * 1000;
+  const tries = new Map(); // username -> { count, lockedUntil }
+
+  app.post('/api/auth/login', async (req, res) => {
+    const username = String((req.body && req.body.username) || '').trim().toLowerCase();
+    const password = req.body && req.body.password;
+    if (!username || typeof password !== 'string' || !password) {
+      return res.status(400).json({ error: 'Enter your username and password' });
     }
-    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email);
-    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask Spongebob to add you.` });
+    const now = Date.now();
+    const record = tries.get(username);
+    if (record && record.lockedUntil > now) {
+      const minutes = Math.ceil((record.lockedUntil - now) / 60000);
+      return res.status(429).json({ error: `Too many wrong passwords. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` });
+    }
+    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(username);
+    const ok = await auth.checkPassword(password, user ? user.password_hash : null);
+    if (!ok) {
+      const count = (record && record.lockedUntil <= now && record.count >= MAX_TRIES ? 0 : (record ? record.count : 0)) + 1;
+      tries.set(username, { count, lockedUntil: count >= MAX_TRIES ? now + LOCK_MS : 0 });
+      if (tries.size > 10000) tries.clear(); // never grows without limit
+      // The same answer whether the username or the password was wrong.
+      return res.status(401).json({ error: 'Wrong username or password' });
+    }
+    tries.delete(username);
     const token = auth.newToken();
-    db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, Date.now());
-    res.json({ token, email: user.email, role: user.role });
+    db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, now);
+    res.json({ token, username: user.email, email: user.email, role: user.role });
   });
 
   app.post('/api/auth/logout', requireAnyUser, (req, res) => {
@@ -260,85 +294,76 @@ function createApp({
   });
 
   app.get('/api/me', requireAnyUser, (req, res) => {
-    res.json({ email: req.user.email, role: req.user.role, via_home_assistant: Boolean(req.user.viaHomeAssistant) });
-  });
-
-  // Web page sign-in with a code: the page shows the code, the person enters
-  // it at google.com/device, and the page asks /poll until Google says done.
-  const deviceSignIns = new Map(); // poll id -> { deviceCode, expiresAt }
-
-  app.post('/api/auth/device/start', async (req, res) => {
-    if (!google.deviceSignInAvailable) {
-      return res.status(501).json({ error: 'Web sign-in with Google isn\'t set up on this server yet.' });
-    }
-    let started;
-    try {
-      started = await google.startDeviceSignIn();
-    } catch (err) {
-      log(err);
-      return res.status(502).json({ error: 'Could not reach Google to start signing in' });
-    }
-    const pollId = auth.newToken();
-    deviceSignIns.set(pollId, { deviceCode: started.deviceCode, expiresAt: Date.now() + started.expiresIn * 1000 });
-    for (const [id, s] of deviceSignIns) if (s.expiresAt < Date.now()) deviceSignIns.delete(id);
     res.json({
-      poll_id: pollId,
-      user_code: started.userCode,
-      verification_url: started.verificationUrl,
-      interval: started.interval,
-      expires_in: started.expiresIn,
+      username: req.user.email,
+      email: req.user.email,
+      role: req.user.role,
+      via_home_assistant: Boolean(req.user.viaHomeAssistant),
     });
   });
 
-  app.post('/api/auth/device/poll', async (req, res) => {
-    const pending = deviceSignIns.get(req.body && req.body.poll_id);
-    if (!pending || pending.expiresAt < Date.now()) return res.status(410).json({ error: 'This code has expired. Start again.' });
-    let result;
-    try {
-      result = await google.pollDeviceSignIn(pending.deviceCode);
-    } catch (err) {
-      log(err);
-      return res.status(502).json({ error: 'Google sign-in could not be checked' });
+  // Change your own password. Other devices signed in as you are signed out.
+  app.post('/api/auth/password', requireAnyUser, async (req, res) => {
+    if (req.user.viaHomeAssistant) return res.status(400).json({ error: 'You are signed in through Home Assistant, which has no Kiosk password' });
+    const body = req.body || {};
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user.id);
+    if (!(await auth.checkPassword(body.current_password, user.password_hash))) {
+      return res.status(403).json({ error: 'Your current password isn\'t right' });
     }
-    if (result.status !== 'done') {
-      if (result.status === 'denied' || result.status === 'expired') deviceSignIns.delete(req.body.poll_id);
-      return res.json({ status: result.status });
-    }
-    deviceSignIns.delete(req.body.poll_id);
-    const email = result.email.toLowerCase();
-    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email);
-    if (!user) return res.status(403).json({ error: `${email} is not allowed in yet. Ask Spongebob to add you.` });
-    const token = auth.newToken();
-    db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, Date.now());
-    res.json({ status: 'done', token, email: user.email, role: user.role });
+    const problem = auth.checkNewPassword(body.new_password);
+    if (problem) return res.status(400).json({ error: problem });
+    db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(await auth.hashPassword(body.new_password), user.id);
+    db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.bearerToken(req));
+    res.json({ ok: true });
   });
 
   // ---------- Users and roles (superadmin) ----------
 
-  const userColumns = `id, email, role, created_at`;
+  // "email" is the column the username lives in; both names are sent for older pages.
+  const userView = (u) => ({ id: u.id, username: u.email, email: u.email, role: u.role, created_at: u.created_at, has_password: Boolean(u.password_hash) });
+  const findUser = (id) => db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
 
   app.get('/api/users', requireUsers, (req, res) => {
-    res.json(db.prepare(`SELECT ${userColumns} FROM users ORDER BY email`).all());
+    res.json(db.prepare(`SELECT * FROM users ORDER BY email`).all().map(userView));
   });
 
-  app.post('/api/users', requireUsers, (req, res) => {
-    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
-    const role = req.body && req.body.role;
-    if (!/^[^@\s]+@[^@\s]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
-    if (!auth.ROLES.includes(role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
-    if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(email)) return res.status(409).json({ error: 'That email is already a user' });
-    const result = db.prepare(`INSERT INTO users (email, role, created_at) VALUES (?, ?, ?)`).run(email, role, Date.now());
-    res.status(201).json(db.prepare(`SELECT ${userColumns} FROM users WHERE id = ?`).get(result.lastInsertRowid));
+  app.post('/api/users', requireUsers, async (req, res) => {
+    const body = req.body || {};
+    const username = String(body.username || '').trim().toLowerCase();
+    if (!auth.USERNAME.test(username)) {
+      return res.status(400).json({ error: 'A username is 3 to 40 letters or digits (and . _ - @), starting with a letter or digit' });
+    }
+    if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
+    const problem = auth.checkNewPassword(body.password);
+    if (problem) return res.status(400).json({ error: problem });
+    if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) return res.status(409).json({ error: 'That username is taken' });
+    const result = db.prepare(`INSERT INTO users (email, role, password_hash, created_at) VALUES (?, ?, ?, ?)`)
+      .run(username, body.role, await auth.hashPassword(body.password), Date.now());
+    res.status(201).json(userView(findUser(result.lastInsertRowid)));
   });
 
-  // You can't change or remove yourself, so there is always at least one superadmin.
-  app.patch('/api/users/:id', requireUsers, (req, res) => {
-    const role = req.body && req.body.role;
-    if (!auth.ROLES.includes(role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
-    if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: "You can't change your own role" });
-    const result = db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(role, req.params.id);
-    if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
-    res.json(db.prepare(`SELECT ${userColumns} FROM users WHERE id = ?`).get(req.params.id));
+  // Change someone's role, or give them a new password (which signs them out everywhere).
+  // You can't change your own role or remove yourself, so there is always a superadmin.
+  app.patch('/api/users/:id', requireUsers, async (req, res) => {
+    const body = req.body || {};
+    const user = findUser(req.params.id);
+    if (!user) return res.status(404).json({ error: 'Not found' });
+    if (body.role === undefined && body.password === undefined) return res.status(400).json({ error: 'Send a role or a password' });
+    if (body.role !== undefined) {
+      if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
+      if (user.id === req.user.id) return res.status(400).json({ error: "You can't change your own role" });
+    }
+    if (body.password !== undefined) {
+      const problem = auth.checkNewPassword(body.password);
+      if (problem) return res.status(400).json({ error: problem });
+    }
+    if (body.role !== undefined) db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(body.role, user.id);
+    if (body.password !== undefined) {
+      db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(await auth.hashPassword(body.password), user.id);
+      db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.bearerToken(req) || '');
+      tries.delete(user.email);
+    }
+    res.json(userView(findUser(user.id)));
   });
 
   app.delete('/api/users/:id', requireUsers, (req, res) => {
@@ -672,91 +697,98 @@ function createApp({
 
   // Landscape screens play landscape playlists; a screen turned on its side plays portrait ones.
   const shapeOf = (deviceOrientation) => (deviceOrientation === 'landscape' ? 'landscape' : 'portrait');
+  const SHAPE_SQL = `(CASE WHEN devices.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END)`;
   const AUTO_NAMES = { landscape: 'Landscape', portrait: 'Portrait' };
 
-  // Every site has two automatic playlists, Landscape and Portrait. They are made the
-  // first time they are needed, so a new site (a new relay) gets them without any setup.
-  function autoPlaylist(site, orientation) {
-    const find = db.prepare(`SELECT * FROM playlists WHERE site = ? AND auto = 1 AND orientation = ?`);
-    let p = find.get(site || '', orientation);
+  // Every location has two automatic playlists, Landscape and Portrait. They are made the
+  // first time they are needed, so a new location gets them without any setup.
+  function autoPlaylist(locationId, orientation) {
+    const find = db.prepare(`SELECT * FROM playlists WHERE location_id = ? AND auto = 1 AND orientation = ?`);
+    let p = find.get(locationId, orientation);
     if (!p) {
-      db.prepare(`INSERT INTO playlists (name, orientation, site, auto, created_at) VALUES (?, ?, ?, 1, ?)`)
-        .run(AUTO_NAMES[orientation], orientation, site || '', Date.now());
-      p = find.get(site || '', orientation);
+      db.prepare(`INSERT INTO playlists (name, orientation, location_id, auto, created_at) VALUES (?, ?, ?, 1, ?)`)
+        .run(AUTO_NAMES[orientation], orientation, locationId, Date.now());
+      p = find.get(locationId, orientation);
     }
     return p;
   }
-  // The sites that have playlists. When there are other sites (relays), this server's
-  // own site only counts while it has screens of its own (or playlists someone filled or
-  // added): a main server that just manages the other sites' screens shouldn't show
-  // playlists nobody can play.
-  function playlistSites() {
-    const ownInUse = db.prepare(`SELECT 1 FROM devices WHERE claimed = 1 AND COALESCE(site, '') = ?`).get(ownSite)
-      || db.prepare(
-        `SELECT 1 FROM playlists p WHERE p.site = ? AND (p.auto = 0 OR EXISTS (SELECT 1 FROM playlist_items i WHERE i.playlist_id = p.id))`
-      ).get(ownSite);
-    const sites = knownSites();
-    // With no other sites, this server is the only place screens can be, so it keeps its playlists.
-    return sites.length > 1 && !ownInUse ? sites.filter((site) => site !== ownSite) : sites;
-  }
   function ensureAutoPlaylists() {
-    const sites = playlistSites();
-    // Empty automatic playlists made for this server's own site before it was known to
-    // have no screens are tidied away. They come back by themselves if a screen is added here.
-    if (!sites.includes(ownSite)) db.prepare(`DELETE FROM playlists WHERE site = ? AND auto = 1`).run(ownSite);
-    for (const site of sites) for (const orientation of PLAYLIST_ORIENTATIONS) autoPlaylist(site, orientation);
+    for (const loc of db.prepare(`SELECT id FROM locations`).all()) {
+      for (const orientation of PLAYLIST_ORIENTATIONS) autoPlaylist(loc.id, orientation);
+    }
   }
-  // What a screen plays: the playlist it is pinned to, or else its site's automatic one.
+  // What a screen plays: the playlist it is pinned to, or else its location's automatic
+  // one. A screen with no location has nothing to play until it is given one.
   function playlistFor(device) {
     const pinned = device.playlist_id ? findPlaylist(device.playlist_id) : null;
-    return pinned || autoPlaylist(device.site, shapeOf(device.orientation));
+    if (pinned) return pinned;
+    const loc = locationOf(device);
+    return loc ? autoPlaylist(loc.id, shapeOf(device.orientation)) : null;
   }
 
-  // Playlists used to be one flat list, each picked per screen. Once, they are sorted
-  // into sites: for each site and shape, the playlist most of its screens were playing
-  // becomes the automatic one (those screens then simply follow it), other playlists in
-  // use there become that site's extra playlists, and ones nobody uses keep no site.
-  function sortPlaylistsIntoSites() {
-    if (getSetting(db, 'playlists_by_site')) return;
+  // Playlists used to be one flat list picked per screen (before 0.5.0), then belonged
+  // to a site (0.5.x). Once, they are sorted into locations.
+  function sortPlaylistsIntoLocations() {
+    if (getSetting(db, 'playlists_by_location')) return;
+    const cameFromSites = Boolean(getSetting(db, 'playlists_by_site'));
+    const locations = db.prepare(`SELECT * FROM locations`).all();
+    const pinnedIn = (loc, orientation) => db.prepare(
+      `SELECT p.id, COUNT(*) AS n FROM devices JOIN playlists p ON p.id = devices.playlist_id
+       WHERE devices.claimed = 1 AND p.location_id IS NULL AND p.auto = 0 AND p.orientation = @orientation
+         AND ${SHAPE_SQL} = @orientation AND ${IN_LOCATION}
+       GROUP BY p.id ORDER BY n DESC, p.id`
+    ).all({ loc_id: loc.id, orientation });
     db.transaction(() => {
-      for (const site of knownSites()) {
+      // 0.5.x: a site's automatic playlists. A site with one location hands them to it;
+      // otherwise there is no one place for them, and they go.
+      for (const p of db.prepare(`SELECT * FROM playlists WHERE auto = 1 AND location_id IS NULL`).all()) {
+        const at = locations.filter((l) => l.site === (p.site ?? ''));
+        if (at.length === 1 && !db.prepare(`SELECT 1 FROM playlists WHERE location_id = ? AND auto = 1 AND orientation = ?`).get(at[0].id, p.orientation)) {
+          db.prepare(`UPDATE playlists SET location_id = ? WHERE id = ?`).run(at[0].id, p.id);
+        } else {
+          db.prepare(`DELETE FROM playlists WHERE id = ?`).run(p.id);
+        }
+      }
+      for (const loc of locations) {
         for (const orientation of PLAYLIST_ORIENTATIONS) {
-          const used = db.prepare(
-            `SELECT p.id, COUNT(*) AS n FROM devices d JOIN playlists p ON p.id = d.playlist_id
-             WHERE d.claimed = 1 AND COALESCE(d.site, '') = ? AND p.site IS NULL AND p.orientation = ?
-               AND (CASE WHEN d.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END) = ?
-             GROUP BY p.id ORDER BY n DESC, p.id`
-          ).all(site, orientation, orientation);
-          used.forEach((row, i) => {
-            if (i === 0 && !db.prepare(`SELECT 1 FROM playlists WHERE site = ? AND auto = 1 AND orientation = ?`).get(site, orientation)) {
-              db.prepare(`UPDATE playlists SET site = ?, auto = 1, name = ? WHERE id = ?`).run(site, AUTO_NAMES[orientation], row.id);
-              db.prepare(`UPDATE devices SET playlist_id = NULL WHERE playlist_id = ? AND COALESCE(site, '') = ?`).run(row.id, site);
+          pinnedIn(loc, orientation).forEach((row, i) => {
+            const hasAuto = db.prepare(`SELECT 1 FROM playlists WHERE location_id = ? AND auto = 1 AND orientation = ?`).get(loc.id, orientation);
+            if (i === 0 && !cameFromSites && !hasAuto) {
+              // Before 0.5.0: the playlist most of the location's screens played becomes its
+              // automatic one, and those screens simply follow it from now on.
+              db.prepare(`UPDATE playlists SET location_id = ?, auto = 1, name = ? WHERE id = ?`).run(loc.id, AUTO_NAMES[orientation], row.id);
+              db.prepare(`UPDATE devices SET playlist_id = NULL WHERE playlist_id = @id AND ${IN_LOCATION}`).run({ id: row.id, loc_id: loc.id });
             } else {
-              db.prepare(`UPDATE playlists SET site = ? WHERE id = ?`).run(site, row.id);
+              // Others in use here stay as the location's extras, with their screens still pinned.
+              db.prepare(`UPDATE playlists SET location_id = ? WHERE id = ?`).run(loc.id, row.id);
             }
           });
         }
       }
-      // A playlist on a screen of the other shape stays pinned there, as that site's extra.
-      const odd = db.prepare(
-        `SELECT DISTINCT p.id, COALESCE(d.site, '') AS site FROM devices d JOIN playlists p ON p.id = d.playlist_id
-         WHERE d.claimed = 1 AND p.site IS NULL`
-      ).all();
-      for (const row of odd) db.prepare(`UPDATE playlists SET site = ? WHERE id = ? AND site IS NULL`).run(row.site, row.id);
+      // A playlist pinned to a screen of the other shape stays pinned, as that location's extra.
+      for (const loc of locations) {
+        db.prepare(
+          `UPDATE playlists SET location_id = @loc_id WHERE location_id IS NULL AND auto = 0 AND id IN (
+             SELECT playlist_id FROM devices WHERE claimed = 1 AND playlist_id IS NOT NULL AND ${IN_LOCATION})`
+        ).run({ loc_id: loc.id });
+      }
+      // Whatever is left belongs to no location: listed as "older", to move or delete.
+      db.prepare(`UPDATE playlists SET site = NULL WHERE location_id IS NULL`).run();
+      setSetting(db, 'playlists_by_location', 1);
       setSetting(db, 'playlists_by_site', 1);
     })();
   }
 
   function playlistSummary(p) {
     // The screens playing it: those pinned to it and, for an automatic one, every screen
-    // of that shape at the site that isn't pinned elsewhere.
+    // of that shape in the location that isn't pinned elsewhere.
     const devices = db.prepare(
       `SELECT id, name FROM devices WHERE claimed = 1 AND (playlist_id = @id OR (
-         @auto = 1 AND playlist_id IS NULL AND COALESCE(site, '') = @site
-         AND (CASE WHEN orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END) = @orientation))
+         @auto = 1 AND playlist_id IS NULL AND ${SHAPE_SQL} = @orientation AND ${IN_LOCATION}))
        ORDER BY name`
-    ).all({ id: p.id, auto: p.auto ? 1 : 0, site: p.site ?? '', orientation: p.orientation });
+    ).all({ id: p.id, auto: p.auto ? 1 : 0, orientation: p.orientation, loc_id: p.location_id ?? -1 });
     const count = db.prepare(`SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ?`).get(p.id).n;
+    const loc = p.location_id ? findLocation(p.location_id) : null;
     return {
       id: p.id,
       name: p.name,
@@ -764,13 +796,14 @@ function createApp({
       version: p.version,
       item_count: count,
       devices,
-      site: p.site || null, // null = this server's own site, unless "unassigned" is true
-      auto: Boolean(p.auto), // the site's automatic Landscape or Portrait playlist
-      unassigned: p.site === null, // from before playlists belonged to sites, and not in use
+      location_id: loc ? loc.id : null,
+      location: loc ? loc.name : null,
+      auto: Boolean(p.auto), // the location's automatic Landscape or Portrait playlist
+      unassigned: !loc, // from before playlists belonged to locations, and not in use
     };
   }
 
-  sortPlaylistsIntoSites();
+  sortPlaylistsIntoLocations();
 
   function playlistDetail(p) {
     return { ...playlistSummary(p), items: playlistItems(p.id) };
@@ -791,37 +824,31 @@ function createApp({
       if (!PLAYLIST_ORIENTATIONS.includes(body.orientation)) return { error: 'orientation must be landscape or portrait' };
       out.orientation = body.orientation;
     }
-    // Which site it belongs to. Leaving it out of a new playlist means this server's own site.
-    if (body.site !== undefined || !partial) {
-      const site = body.site == null ? ownSite : String(body.site).trim();
-      if (!knownSites().includes(site)) return { error: 'Unknown site' };
-      out.site = site;
+    // Which location it belongs to. A new playlist needs one.
+    if (body.location_id !== undefined || !partial) {
+      if (!Number.isInteger(body.location_id) || !findLocation(body.location_id)) return { error: 'Choose the location this playlist is for' };
+      out.location_id = body.location_id;
     }
     return { fields: out };
   }
 
-  // Every playlist, a site at a time: this server's own site first, the automatic
-  // Landscape and Portrait before a site's extras, and unused older playlists last.
+  // Every playlist, a location at a time: the automatic Landscape and Portrait before a
+  // location's extras, and unused older playlists last.
   app.get('/api/playlists', requireContent, (req, res) => {
     ensureAutoPlaylists();
     const rows = db.prepare(
-      `SELECT * FROM playlists
-       ORDER BY site IS NULL, site = ? DESC, site COLLATE NOCASE, auto DESC, orientation, name COLLATE NOCASE`
-    ).all(ownSite);
+      `SELECT p.* FROM playlists p LEFT JOIN locations l ON l.id = p.location_id
+       ORDER BY l.id IS NULL, l.name COLLATE NOCASE, l.id, p.auto DESC, p.orientation, p.name COLLATE NOCASE`
+    ).all();
     res.json(rows.map(playlistSummary));
   });
 
-  // The sites playlists can belong to, for the pickers in the apps.
-  app.get('/api/sites', requireContent, (req, res) => {
-    res.json({ own_site: ownSite || null, sites: playlistSites().map((s) => s || null) });
-  });
-
-  // An extra playlist for a site, besides its automatic two.
+  // An extra playlist for a location, besides its automatic two.
   app.post('/api/playlists', requireContent, (req, res) => {
     const { error, fields } = checkPlaylistFields(req.body || {}, { partial: false });
     if (error) return res.status(400).json({ error });
-    const result = db.prepare(`INSERT INTO playlists (name, orientation, site, auto, created_at) VALUES (?, ?, ?, 0, ?)`)
-      .run(fields.name, fields.orientation, fields.site, Date.now());
+    const result = db.prepare(`INSERT INTO playlists (name, orientation, location_id, auto, created_at) VALUES (?, ?, ?, 0, ?)`)
+      .run(fields.name, fields.orientation, fields.location_id, Date.now());
     res.status(201).json(playlistDetail(findPlaylist(result.lastInsertRowid)));
   });
 
@@ -837,10 +864,10 @@ function createApp({
     const { error, fields } = checkPlaylistFields(req.body || {}, { partial: true });
     if (error) return res.status(400).json({ error });
     if (p.auto && Object.keys(fields).some((k) => fields[k] !== p[k])) {
-      return res.status(409).json({ error: 'This is a site\'s automatic playlist: its name, shape and site can\'t be changed. Change what\'s in it instead.' });
+      return res.status(409).json({ error: 'This is a location\'s automatic playlist: its name, shape and location can\'t be changed. Change what\'s in it instead.' });
     }
-    db.prepare(`UPDATE playlists SET name = ?, orientation = ?, site = ?, version = version + 1 WHERE id = ?`)
-      .run(fields.name ?? p.name, fields.orientation ?? p.orientation, fields.site ?? p.site, p.id);
+    db.prepare(`UPDATE playlists SET name = ?, orientation = ?, location_id = ?, version = version + 1 WHERE id = ?`)
+      .run(fields.name ?? p.name, fields.orientation ?? p.orientation, fields.location_id ?? p.location_id, p.id);
     res.json(playlistDetail(findPlaylist(p.id)));
   });
 
@@ -885,7 +912,7 @@ function createApp({
     const p = findPlaylist(req.params.id);
     if (!p) return res.status(404).json({ error: 'Not found' });
     if (p.auto) {
-      return res.status(409).json({ error: 'This is a site\'s automatic playlist and can\'t be deleted. Take its files out to leave it empty.' });
+      return res.status(409).json({ error: 'This is a location\'s automatic playlist and can\'t be deleted. Take its files out to leave it empty.' });
     }
     const users = db.prepare(`SELECT name FROM devices WHERE playlist_id = ? AND claimed = 1`).all(p.id);
     if (users.length) {
@@ -912,11 +939,11 @@ function createApp({
       // from before this existed keep working: they just don't know about the flip.
       flipped: Boolean(d.flipped) && d.orientation === 'landscape',
       can_flip: versionAtLeast(d.app_version, '0.5.0'), // older TV apps can't turn the picture upside down
-      // null = "Automatic": the screen follows its site's Landscape or Portrait playlist.
+      // null = "Automatic": the screen follows its location's Landscape or Portrait playlist.
       playlist_id: d.playlist_id,
-      playlist_name: playlist.name,
+      playlist_name: playlist ? playlist.name : null, // null: it has no location yet, so nothing to play
       playlist_auto: !d.playlist_id,
-      playing_playlist_id: playlist.id,
+      playing_playlist_id: playlist ? playlist.id : null,
       online: d.last_seen != null && Date.now() - d.last_seen < ONLINE_WINDOW_MS,
       last_seen: d.last_seen,
       current_media_id: d.current_media_id,
@@ -945,7 +972,13 @@ function createApp({
       if (!name) return { error: 'Give the player a name' };
       out.name = name;
     }
-    if (body.location !== undefined) out.location = String(body.location || '').trim() || null;
+    // A screen has to be in a location: that is where its playlist comes from.
+    if (body.location !== undefined || !partial) {
+      const location = String(body.location || '').trim();
+      if (!location) return { error: 'Choose a location for this screen' };
+      if (location.length > 60) return { error: 'Keep the location\'s name under 60 characters' };
+      out.location = location;
+    }
     if (body.orientation !== undefined) {
       if (!DEVICE_ORIENTATIONS.includes(body.orientation)) {
         return { error: `orientation must be one of: ${DEVICE_ORIENTATIONS.join(', ')}` };
@@ -966,7 +999,9 @@ function createApp({
 
   // A location typed in the phone app that doesn't exist yet is added to the list.
   function ensureLocation(site, name) {
-    if (name) db.prepare(`INSERT OR IGNORE INTO locations (site, name, created_at) VALUES (?, ?, ?)`).run(site || '', name, Date.now());
+    if (name && !db.prepare(`SELECT 1 FROM locations WHERE name = ?`).get(name)) {
+      db.prepare(`INSERT OR IGNORE INTO locations (site, name, created_at) VALUES (?, ?, ?)`).run(site || '', name, Date.now());
+    }
   }
 
   function applyDeviceFields(id, fields) {
@@ -1037,8 +1072,7 @@ function createApp({
   // ---------- Locations and their working hours (superadmin, system manager) ----------
 
   function locationView(loc) {
-    const screens = db.prepare(`SELECT id, name FROM devices WHERE claimed = 1 AND COALESCE(site, '') = ? AND location = ? ORDER BY name`)
-      .all(loc.site, loc.name);
+    const screens = db.prepare(`SELECT id, name FROM devices WHERE claimed = 1 AND ${IN_LOCATION} ORDER BY name`).all({ loc_id: loc.id });
     const hours = hoursOf(loc);
     return {
       id: loc.id,
@@ -1057,7 +1091,7 @@ function createApp({
   }
 
   app.get('/api/locations', requireDevices, (req, res) => {
-    const rows = db.prepare(`SELECT * FROM locations ORDER BY site = ? DESC, site, name COLLATE NOCASE`).all(ownSite);
+    const rows = db.prepare(`SELECT * FROM locations ORDER BY name COLLATE NOCASE, id`).all();
     res.json({ own_site: ownSite || null, sites: knownSites().map((s) => s || null), locations: rows.map(locationView) });
   });
 
@@ -1068,7 +1102,7 @@ function createApp({
     if (!name) return res.status(400).json({ error: 'Give the location a name' });
     if (name.length > 60) return res.status(400).json({ error: 'Keep the name under 60 characters' });
     if (!knownSites().includes(site)) return res.status(400).json({ error: 'Unknown site' });
-    if (db.prepare(`SELECT 1 FROM locations WHERE site = ? AND name = ?`).get(site, name)) {
+    if (db.prepare(`SELECT 1 FROM locations WHERE name = ? COLLATE NOCASE`).get(name)) {
       return res.status(409).json({ error: `There's already a location called ${name}` });
     }
     const id = db.prepare(`INSERT INTO locations (site, name, created_at) VALUES (?, ?, ?)`).run(site, name, Date.now()).lastInsertRowid;
@@ -1090,7 +1124,7 @@ function createApp({
     if (body.name !== undefined) {
       name = String(body.name || '').trim();
       if (!name) return res.status(400).json({ error: 'Give the location a name' });
-      if (name !== loc.name && db.prepare(`SELECT 1 FROM locations WHERE site = ? AND name = ?`).get(loc.site, name)) {
+      if (name !== loc.name && db.prepare(`SELECT 1 FROM locations WHERE name = ? COLLATE NOCASE AND id != ?`).get(name, loc.id)) {
         return res.status(409).json({ error: `There's already a location called ${name}` });
       }
     }
@@ -1101,8 +1135,8 @@ function createApp({
       hours = checked.hours ? JSON.stringify(checked.hours) : null;
     }
     db.transaction(() => {
-      db.prepare(`UPDATE devices SET location = ?, config_version = config_version + 1 WHERE claimed = 1 AND COALESCE(site, '') = ? AND location = ?`)
-        .run(name, loc.site, loc.name);
+      db.prepare(`UPDATE devices SET location = @name, config_version = config_version + 1 WHERE claimed = 1 AND ${IN_LOCATION}`)
+        .run({ name, loc_id: loc.id });
       db.prepare(`UPDATE locations SET name = ?, hours = ? WHERE id = ?`).run(name, hours, loc.id);
     })();
     res.json(locationView(findLocation(loc.id)));
@@ -1119,7 +1153,13 @@ function createApp({
     if (screens.length) {
       return res.status(409).json({ error: `Move its screens to another location first: ${screens.map((s) => s.name).join(', ')}`, screens });
     }
-    db.prepare(`DELETE FROM locations WHERE id = ?`).run(loc.id);
+    db.transaction(() => {
+      // Its two automatic playlists go with it. An extra playlist is kept, without a
+      // location, so its contents aren't lost; it can be moved to another location.
+      db.prepare(`DELETE FROM playlists WHERE location_id = ? AND auto = 1`).run(loc.id);
+      db.prepare(`UPDATE playlists SET location_id = NULL WHERE location_id = ?`).run(loc.id);
+      db.prepare(`DELETE FROM locations WHERE id = ?`).run(loc.id);
+    })();
     res.json({ ok: true });
   });
 
@@ -1225,7 +1265,7 @@ function createApp({
       cache: cacheStore
         ? { available: true, enabled: cacheOn(), ...cacheStore.stats() }
         : { available: false, enabled: false, files: 0, bytes: 0 },
-      sign_in: { phone_app: Boolean(googleWebClientId), web_code: Boolean(google.deviceSignInAvailable) },
+      users: db.prepare(`SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL`).get().n,
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
       notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
       transcode: {
@@ -1537,11 +1577,4 @@ function randomPairingCode() {
 }
 
 // The SUPERADMIN_EMAIL setting is always a superadmin, so you can't lock yourself out.
-function ensureSuperadmin(db, email) {
-  db.prepare(
-    `INSERT INTO users (email, role, created_at) VALUES (?, 'superadmin', ?)
-     ON CONFLICT(email) DO UPDATE SET role = 'superadmin'`
-  ).run(email.trim().toLowerCase(), Date.now());
-}
-
 module.exports = { createApp, createIngressServer };

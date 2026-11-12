@@ -111,9 +111,9 @@ private fun PlaylistDetailScreen(state: PlaylistDetailUiState, vm: PlaylistDetai
         topBar = {
             TopAppBar(
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back to playlists") } },
-                title = { Text(saved?.name ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text(saved?.let { p -> p.location?.let { "$it · ${p.name}" } ?: p.name } ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 actions = {
-                    // A site's automatic playlist has nothing to set: its name and shape are fixed.
+                    // A location's automatic playlist has nothing to set: its name and shape are fixed.
                     if (saved?.auto != true) {
                         IconButton(onClick = { showSettings = true }, enabled = saved != null) {
                             Icon(Icons.Outlined.Edit, contentDescription = "Playlist settings")

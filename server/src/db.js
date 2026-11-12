@@ -139,6 +139,11 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'time_zone', 'TEXT'); // the TV's own time zone, e.g. "Asia/Singapore"
   addColumnIfMissing(db, 'devices', 'after_hours', 'TEXT'); // what the TV does when closed: 'black' or 'standby'
   addColumnIfMissing(db, 'devices', 'alerted_at', 'INTEGER'); // when we notified that it's offline
+  // People sign in with a username and password. The username is kept in the "email"
+  // column (it used to hold a Google account's email); password_hash is never the password.
+  addColumnIfMissing(db, 'users', 'password_hash', 'TEXT');
+  // Playlists belong to a location (see the playlists table's "auto" column below).
+  addColumnIfMissing(db, 'playlists', 'location_id', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'flipped', 'INTEGER'); // 1 = a landscape screen mounted upside down
   // Playlists belong to a site. Each site has two automatic ones (auto = 1), Landscape
   // and Portrait; a screen with no playlist of its own plays the one that fits it.

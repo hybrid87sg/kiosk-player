@@ -11,8 +11,43 @@ const CAN_MANAGE_CONTENT = ['superadmin', 'system_manager', 'content_uploader'];
 const CAN_MANAGE_DEVICES = ['superadmin', 'system_manager'];
 const CAN_MANAGE_USERS = ['superadmin'];
 
-// Admin app sessions last 30 days; after that, sign in with Google again.
+// Sessions last 30 days; after that, sign in again.
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Passwords are never stored. What is stored is a "hash": the password put
+// through scrypt (slow on purpose, so guessing is slow) with a random salt.
+// Stored as "scrypt$<salt>$<hash>", both in hex.
+function scrypt(password, salt) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(String(password), salt, 32, (err, key) => (err ? reject(err) : resolve(key)));
+  });
+}
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  return `scrypt$${salt.toString('hex')}$${(await scrypt(password, salt)).toString('hex')}`;
+}
+// The same, without waiting: used once at start-up for the first superadmin.
+function hashPasswordSync(password) {
+  const salt = crypto.randomBytes(16);
+  return `scrypt$${salt.toString('hex')}$${crypto.scryptSync(String(password), salt, 32).toString('hex')}`;
+}
+// A stand-in checked when the username doesn't exist, so that takes just as long.
+const NO_SUCH_USER = `scrypt$${'00'.repeat(16)}$${'00'.repeat(32)}`;
+async function checkPassword(password, stored) {
+  const [kind, salt, hash] = String(stored || NO_SUCH_USER).split('$');
+  if (kind !== 'scrypt' || !salt || !hash) return false;
+  const wanted = Buffer.from(hash, 'hex');
+  const got = await scrypt(password, Buffer.from(salt, 'hex'));
+  return stored != null && wanted.length === got.length && crypto.timingSafeEqual(wanted, got);
+}
+
+// Usernames are lower case: letters, digits and . _ - @ (so an email address works too).
+const USERNAME = /^[a-z0-9][a-z0-9._@-]{2,39}$/;
+function checkNewPassword(password) {
+  if (typeof password !== 'string' || password.length < 8) return 'Use a password of at least 8 characters';
+  if (password.length > 200) return 'That password is too long';
+  return null;
+}
 
 function newToken() {
   return crypto.randomBytes(32).toString('hex');
@@ -88,6 +123,11 @@ module.exports = {
   CAN_MANAGE_DEVICES,
   CAN_MANAGE_USERS,
   newToken,
+  hashPassword,
+  hashPasswordSync,
+  checkPassword,
+  checkNewPassword,
+  USERNAME,
   bearerToken,
   requireRole,
   requireDevice,

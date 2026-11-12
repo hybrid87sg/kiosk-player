@@ -13,8 +13,8 @@ android {
         applicationId = "com.kiosk.admin"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
     }
 
     // The shared test key (see keystore/README.md), so Google sign-in sees the
@@ -53,9 +53,6 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.play.services.code.scanner)
-    implementation(libs.androidx.credentials)
-    implementation(libs.androidx.credentials.play.services)
-    implementation(libs.googleid)
 
     testImplementation(libs.junit)
 }

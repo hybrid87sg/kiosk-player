@@ -71,7 +71,7 @@ fun PlaylistsRoute(ctx: ScreenContext, onOpen: (Long) -> Unit) {
     ShowMessage(message, vm::messageShown)
     // Coming back from a playlist: refresh counts and "plays on".
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.load() }
-    PlaylistsScreen(ctx, playlists, onOpen, onCreate = { name, shape, site -> vm.create(name, shape, site, onOpen) })
+    PlaylistsScreen(ctx, playlists, onOpen, onCreate = { name, shape, locationId -> vm.create(name, shape, locationId, onOpen) })
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -80,19 +80,21 @@ fun PlaylistsScreen(
     ctx: ScreenContext,
     playlists: List<PlaylistSummary>?,
     onOpen: (Long) -> Unit,
-    onCreate: (String, ScreenShape, String?) -> Unit,
+    onCreate: (String, ScreenShape, Long) -> Unit,
 ) {
     var showNew by remember { mutableStateOf(false) }
-    // Playlists belong to a site. Every site has its automatic two, so the sites are all in the list.
-    val sited = playlists.orEmpty().filter { !it.unassigned }
-    val sites = sited.map { it.site }.distinct()
+    // Playlists belong to a location. Every location has its automatic two, so the
+    // list of playlists names every location: (id, name) pairs, in the server's order.
+    val placed = playlists.orEmpty().filter { !it.unassigned && it.locationId != null }
+    val locations = placed.map { it.locationId!! to it.location.orEmpty() }.distinct()
     val older = playlists.orEmpty().filter { it.unassigned }
-    var newSite by remember(sites) { mutableStateOf(sites.firstOrNull()) }
+    var newLocation by remember(locations) { mutableStateOf(locations.firstOrNull()?.first) }
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = { TopAppBar(title = { Text("Playlists") }, actions = { AccountButton(ctx) }) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
+            // An extra playlist is made for a location, so there has to be one first.
+            if (locations.isNotEmpty()) ExtendedFloatingActionButton(
                 onClick = { showNew = true },
                 icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 text = { Text("Extra playlist") },
@@ -109,19 +111,21 @@ fun PlaylistsScreen(
             ) {
                 item {
                     Text(
-                        "Each site's screens play its Landscape or Portrait playlist by themselves. An extra playlist is for a screen that should show something different.",
+                        "Each location's screens play its Landscape or Portrait playlist by themselves. An extra playlist is for a screen that should show something different.",
                         Modifier.padding(horizontal = 4.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (playlists.isEmpty()) item { EmptyState("No playlists yet", "They appear once the server is reachable.") }
-                sites.forEach { site ->
-                    item(key = "site-${site.orEmpty()}") { SectionLabel(site ?: "This site", Modifier.padding(top = 8.dp)) }
-                    items(sited.filter { it.site == site }, key = { it.id }) { p -> PlaylistCard(p) { onOpen(p.id) } }
+                if (playlists.isEmpty()) {
+                    item { EmptyState("No playlists yet", "Add a location on the web page, or when setting up a player. Each location gets a Landscape and a Portrait playlist.") }
+                }
+                locations.forEach { (id, name) ->
+                    item(key = "location-$id") { SectionLabel(name, Modifier.padding(top = 8.dp)) }
+                    items(placed.filter { it.locationId == id }, key = { it.id }) { p -> PlaylistCard(p) { onOpen(p.id) } }
                 }
                 if (older.isNotEmpty()) {
-                    item(key = "older") { SectionLabel("Older playlists", Modifier.padding(top = 8.dp)) }
+                    item(key = "older") { SectionLabel("Playlists without a location", Modifier.padding(top = 8.dp)) }
                     items(older, key = { it.id }) { p -> PlaylistCard(p) { onOpen(p.id) } }
                 }
             }
@@ -131,25 +135,25 @@ fun PlaylistsScreen(
     if (showNew) {
         ModalBottomSheet(onDismissRequest = { showNew = false }) {
             PlaylistForm(
-                title = "Extra playlist for ${newSite ?: "this site"}",
+                title = "Extra playlist for ${locations.firstOrNull { it.first == newLocation }?.second ?: "a location"}",
                 initialName = "",
                 initialShape = ScreenShape.LANDSCAPE,
                 button = "Create",
-                onSubmit = { name, shape -> showNew = false; onCreate(name, shape, newSite) },
+                onSubmit = { name, shape -> newLocation?.let { id -> showNew = false; onCreate(name, shape, id) } },
                 onCancel = { showNew = false },
                 extra = {
-                    // With several sites, choose which one the playlist is for.
-                    if (sites.size > 1) {
-                        Text("Site", style = MaterialTheme.typography.labelLarge)
+                    // With several locations, choose which one the playlist is for.
+                    if (locations.size > 1) {
+                        Text("Location", style = MaterialTheme.typography.labelLarge)
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            sites.forEach { site ->
+                            locations.forEach { (id, name) ->
                                 Row(
                                     Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                                        .selectable(selected = newSite == site, role = Role.RadioButton) { newSite = site },
+                                        .selectable(selected = newLocation == id, role = Role.RadioButton) { newLocation = id },
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    RadioButton(selected = newSite == site, onClick = null)
-                                    Text(site ?: "This site", Modifier.padding(start = 8.dp))
+                                    RadioButton(selected = newLocation == id, onClick = null)
+                                    Text(name, Modifier.padding(start = 8.dp))
                                 }
                             }
                         }
