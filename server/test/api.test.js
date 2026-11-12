@@ -1097,3 +1097,13 @@ test('a Drive folder the server can\'t see is explained on the page, not just "u
   const library = await (await call('GET', '/api/media', { token: boss })).json();
   assert.match(library.sync_error, /can't find the Drive folder.*Showing the last known list\./);
 });
+
+test('a relay\'s main server address gets port 3000 when none is typed', () => {
+  const { normalizeMainUrl } = require('../src/relay');
+  assert.equal(normalizeMainUrl('100.65.116.39'), 'http://100.65.116.39:3000');
+  assert.equal(normalizeMainUrl(' http://100.65.116.39/ '), 'http://100.65.116.39:3000');
+  assert.equal(normalizeMainUrl('100.65.116.39:3000'), 'http://100.65.116.39:3000');
+  assert.equal(normalizeMainUrl('homeassistant.tail1234.ts.net:8123'), 'http://homeassistant.tail1234.ts.net:8123');
+  assert.equal(normalizeMainUrl('https://kiosk.example.com'), 'https://kiosk.example.com');
+  assert.equal(normalizeMainUrl(''), '');
+});

@@ -29,6 +29,25 @@ const MIME_BY_EXT = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
 };
 
+/**
+ * Tidies the main server's address as typed in the settings.
+ * "100.101.102.103" becomes "http://100.101.102.103:3000": the Kiosk server
+ * listens on port 3000, so that is assumed when no port is given.
+ * An https address, or one with its own port, is left alone.
+ */
+function normalizeMainUrl(typed) {
+  let text = String(typed || '').trim().replace(/\/+$/, '');
+  if (!text) return '';
+  if (!/^https?:\/\//i.test(text)) text = `http://${text}`;
+  try {
+    const url = new URL(text);
+    if (url.protocol === 'http:' && !url.port) url.port = '3000';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return text;
+  }
+}
+
 function createRelay({ mainUrl, siteName, dataDir, log = console.log, pruneIntervalMs = 60 * 60 * 1000 }) {
   const main = mainUrl.replace(/\/+$/, '');
   fs.mkdirSync(dataDir, { recursive: true });
@@ -254,4 +273,4 @@ function createRelay({ mainUrl, siteName, dataDir, log = console.log, pruneInter
   return app;
 }
 
-module.exports = { createRelay };
+module.exports = { createRelay, normalizeMainUrl };

@@ -25,7 +25,7 @@ const path = require('node:path');
 const { createApp, createIngressServer } = require('./app');
 const { transcodeOptIn } = require('./transcode');
 const { createGoogle, parseServiceAccountKey } = require('./google');
-const { createRelay } = require('./relay');
+const { createRelay, normalizeMainUrl } = require('./relay');
 const { createHomeAssistant } = require('./notify');
 
 function loadSettings() {
@@ -98,8 +98,7 @@ if (settings.mode === 'relay') {
     console.error(`Relay mode needs: ${missingRelay.join(', ')}. Fill them in using ${settings.source}.`);
     process.exit(1);
   }
-  let mainUrl = settings.mainServerUrl;
-  if (!/^https?:\/\//i.test(mainUrl)) mainUrl = `http://${mainUrl}`;
+  const mainUrl = normalizeMainUrl(settings.mainServerUrl);
   const relay = createRelay({ mainUrl, siteName: settings.siteName, dataDir: settings.dataDir });
   relay.listen(settings.port, '0.0.0.0', () => {
     console.log(`Kiosk relay for site "${settings.siteName}" running on port ${settings.port}, main server ${mainUrl}`);
