@@ -140,8 +140,6 @@ const MOUNTINGS = {
 // The server keeps "upside down" as a flag beside the orientation, so older apps still work.
 const mountingOf = (d) => (d && d.flipped && d.orientation === 'landscape' ? 'landscape_flipped' : (d && d.orientation) || 'landscape');
 const mountingBody = (key) => (key === 'landscape_flipped' ? { orientation: 'landscape', flipped: true } : { orientation: key, flipped: false });
-// Playlists belong to a site. The server's own site has no name of its own unless one was set.
-const siteLabel = (site, ownSite) => site || ownSite || 'This site';
 const playlistLabel = (p) => (p.auto ? `${p.name} (automatic)` : p.name);
 // Where "back" goes from a playlist: people who manage screens see playlists under Locations.
 const playlistsHome = () => (me && me.role === 'content_uploader' ? '#/playlists' : '#/locations');
@@ -304,59 +302,40 @@ async function boot() {
 
 function renderSignIn() {
   clearInterval(pageTimer);
-  const box = el('div', { class: 'signin' },
+  const username = el('input', { type: 'text', id: 'signin-username', autocomplete: 'username', autocapitalize: 'none', spellcheck: false, required: true });
+  const password = el('input', { type: 'password', id: 'signin-password', autocomplete: 'current-password', required: true });
+  const problem = el('div', { class: 'error', role: 'alert' });
+  const button = el('button', { class: 'btn primary', style: 'justify-content:center' }, 'Sign in');
+  const form = el('form', {
+    class: 'card', style: 'display:flex;flex-direction:column;gap:14px;text-align:left',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      problem.textContent = '';
+      button.disabled = true;
+      try {
+        const result = await api('POST', 'api/auth/login', { username: username.value.trim(), password: password.value });
+        setToken(result.token);
+        me = { username: result.username, email: result.username, role: result.role };
+        renderShell();
+      } catch (err) {
+        problem.textContent = err.message;
+        password.value = '';
+        password.focus();
+      } finally {
+        button.disabled = false;
+      }
+    },
+  },
+  el('label', { class: 'field', for: 'signin-username' }, 'Username', username),
+  el('label', { class: 'field', for: 'signin-password' }, 'Password', password),
+  problem, button,
+  el('p', { class: 'meta', style: 'margin:0' }, 'Don’t have a username? Whoever runs Kiosk makes one for you on the Users page.'));
+  fill(app, el('div', { class: 'signin' },
     el('div', { class: 'brand-mark' }, icon('screens', 36)),
     el('h1', {}, 'Kiosk Signage'),
-    el('p', { class: 'sub' }, 'Manage what plays on your screens.'));
-  if (!config.web_code_sign_in) {
-    box.append(el('div', { class: 'card' },
-      el('p', {}, 'Signing in on this web address isn’t set up on this server yet.'),
-      el('p', { class: 'sub' }, 'Open Kiosk Signage from Home Assistant’s sidebar instead, or ask your admin to add the Google “TVs and Limited Input devices” client in the add-on’s settings.')));
-  } else {
-    const area = el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:14px;align-items:center' });
-    const start = el('button', { class: 'btn primary', onclick: () => startCodeSignIn(area) }, 'Sign in with Google');
-    area.append(start, el('p', { class: 'meta' }, 'You’ll get a short code to enter at google.com/device, on this computer or your phone.'));
-    box.append(area);
-  }
-  fill(app, box);
-}
-
-async function startCodeSignIn(area) {
-  const started = await attempt(() => api('POST', 'api/auth/device/start'));
-  if (!started) return;
-  const status = el('p', { class: 'meta' }, 'Waiting for you to enter the code…');
-  fill(area, 
-    el('p', {}, 'Go to ', el('a', { href: started.verification_url, target: '_blank', rel: 'noopener' }, started.verification_url.replace(/^https?:\/\//, '')), ' and enter:'),
-    el('div', { class: 'code' }, started.user_code),
-    el('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(started.user_code).then(() => toast('Code copied')) }, 'Copy code'),
-    status,
-  );
-  const deadline = Date.now() + started.expires_in * 1000;
-  let wait = started.interval * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, wait));
-    let result;
-    try {
-      result = await api('POST', 'api/auth/device/poll', { poll_id: started.poll_id });
-    } catch (e) {
-      status.textContent = e.message;
-      area.append(el('button', { class: 'btn', onclick: () => startCodeSignIn(area) }, 'Try again'));
-      return;
-    }
-    if (result.status === 'slow_down') wait += 5000;
-    if (result.status === 'denied' || result.status === 'expired') {
-      status.textContent = result.status === 'denied' ? 'Sign-in was cancelled.' : 'The code expired.';
-      area.append(el('button', { class: 'btn', onclick: () => startCodeSignIn(area) }, 'Start again'));
-      return;
-    }
-    if (result.status === 'done') {
-      setToken(result.token);
-      me = { email: result.email, role: result.role };
-      renderShell();
-      return;
-    }
-  }
-  status.textContent = 'The code expired.';
+    el('p', { class: 'sub' }, 'Manage what plays on your screens.'),
+    form));
+  username.focus();
 }
 
 function tabsFor(role) {
@@ -394,27 +373,23 @@ function renderShell() {
     el('div', { class: 'spacer' }),
     el('div', { class: 'who' }, el('strong', {}, me.email), el('span', { class: 'label' }, ROLES[me.role].label,
       me.via_home_assistant ? ' · via Home Assistant' : ''),
-    me.via_home_assistant ? null : el('div', {}, el('button', { class: 'btn text small', style: 'padding:0;margin-top:6px', onclick: signOut }, 'Sign out'))),
+    me.via_home_assistant ? null : el('div', { class: 'row', style: 'gap:14px;margin-top:6px' },
+      el('button', { class: 'btn text small', style: 'padding:0', onclick: changeMyPasswordDialog }, 'Password'),
+      el('button', { class: 'btn text small', style: 'padding:0', onclick: signOut }, 'Sign out'))),
   );
   fill(app, el('div', { class: 'shell' }, nav, el('main', { id: 'page' })));
   refreshNavLocations();
   route();
 }
 
-/** Fills the Locations part of the menu: one link per location, under its site when there are several. */
+/** Fills the Locations part of the menu: one link per location. */
 async function refreshNavLocations() {
   const box = document.getElementById('nav-locations');
   if (!box) return;
   const data = await api('GET', 'api/locations').catch(() => null);
   if (!data) return;
-  const sites = new Set(data.locations.map((l) => l.site || ''));
-  const bySite = new Map();
-  for (const l of data.locations) bySite.set(l.site || '', [...(bySite.get(l.site || '') || []), l]);
-  fill(box, [...bySite.entries()].map(([site, list]) => [
-    sites.size > 1 ? el('div', { class: 'nav-site' }, site || 'This site') : null,
-    list.map((l) => el('a', { href: `#/locations/${l.id}`, 'data-loc': String(l.id), title: l.name },
-      el('span', { class: 'label' }, l.name), el('span', { class: 'count' }, String(l.screens.length)))),
-  ]));
+  fill(box, data.locations.map((l) => el('a', { href: `#/locations/${l.id}`, 'data-loc': String(l.id), title: l.name },
+    el('span', { class: 'label' }, l.name), el('span', { class: 'count' }, String(l.screens.length)))));
   markCurrentNav();
 }
 
@@ -469,8 +444,8 @@ async function pageScreens(page) {
     const manySites = sites.size > 1;
     const groups = new Map();
     for (const d of devices) {
-      const loc = d.location || 'No location';
-      const key = manySites ? `${d.site || 'This site'} › ${loc}` : loc;
+      const loc = d.location || 'No location yet · choose one so these screens have a playlist';
+      const key = loc; // locations are one list, whichever site a screen connects through
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(d);
     }
@@ -572,36 +547,40 @@ function addScreenDialog(playlists, devices, onDone) {
 
 /** Name, location, how the screen is mounted and its playlist. New (code) or existing (device). */
 async function screenForm({ code, device, site = null, playlists, devices, onDone }) {
-  // The locations at this screen's site, to choose from (or add a new one).
+  // Every location, to choose from (or add a new one). A screen has to be in one:
+  // that is where its playlist and its working hours come from.
   const data = await attempt(() => api('GET', 'api/locations'));
   if (!data) return;
-  const siteKey = (s) => s || data.own_site || '';
-  const choices = data.locations.filter((l) => siteKey(l.site) === siteKey(site)).map((l) => l.name);
+  const choices = data.locations.map((l) => l.name);
   if (device?.location && !choices.includes(device.location)) choices.push(device.location);
   openDialog((dialog) => {
     const name = el('input', { type: 'text', value: device?.name || '', placeholder: 'e.g. Front window', required: true });
-    const location = el('select', {},
-      el('option', { value: '' }, 'No location'),
+    const location = el('select', { required: true },
+      el('option', { value: '', disabled: true, selected: !device?.location }, 'Choose a location…'),
       choices.map((l) => el('option', { value: l, selected: device?.location === l }, l)),
       el('option', { value: '__new' }, '+ New location…'));
     const newLocation = el('input', { type: 'text', placeholder: 'Name of the new location, e.g. Main lobby', hidden: true });
     location.addEventListener('change', () => {
       newLocation.hidden = location.value !== '__new';
       if (!newLocation.hidden) newLocation.focus();
+      updateWarning();
     });
     let mounting = mountingOf(device);
     // null means Automatic: the screen follows its site's Landscape or Portrait playlist.
     let playlistId = device?.playlist_id ?? null;
-    const siteName = siteLabel(site, data.own_site);
-    // A screen can instead be pinned to one of its site's extra playlists.
-    const extras = playlists.filter((p) => !p.auto && ((!p.unassigned && siteKey(p.site) === siteKey(site)) || p.id === playlistId));
+    // The chosen location's name ("" until one is chosen, or while a new one is being typed).
+    const chosenLocation = () => (location.value && location.value !== '__new' ? location.value : '');
     const warning = el('div', { class: 'note', hidden: true });
     const updateWarning = () => {
       const chosen = playlists.find((p) => p.id === playlistId);
       const screenShape = MOUNTINGS[mounting].shape;
       warning.hidden = !chosen || chosen.orientation === screenShape;
       if (chosen) warning.textContent = `${chosen.name} is made for ${chosen.orientation} screens, but this screen is ${screenShape}. Its files will play with black bars.`;
-      autoMeta.textContent = `Plays ${siteName}’s ${SHAPES[screenShape]} playlist. If you turn the screen, it switches by itself.`;
+      const where = chosenLocation();
+      autoMeta.textContent = where
+        ? `Plays ${where}’s ${SHAPES[screenShape]} playlist. If you turn the screen or move it, it switches by itself.`
+        : `Plays its location’s ${SHAPES[screenShape]} playlist.`;
+      drawExtras();
     };
     // Turning the picture upside down needs Kiosk Player 0.5.0 or newer on the TV.
     const cantFlip = Boolean(device) && device.can_flip === false;
@@ -613,14 +592,22 @@ async function screenForm({ code, device, site = null, playlists, devices, onDon
           off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.5.0 or newer; this TV has ${device.app_version || 'an older version'}.`)] : null));
     }));
     const autoMeta = el('span', { class: 'meta' });
-    const playlistChoices = el('div', { class: 'choices' },
-      el('label', { class: 'choice' },
-        el('input', { type: 'radio', name: 'playlist', value: '', checked: playlistId === null, onchange: () => { playlistId = null; updateWarning(); } }),
-        el('span', {}, el('strong', {}, 'Automatic'), el('br'), autoMeta)),
-      extras.map((p) =>
+    // Automatic first; then the chosen location's extra playlists (and the one in use, wherever it is).
+    const autoInput = el('input', { type: 'radio', name: 'playlist', value: '', checked: playlistId === null, onchange: () => { playlistId = null; updateWarning(); } });
+    const extraBox = el('div', { class: 'choices', style: 'display:contents' });
+    const extraHint = el('span', { class: 'meta' });
+    function drawExtras() {
+      const where = chosenLocation();
+      const extras = playlists.filter((p) => !p.auto && ((!p.unassigned && p.location === where) || p.id === playlistId));
+      fill(extraBox, extras.map((p) =>
         el('label', { class: 'choice' },
-          el('input', { type: 'radio', name: 'playlist', value: p.id, checked: playlistId === p.id, onchange: () => { playlistId = p.id; updateWarning(); } }),
+          el('input', { type: 'radio', name: 'playlist', value: p.id, checked: playlistId === p.id, onchange: () => { playlistId = p.id; autoInput.checked = false; updateWarning(); } }),
           el('span', {}, el('strong', {}, p.name), el('br'), el('span', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} item${p.item_count === 1 ? '' : 's'}`)))));
+      extraHint.textContent = extras.length || !where ? '' : `To show something different on one screen, add an extra playlist for ${where} under Locations.`;
+    }
+    const playlistChoices = el('div', { class: 'choices' },
+      el('label', { class: 'choice' }, autoInput, el('span', {}, el('strong', {}, 'Automatic'), el('br'), autoMeta)),
+      extraBox);
     updateWarning();
     const form = el('form', {
       method: 'dialog',
@@ -628,8 +615,10 @@ async function screenForm({ code, device, site = null, playlists, devices, onDon
         e.preventDefault();
         const body = { name: name.value.trim(), location: location.value || null, ...mountingBody(mounting), playlist_id: playlistId };
         if (!body.name) return toast('Give the screen a name');
+        if (!body.location) return toast('Choose a location for this screen');
+        if (body.location === '__new' && !newLocation.value.trim()) return toast('Type the new location’s name');
         if (body.location === '__new') {
-          const created = await attempt(() => api('POST', 'api/locations', { site: site || null, name: newLocation.value.trim() }));
+          const created = await attempt(() => api('POST', 'api/locations', { name: newLocation.value.trim() }));
           if (!created) return;
           body.location = created.name;
           refreshNavLocations();
@@ -648,8 +637,7 @@ async function screenForm({ code, device, site = null, playlists, devices, onDon
     el('label', { class: 'field' }, 'Location', location, newLocation),
     el('div', { class: 'field' }, el('strong', {}, 'How the screen is mounted'), mountChoices,
       el('span', { class: 'meta' }, 'Pick the way the top of the picture should point. Kiosk Player turns the picture to match, because TV boxes always send a landscape picture.')),
-    el('div', { class: 'field' }, el('strong', {}, 'Playlist'), playlistChoices,
-      extras.length ? null : el('span', { class: 'meta' }, `To show something different on one screen, add an extra playlist for ${siteName} under Locations.`)),
+    el('div', { class: 'field' }, el('strong', {}, 'Playlist'), playlistChoices, extraHint),
     warning,
     el('div', { class: 'dialog-actions' },
       el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
@@ -664,31 +652,48 @@ const DAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu
 
 async function pageLocations(page) {
   async function draw() {
-    const [data, playlists] = await Promise.all([api('GET', 'api/locations'), api('GET', 'api/playlists')]);
-    const bySite = new Map(data.sites.map((s) => [s || '', []]));
-    for (const l of data.locations) bySite.set(l.site || '', [...(bySite.get(l.site || '') || []), l]);
+    const [data, playlists, devices] = await Promise.all([api('GET', 'api/locations'), api('GET', 'api/playlists'), api('GET', 'api/devices')]);
     fill(page,
       el('div', { class: 'page-head' },
         el('div', {}, el('h1', {}, 'Locations'),
-          el('p', { class: 'sub' }, 'Each site has its own playlists, and the areas where its screens are. Each area has its own working hours; outside them its screens go dark.')),
-        el('button', { class: 'btn primary', onclick: () => addLocationDialog(data, (l) => { location.hash = `#/locations/${l.id}`; }) }, '+ Add location')),
-      // A main server with no screens or areas of its own is only for managing the other
-      // sites, so it gets no block here.
-      [...bySite.entries()].filter(([site, list]) => list.length || playlists.some((p) => !p.unassigned && (p.site || '') === site)).map(([site, list]) => el('section', { class: 'site-block' },
-        el('h2', { class: 'site-name' }, siteLabel(site, data.own_site)),
-        sitePlaylists(site || null, data.own_site, playlists, draw),
-        el('div', { class: 'section-label' }, 'Areas and screens'),
-        list.length === 0
-          ? el('div', { class: 'empty' }, 'No areas here yet. Add a location, e.g. “Main lobby”, then put screens in it.')
-          : el('div', { class: 'list' }, list.map((l) => el('a', { class: 'list-row link-row', href: `#/locations/${l.id}` },
-            el('span', { class: 'loc-mark' }, icon('locations', 22)),
-            el('div', { class: 'grow' }, el('div', { class: 'name' }, l.name),
-              el('div', { class: 'meta row nowrap', style: 'gap:6px' }, icon('clock', 14), el('span', {}, l.hours_summary))),
-            el('span', { class: 'chip primary' }, `${l.screens.length} screen${l.screens.length === 1 ? '' : 's'}`)))))),
-      olderPlaylists(playlists, data.sites, data.own_site, draw),
+          el('p', { class: 'sub' }, 'Each location has its own Landscape and Portrait playlist, its working hours and its screens.')),
+        el('button', { class: 'btn primary', onclick: () => addLocationDialog(data, () => draw()) }, '+ Add location')),
+      data.locations.length === 0
+        ? el('div', { class: 'empty' }, 'No locations yet. Add one, e.g. “Main lobby”. It gets a Landscape and a Portrait playlist, and you can put screens in it.')
+        : data.locations.map((loc) => {
+          const here = devices.filter((d) => d.location_id === loc.id);
+          return el('section', { class: 'site-block' },
+            el('div', { class: 'loc-head' },
+              el('h2', {}, el('a', { href: `#/locations/${loc.id}` }, loc.name)),
+              el('div', { class: 'row' },
+                el('span', { class: 'meta row nowrap', style: 'gap:6px' }, icon('clock', 14), el('span', {}, loc.hours_summary)),
+                el('span', { class: 'chip primary' }, `${here.length} screen${here.length === 1 ? '' : 's'}`),
+                el('button', { class: 'btn text small', onclick: () => hoursDialog(loc, draw) }, 'Edit hours'),
+                el('a', { class: 'btn text small', href: `#/locations/${loc.id}` }, 'Manage'))),
+            locationPlaylists(loc, playlists),
+            el('div', { class: 'section-label' }, 'Screens'),
+            here.length === 0
+              ? el('div', { class: 'empty' }, 'No screens here yet. Choose this location when adding a screen, or move one here.')
+              : el('div', { class: 'list' }, here.map((d) => screenRow(d, playlists, devices, draw))));
+        }),
+      olderPlaylists(playlists),
     );
+    refreshNavLocations(); // the counts in the menu follow what was just added or moved
   }
   await attempt(draw);
+  pageTimer = setInterval(() => { if (!document.querySelector('dialog[open]')) attempt(draw); }, 15000);
+}
+
+/** One screen as a row on the Locations page: its name, how it is mounted, what it plays, and whether it is on. */
+function screenRow(d, playlists, devices, redraw) {
+  const mount = MOUNTINGS[mountingOf(d)] || MOUNTINGS.landscape;
+  return el('div', { class: 'list-row' },
+    el('div', { class: 'grow' }, el('div', { class: 'name' }, d.name || 'Unnamed'),
+      el('div', { class: 'meta' }, `${mount.label} · plays ${d.playlist_name || 'nothing yet'}`)),
+    d.open_now === false
+      ? el('span', { class: 'chip offline' }, icon('clock', 12), 'After hours')
+      : el('span', { class: `chip ${d.online ? 'online' : 'offline'}` }, el('span', { class: 'dot' }), d.online ? 'Online' : `Offline · ${timeAgo(d.last_seen)}`),
+    el('button', { class: 'btn text small', onclick: () => screenForm({ device: d, site: d.site, playlists, devices, onDone: redraw }) }, 'Edit'));
 }
 
 /** One playlist as a card that opens it. */
@@ -703,42 +708,37 @@ function playlistCard(p) {
     el('div', { class: 'meta' }, p.devices.length ? `Plays on ${p.devices.map((d) => d.name).join(', ')}` : 'Not playing on any screen yet')));
 }
 
-/** A site's playlists: its automatic Landscape and Portrait, then any extras, and a button to add one. */
-function sitePlaylists(site, ownSite, playlists, redraw) {
-  const key = (s) => s || ownSite || '';
-  const mine = playlists.filter((p) => !p.unassigned && key(p.site) === key(site));
-  const name = siteLabel(site, ownSite);
+/** A location's playlists: its automatic Landscape and Portrait, then any extras, and a button to add one. */
+function locationPlaylists(loc, playlists) {
+  const mine = playlists.filter((p) => p.location_id === loc.id);
   return [
     el('div', { class: 'section-label row group-head' }, 'Playlists',
       el('button', {
         class: 'btn text small', type: 'button',
-        onclick: () => playlistForm({ site, siteName: name, onSaved: (p) => { location.hash = `#/playlists/${p.id}`; } }),
+        onclick: () => playlistForm({ location: loc, onSaved: (p) => { location.hash = `#/playlists/${p.id}`; } }),
       }, '+ Extra playlist')),
-    el('p', { class: 'meta', style: 'margin:0 4px 10px' },
-      `Screens at ${name} play Landscape or Portrait by themselves, whichever fits how they’re mounted. An extra playlist is for a screen that should show something different.`),
     el('div', { class: 'grid' }, mine.map(playlistCard)),
   ];
 }
 
-/** Playlists from before playlists belonged to sites that no screen was using. */
-function olderPlaylists(playlists, sites, ownSite, redraw) {
+/** Playlists that belong to no location (from older versions, or left by a deleted location). */
+function olderPlaylists(playlists) {
   const old = playlists.filter((p) => p.unassigned);
   if (!old.length) return null;
   return el('section', { class: 'site-block' },
-    el('h2', { class: 'site-name' }, 'Older playlists'),
-    el('p', { class: 'meta', style: 'margin:0 4px 10px' }, 'These were made before playlists belonged to a site, and no screen plays them. Open one to move it to a site or delete it.'),
+    el('div', { class: 'loc-head' }, el('h2', {}, 'Playlists without a location')),
+    el('p', { class: 'meta', style: 'margin:8px 4px 10px' }, 'No screen plays these. Open one to move it to a location or delete it.'),
     el('div', { class: 'grid' }, old.map(playlistCard)));
 }
 
 function addLocationDialog(data, onAdded) {
   openDialog((dialog) => {
     const name = el('input', { type: 'text', placeholder: 'e.g. Main lobby', maxLength: 60 });
-    const site = el('select', {}, data.sites.map((s) => el('option', { value: s || '' }, s || 'This site')));
     const form = el('form', {
       method: 'dialog',
       onsubmit: async (e) => {
         e.preventDefault();
-        const added = await attempt(() => api('POST', 'api/locations', { name: name.value.trim(), site: site.value || null }));
+        const added = await attempt(() => api('POST', 'api/locations', { name: name.value.trim() }));
         if (!added) return;
         dialog.close();
         toast(`${added.name} added`);
@@ -748,7 +748,7 @@ function addLocationDialog(data, onAdded) {
     },
     el('h2', {}, 'Add a location'),
     el('label', { class: 'field' }, 'Name', name),
-    data.sites.length > 1 ? el('label', { class: 'field' }, 'Site', site) : null,
+    el('p', { class: 'meta', style: 'margin:0' }, 'It gets a Landscape and a Portrait playlist of its own.'),
     el('div', { class: 'dialog-actions' },
       el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
       el('button', { class: 'btn primary' }, 'Add location')));
@@ -761,19 +761,20 @@ async function pageLocation(page, id) {
   async function draw() {
     const [loc, devices, playlists] = await Promise.all([api('GET', `api/locations/${id}`), api('GET', 'api/devices'), api('GET', 'api/playlists')]);
     const here = devices.filter((d) => d.location_id === loc.id);
-    // Screens at the same site, in other locations, can be moved here.
-    const others = devices.filter((d) => d.location_id !== loc.id && (d.site || null) === loc.site);
+    // Screens in other locations (or in none yet) can be moved here.
+    const others = devices.filter((d) => d.location_id !== loc.id);
     fill(page,
       el('div', { class: 'page-head' },
         el('div', {},
           el('a', { href: '#/locations', class: 'meta' }, '← Locations'),
           el('h1', {}, loc.name),
-          el('p', { class: 'sub row', style: 'gap:6px' }, loc.site ? `${loc.site} · ` : '', icon('clock', 16), loc.hours_summary)),
+          el('p', { class: 'sub row', style: 'gap:6px' }, icon('clock', 16), loc.hours_summary)),
         el('div', { class: 'row' },
           el('button', { class: 'btn tonal', onclick: () => hoursDialog(loc, draw) }, icon('clock', 18), 'Working hours'),
           el('button', { class: 'btn', onclick: () => renameLocationDialog(loc, draw) }, 'Rename'),
           el('button', { class: 'btn danger', onclick: () => deleteLocationDialog(loc, here) }, 'Delete location'))),
-      el('div', { class: 'row', style: 'justify-content:space-between;margin-top:8px' },
+      locationPlaylists(loc, playlists),
+      el('div', { class: 'row', style: 'justify-content:space-between;margin-top:24px' },
         el('div', { class: 'section-label', style: 'margin:0 4px' }, `Screens here · ${here.length}`),
         others.length ? el('button', { class: 'btn small', onclick: () => moveScreensDialog(loc, others, draw) }, '+ Move a screen here') : null),
       here.length === 0
@@ -894,9 +895,9 @@ function deleteLocationDialog(loc, screens) {
 function moveScreensDialog(loc, others, onDone) {
   openDialog((dialog) => el('div', { class: 'dialog-body' },
     el('h2', {}, `Move a screen to ${loc.name}`),
-    el('p', { class: 'sub' }, 'It keeps its playlist, and follows this location’s working hours.'),
+    el('p', { class: 'sub' }, 'It then plays this location’s Landscape or Portrait playlist, and follows its working hours. A screen pinned to an extra playlist keeps that.'),
     el('div', { class: 'list', style: 'max-height:50vh;overflow:auto' }, others.map((d) => el('div', { class: 'list-row' },
-      el('div', { class: 'grow' }, el('div', { class: 'name' }, d.name), el('div', { class: 'meta' }, d.location ? `Now in ${d.location}` : 'No location')),
+      el('div', { class: 'grow' }, el('div', { class: 'name' }, d.name), el('div', { class: 'meta' }, d.location ? `Now in ${d.location}` : 'No location yet')),
       el('button', {
         class: 'btn tonal small',
         onclick: (e) => attempt(async () => {
@@ -1069,28 +1070,37 @@ async function pageLibrary(page) {
 
 async function pagePlaylists(page) {
   async function draw() {
-    const [playlists, where] = await Promise.all([api('GET', 'api/playlists'), api('GET', 'api/sites')]);
+    const playlists = await api('GET', 'api/playlists');
+    // Every location has its automatic two, so the list of playlists names every location.
+    const locations = [];
+    for (const p of playlists) if (p.location_id && !locations.some((l) => l.id === p.location_id)) locations.push({ id: p.location_id, name: p.location });
     fill(page,
       el('div', { class: 'page-head' },
-        el('div', {}, el('h1', {}, 'Playlists'), el('p', { class: 'sub' }, 'Each site has a Landscape and a Portrait playlist that its screens play by themselves.'))),
-      where.sites.map((site) => el('section', { class: 'site-block' },
-        el('h2', { class: 'site-name' }, siteLabel(site, where.own_site)),
-        sitePlaylists(site, where.own_site, playlists, draw))),
-      olderPlaylists(playlists, where.sites, where.own_site, draw),
+        el('div', {}, el('h1', {}, 'Playlists'), el('p', { class: 'sub' }, 'Each location has a Landscape and a Portrait playlist that its screens play by themselves.'))),
+      locations.length === 0 ? el('div', { class: 'empty' }, 'No locations yet. Someone who manages screens adds them; each one then gets its playlists.') : null,
+      locations.map((loc) => el('section', { class: 'site-block' },
+        el('div', { class: 'loc-head' }, el('h2', {}, loc.name)),
+        locationPlaylists(loc, playlists))),
+      olderPlaylists(playlists),
     );
   }
   await attempt(draw);
 }
 
 /** New playlist, or name/shape/delete for an existing one. */
-async function playlistForm({ playlist, site = null, siteName = null, onSaved, onDeleted }) {
-  // An older playlist (no site yet) can be moved to a site here.
-  const where = playlist?.unassigned ? await attempt(() => api('GET', 'api/sites')) : null;
-  if (playlist?.unassigned && !where) return;
+async function playlistForm({ playlist, location: forLocation = null, onSaved, onDeleted }) {
+  // A playlist without a location can be moved to one here. The list of playlists names every location.
+  let places = null;
+  if (playlist?.unassigned) {
+    const all = await attempt(() => api('GET', 'api/playlists'));
+    if (!all) return;
+    places = [];
+    for (const p of all) if (p.location_id && !places.some((l) => l.id === p.location_id)) places.push({ id: p.location_id, name: p.location });
+  }
   openDialog((dialog) => {
-    const moveTo = where
-      ? el('select', {}, el('option', { value: '__none' }, 'Leave it without a site'),
-        where.sites.map((s) => el('option', { value: s || '' }, siteLabel(s, where.own_site))))
+    const moveTo = places
+      ? el('select', {}, el('option', { value: '' }, 'Leave it without a location'),
+        places.map((l) => el('option', { value: String(l.id) }, l.name)))
       : null;
     const name = el('input', { type: 'text', value: playlist?.name || '', placeholder: 'e.g. Menu boards' });
     let shape = playlist?.orientation || 'landscape';
@@ -1101,8 +1111,8 @@ async function playlistForm({ playlist, site = null, siteName = null, onSaved, o
         e.preventDefault();
         if (!name.value.trim()) return toast('Give the playlist a name');
         const body = { name: name.value.trim(), orientation: shape };
-        if (!playlist) body.site = site;
-        if (moveTo && moveTo.value !== '__none') body.site = moveTo.value || null;
+        if (!playlist) body.location_id = forLocation.id;
+        if (moveTo && moveTo.value) body.location_id = Number(moveTo.value);
         const saved = await attempt(() => (playlist ? api('PATCH', `api/playlists/${playlist.id}`, body) : api('POST', 'api/playlists', body)));
         if (!saved) return;
         dialog.close();
@@ -1110,10 +1120,10 @@ async function playlistForm({ playlist, site = null, siteName = null, onSaved, o
         onSaved?.(saved);
       },
     },
-    el('h2', {}, playlist ? 'Playlist settings' : `Extra playlist for ${siteName || 'this site'}`),
+    el('h2', {}, playlist ? 'Playlist settings' : `Extra playlist for ${forLocation.name}`),
     playlist ? null : el('p', { class: 'meta', style: 'margin:0' }, 'Screens don’t play an extra playlist by themselves. After making it, edit a screen and choose it there.'),
     el('label', { class: 'field' }, 'Playlist name', name),
-    moveTo ? el('label', { class: 'field' }, 'Site', moveTo) : null,
+    moveTo ? el('label', { class: 'field' }, 'Location', moveTo) : null,
     el('div', { class: 'field' }, el('strong', {}, 'Made for'),
       el('div', { class: 'choices' }, Object.entries(SHAPES).map(([key, label]) => el('label', { class: 'choice' },
         el('input', { type: 'radio', name: 'shape', checked: shape === key, onchange: () => { shape = key; } }),
@@ -1138,7 +1148,6 @@ async function playlistForm({ playlist, site = null, siteName = null, onSaved, o
 
 async function pagePlaylist(page, id) {
   let detail;
-  let ownSiteName = null; // this server's own site, for the heading
   let library;
   let items = [];
   let dragFrom = null;
@@ -1174,7 +1183,7 @@ async function pagePlaylist(page, id) {
       el('div', { class: 'page-head' },
         el('div', {},
           el('a', { href: playlistsHome(), class: 'meta' }, me.role === 'content_uploader' ? '← Playlists' : '← Locations'),
-          el('h1', {}, detail.unassigned ? detail.name : `${siteLabel(detail.site, ownSiteName)} · ${detail.name}`),
+          el('h1', {}, detail.unassigned ? detail.name : `${detail.location} · ${detail.name}`),
           el('p', { class: 'sub row' },
             el('span', { class: 'chip primary' }, shapeIcon(detail.orientation, 14), `${SHAPES[detail.orientation]} screens`),
             detail.auto ? el('span', { class: 'chip' }, 'Automatic') : null,
@@ -1289,9 +1298,7 @@ async function pagePlaylist(page, id) {
   }
 
   async function load() {
-    let where;
-    [detail, library, where] = await Promise.all([api('GET', `api/playlists/${id}`), api('GET', 'api/media'), api('GET', 'api/sites')]);
-    ownSiteName = where.own_site;
+    [detail, library] = await Promise.all([api('GET', `api/playlists/${id}`), api('GET', 'api/media')]);
     items = detail.items.map((x) => ({ ...x, schedule_enabled: x.start_at != null || x.end_at != null }));
     draw();
   }
@@ -1300,39 +1307,122 @@ async function pagePlaylist(page, id) {
 
 // ---------- Users ----------
 
+/** A password field with a "Show" switch, so a new password can be checked before saving. */
+function passwordField(id, label, autocomplete = 'new-password') {
+  const input = el('input', { type: 'password', id, autocomplete, minlength: 8, required: true });
+  const show = el('button', {
+    type: 'button', class: 'btn text small', 'aria-pressed': 'false',
+    onclick: () => {
+      const hidden = input.type === 'password';
+      input.type = hidden ? 'text' : 'password';
+      show.textContent = hidden ? 'Hide' : 'Show';
+      show.setAttribute('aria-pressed', String(hidden));
+    },
+  }, 'Show');
+  return { input, field: el('label', { class: 'field', for: id }, el('span', { class: 'row', style: 'justify-content:space-between' }, label, show), input) };
+}
+
+/** Give someone a new password (Spongebob), signing them out everywhere. */
+function resetPasswordDialog(user, onDone) {
+  openDialog((dialog) => {
+    const pw = passwordField('reset-password', 'New password');
+    const problem = el('div', { class: 'error', role: 'alert' });
+    return el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          await api('PATCH', `api/users/${user.id}`, { password: pw.input.value });
+          dialog.close();
+          toast(`${user.username} has a new password and was signed out everywhere`);
+          onDone?.();
+        } catch (err) { problem.textContent = err.message; }
+      },
+    },
+    el('h2', {}, `New password for ${user.username}`),
+    el('p', { class: 'meta', style: 'margin:0' }, 'At least 8 characters. Tell them the new password yourself; Kiosk doesn’t send it anywhere.'),
+    pw.field, problem,
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { class: 'btn primary' }, 'Set password')));
+  });
+}
+
+/** Change your own password. */
+function changeMyPasswordDialog() {
+  openDialog((dialog) => {
+    const current = el('input', { type: 'password', id: 'my-current-password', autocomplete: 'current-password', required: true });
+    const pw = passwordField('my-new-password', 'New password');
+    const problem = el('div', { class: 'error', role: 'alert' });
+    return el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          await api('POST', 'api/auth/password', { current_password: current.value, new_password: pw.input.value });
+          dialog.close();
+          toast('Password changed. Your other devices were signed out.');
+        } catch (err) { problem.textContent = err.message; }
+      },
+    },
+    el('h2', {}, 'Change your password'),
+    el('label', { class: 'field', for: 'my-current-password' }, 'Current password', current),
+    pw.field, problem,
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { class: 'btn primary' }, 'Change password')));
+  });
+}
+
 async function pageUsers(page) {
   async function draw() {
     const users = await api('GET', 'api/users');
-    const email = el('input', { type: 'email', placeholder: 'name@yourcompany.com', required: true });
-    const role = el('select', {}, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === 'content_uploader' }, r.label)));
-    fill(page, 
-      el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, 'Users'), el('p', { class: 'sub' }, 'Who may use Kiosk Admin and this web page. They sign in with their Google account.'))),
+    const username = el('input', { type: 'text', id: 'new-username', placeholder: 'e.g. patrick', autocomplete: 'off', autocapitalize: 'none', spellcheck: false, required: true });
+    const pw = passwordField('new-user-password', 'Password');
+    const role = el('select', { id: 'new-user-role' }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === 'content_uploader' }, r.label)));
+    const problem = el('div', { class: 'error', role: 'alert' });
+    fill(page,
+      el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, 'Users'),
+        el('p', { class: 'sub' }, 'Who may use the Kiosk Admin phone app and this web page. Each person signs in with a username and password you make here.'))),
       el('form', {
-        class: 'card row', style: 'align-items:flex-end',
+        class: 'card', style: 'display:flex;flex-direction:column;gap:12px',
         onsubmit: async (e) => {
           e.preventDefault();
-          const ok = await attempt(() => api('POST', 'api/users', { email: email.value.trim(), role: role.value }));
-          if (ok) { toast(`Invited ${ok.email}. They can sign in with Google now.`); draw(); }
+          problem.textContent = '';
+          try {
+            const made = await api('POST', 'api/users', { username: username.value.trim(), role: role.value, password: pw.input.value });
+            toast(`${made.username} can sign in now. Tell them their username and password.`);
+            draw();
+          } catch (err) { problem.textContent = err.message; }
         },
       },
-      el('label', { class: 'field grow' }, 'Invite someone (Google account email)', email),
-      el('label', { class: 'field' }, 'Role', role),
-      el('button', { class: 'btn primary' }, 'Send invite')),
+      el('h2', {}, 'Add someone'),
+      el('div', { class: 'user-form' },
+        el('label', { class: 'field', for: 'new-username' }, 'Username', username),
+        pw.field,
+        el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
+      el('span', { class: 'meta' }, 'The password needs at least 8 characters. Kiosk keeps it scrambled and can’t show it again, so note it down for them.'),
+      problem,
+      el('div', {}, el('button', { class: 'btn primary' }, 'Add user'))),
       el('div', { class: 'section-label' }, `${users.length} ${users.length === 1 ? 'person' : 'people'}`),
-      el('div', { class: 'list' }, users.map((u) => {
-        const isMe = u.email === me.email;
-        return el('div', { class: 'list-row' },
-          el('div', { class: 'grow' }, el('div', { class: 'name' }, u.email), isMe ? el('div', { class: 'meta' }, `You · ${ROLES[u.role].label}`) : null),
-          isMe ? null : el('select', {
-            'aria-label': `Role for ${u.email}`,
-            onchange: (e) => attempt(async () => { await api('PATCH', `api/users/${u.id}`, { role: e.target.value }); toast(`${u.email} is now ${ROLES[e.target.value].label}`); }),
-          }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === u.role }, r.label))),
-          isMe ? null : el('button', {
-            class: 'btn icon', 'aria-label': `Remove ${u.email}`,
-            onclick: () => confirmDialog(`Remove ${u.email}?`, 'They are signed out and can no longer sign in.', 'Remove',
-              () => attempt(async () => { await api('DELETE', `api/users/${u.id}`); toast(`${u.email} can no longer sign in`); draw(); })),
-          }, icon('trash')));
-      })),
+      users.length === 0
+        ? el('div', { class: 'empty' }, 'Nobody yet. Add the first person above; they can then sign in on the phone app.')
+        : el('div', { class: 'list' }, users.map((u) => {
+          const isMe = !me.via_home_assistant && u.username === me.username;
+          return el('div', { class: 'list-row' },
+            el('div', { class: 'grow' }, el('div', { class: 'name' }, u.username),
+              el('div', { class: 'meta' }, isMe ? `You · ${ROLES[u.role].label}` : (u.has_password ? '' : 'No password yet: set one so they can sign in'))),
+            isMe ? null : el('select', {
+              'aria-label': `Role for ${u.username}`,
+              onchange: (e) => attempt(async () => { await api('PATCH', `api/users/${u.id}`, { role: e.target.value }); toast(`${u.username} is now ${ROLES[e.target.value].label}`); }),
+            }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === u.role }, r.label))),
+            el('button', { class: 'btn text small', onclick: () => (isMe ? changeMyPasswordDialog() : resetPasswordDialog(u, draw)) }, isMe ? 'Change password' : 'New password'),
+            isMe ? null : el('button', {
+              class: 'btn icon', 'aria-label': `Remove ${u.username}`,
+              onclick: () => confirmDialog(`Remove ${u.username}?`, 'They are signed out and can no longer sign in.', 'Remove',
+                () => attempt(async () => { await api('DELETE', `api/users/${u.id}`); toast(`${u.username} can no longer sign in`); draw(); })),
+            }, icon('trash')));
+        })),
       el('div', { class: 'card', style: 'margin-top:20px' },
         el('h2', {}, 'What each role can do'),
         Object.values(ROLES).map((r) => el('div', {}, el('strong', {}, r.label), ` · ${r.desc}`))),
@@ -1544,10 +1634,9 @@ async function pageSettings(page) {
 
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px;margin-top:16px' },
         el('h2', {}, 'Signing in'),
-        el('div', {}, s.sign_in.phone_app ? '✓ ' : '✗ ', el('strong', {}, 'Phone app'), ' · Sign in with Google',
-          s.sign_in.phone_app ? '' : ' (set the Google web client ID in the add-on’s Configuration tab)'),
-        el('div', {}, s.sign_in.web_code ? '✓ ' : '✗ ', el('strong', {}, 'This web page'), ' · code at google.com/device',
-          s.sign_in.web_code ? '' : ' (add the Google “TVs and Limited Input devices” client ID and secret in the add-on’s Configuration tab)'),
+        el('div', {}, `${s.users} ${s.users === 1 ? 'person has' : 'people have'} a username and password. `,
+          el('a', { href: '#/users' }, 'Manage users')),
+        el('div', { class: 'meta' }, 'The phone app and this web address both ask for them. Opened from Home Assistant’s sidebar, this page needs no sign-in.'),
         el('div', {}, '✓ ', el('strong', {}, 'Home Assistant sidebar'), ' · Home Assistant admins')),
 
       el('div', { class: 'card', style: 'margin-top:16px' },
