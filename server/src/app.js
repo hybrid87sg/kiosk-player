@@ -686,8 +686,25 @@ function createApp({
     }
     return p;
   }
+  // The sites that have playlists. When there are other sites (relays), this server's
+  // own site only counts while it has screens of its own (or playlists someone filled or
+  // added): a main server that just manages the other sites' screens shouldn't show
+  // playlists nobody can play.
+  function playlistSites() {
+    const ownInUse = db.prepare(`SELECT 1 FROM devices WHERE claimed = 1 AND COALESCE(site, '') = ?`).get(ownSite)
+      || db.prepare(
+        `SELECT 1 FROM playlists p WHERE p.site = ? AND (p.auto = 0 OR EXISTS (SELECT 1 FROM playlist_items i WHERE i.playlist_id = p.id))`
+      ).get(ownSite);
+    const sites = knownSites();
+    // With no other sites, this server is the only place screens can be, so it keeps its playlists.
+    return sites.length > 1 && !ownInUse ? sites.filter((site) => site !== ownSite) : sites;
+  }
   function ensureAutoPlaylists() {
-    for (const site of knownSites()) for (const orientation of PLAYLIST_ORIENTATIONS) autoPlaylist(site, orientation);
+    const sites = playlistSites();
+    // Empty automatic playlists made for this server's own site before it was known to
+    // have no screens are tidied away. They come back by themselves if a screen is added here.
+    if (!sites.includes(ownSite)) db.prepare(`DELETE FROM playlists WHERE site = ? AND auto = 1`).run(ownSite);
+    for (const site of sites) for (const orientation of PLAYLIST_ORIENTATIONS) autoPlaylist(site, orientation);
   }
   // What a screen plays: the playlist it is pinned to, or else its site's automatic one.
   function playlistFor(device) {
@@ -796,7 +813,7 @@ function createApp({
 
   // The sites playlists can belong to, for the pickers in the apps.
   app.get('/api/sites', requireContent, (req, res) => {
-    res.json({ own_site: ownSite || null, sites: knownSites().map((s) => s || null) });
+    res.json({ own_site: ownSite || null, sites: playlistSites().map((s) => s || null) });
   });
 
   // An extra playlist for a site, besides its automatic two.

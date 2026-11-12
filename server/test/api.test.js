@@ -1279,3 +1279,34 @@ test('a landscape screen can be mounted upside down, if its TV app is new enough
   const old = await addScreen(call, boss, { name: 'Old box', appVersion: '0.4.0' });
   assert.equal(old.view.can_flip, false);
 });
+
+test('a main server that only manages other sites has no playlists of its own', async (t) => {
+  const { call, signIn, upload } = await startServer(t, { siteName: 'Main centre' });
+  const boss = await signIn(BOSS);
+  const playlists = async () => (await call('GET', '/api/playlists', { token: boss })).json();
+  const sites = async () => (await (await call('GET', '/api/sites', { token: boss })).json()).sites;
+
+  // On its own, with no screens yet, it keeps its two: screens can only be added here.
+  assert.deepEqual((await playlists()).map((p) => [p.site, p.name]), [['Main centre', 'Landscape'], ['Main centre', 'Portrait']]);
+
+  // Once another site has a screen and this one has none, only that site has playlists.
+  const cafe = await addScreen(call, boss, { name: 'Cafe', site: 'Qoltured' });
+  assert.deepEqual((await playlists()).map((p) => [p.site, p.name]), [['Qoltured', 'Landscape'], ['Qoltured', 'Portrait']]);
+  assert.deepEqual(await sites(), ['Qoltured']);
+  assert.equal(cafe.view.playlist_name, 'Landscape');
+
+  // A screen added at the main site brings its playlists back.
+  const desk = await addScreen(call, boss, { name: 'Front desk' });
+  assert.deepEqual(await sites(), ['Main centre', 'Qoltured']);
+  const list = await playlists();
+  assert.deepEqual(list.filter((p) => p.site === 'Main centre').map((p) => [p.name, p.devices.map((d) => d.name)]), [['Landscape', ['Front desk']], ['Portrait', []]]);
+
+  // Remove that screen: a playlist someone filled is kept, the empty one goes.
+  const file = await (await upload(boss, 'a.jpg', crypto.randomBytes(100), 'image/jpeg')).json();
+  const filled = list.find((p) => p.site === 'Main centre' && p.name === 'Landscape');
+  await call('PUT', `/api/playlists/${filled.id}/items`, { token: boss, json: { items: [{ media_id: file.id }] } });
+  await call('DELETE', `/api/devices/${desk.id}`, { token: boss });
+  assert.deepEqual((await playlists()).filter((p) => p.site === 'Main centre').map((p) => [p.name, p.item_count]), [['Landscape', 1], ['Portrait', 0]]);
+  await call('PUT', `/api/playlists/${filled.id}/items`, { token: boss, json: { items: [] } });
+  assert.deepEqual((await playlists()).map((p) => p.site), ['Qoltured', 'Qoltured']);
+});

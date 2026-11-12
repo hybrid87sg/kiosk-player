@@ -672,7 +672,9 @@ async function pageLocations(page) {
         el('div', {}, el('h1', {}, 'Locations'),
           el('p', { class: 'sub' }, 'Each site has its own playlists, and the areas where its screens are. Each area has its own working hours; outside them its screens go dark.')),
         el('button', { class: 'btn primary', onclick: () => addLocationDialog(data, (l) => { location.hash = `#/locations/${l.id}`; }) }, '+ Add location')),
-      [...bySite.entries()].map(([site, list]) => el('section', { class: 'site-block' },
+      // A main server with no screens or areas of its own is only for managing the other
+      // sites, so it gets no block here.
+      [...bySite.entries()].filter(([site, list]) => list.length || playlists.some((p) => !p.unassigned && (p.site || '') === site)).map(([site, list]) => el('section', { class: 'site-block' },
         el('h2', { class: 'site-name' }, siteLabel(site, data.own_site)),
         sitePlaylists(site || null, data.own_site, playlists, draw),
         el('div', { class: 'section-label' }, 'Areas and screens'),
