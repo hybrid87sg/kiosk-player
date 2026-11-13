@@ -1,7 +1,8 @@
 # Multi-location relays and the `kiosk_player` Home Assistant integration: audit and plan
 
-**Status:** Stage 1 (audit and planning) only. No application code has changed. Waiting for the
-owner's approval and answers to the [decisions](#9-decisions-needed-before-stage-2) before Stage 2.
+**Status:** Stage 1 (audit and planning) done. No application code has changed. The owner
+answered decisions D1–D5 on 13 Nov 2026 (see [§9](#9-decisions)). Implementation starts with
+Stage 2 once the owner approves the plan.
 
 **Audited:** `hybrid87sg/kiosk-player` at `fd15560` (main, release v0.6.0) and
 `hybrid87sg/kiosk-addons` at `cd7efda` (add-on 0.6.0). Also noted: the open branch
@@ -124,12 +125,12 @@ location's working hours.
 |---|---|---|---|
 | F1 | Relays have **no identity or credential**. The `X-Kiosk-Site` header is trusted as given. | High (for this project) | Stage 2 adds relay credentials. The main server stops trusting the header from unauthenticated callers. |
 | F2 | `SCHEMA_VERSION` bump wipes data. | High (if touched) | Never raise it. Additive migrations only, with a test against a copied 0.6.0 database. |
-| F3 | HA ingress = superadmin with no Kiosk login. It is also the documented **password recovery** path (0.6.0). | Needs a decision | See [D2](#9-decisions-needed-before-stage-2). |
-| F4 | The handover asks for **Google web authentication for the public dashboard**. Google sign-in was **removed** in 0.6.0 at the owner's request. Nothing is exposed with Tailscale Funnel today. | Needs a decision | See [D1](#9-decisions-needed-before-stage-2). |
+| F3 | HA ingress = superadmin with no Kiosk login. It is also the documented **password recovery** path (0.6.0). | Needs a decision | See [D2](#9-decisions). |
+| F4 | The handover asks for **Google web authentication for the public dashboard**. Google sign-in was **removed** in 0.6.0 at the owner's request. Nothing is exposed with Tailscale Funnel today. | Needs a decision | See [D1](#9-decisions). |
 | F5 | No push channel to TVs. Commands take up to 60 s. | Design constraint | Commands go to the central server and are acknowledged when the TV picks them up. No new TV protocol in this project unless approved. |
-| F6 | "Show announcement" and "screen control" don't exist on the TV. | Design constraint | Not exposed as services until the TV supports them (see [D4](#9-decisions-needed-before-stage-2)). |
+| F6 | "Show announcement" and "screen control" don't exist on the TV. | Design constraint | Not exposed as services until the TV supports them (see [D4](#9-decisions)). |
 | F7 | Each relay HA will run **two** Kiosk pieces: the existing add-on (TV proxy) and the new integration (control). | Design | One relay record, one pairing, and two credentials (see [§4](#4-database-migration-design)). |
-| F8 | The add-on's port 3000 serves both the TV protocol and the web UI on every interface. | Medium | Stage 2 keeps it. Relay APIs live under `/api/relay/v1`, and Funnel (if used) must point at a path-restricted proxy (see [D1](#9-decisions-needed-before-stage-2)). |
+| F8 | The add-on's port 3000 serves both the TV protocol and the web UI on every interface. | Medium | Stage 2 keeps it. Relay APIs live under `/api/relay/v1`, and Funnel (if used) must point at a path-restricted proxy (see [D1](#9-decisions)). |
 | F9 | `/media/:id` serves any media to any claimed device (already noted in issue #22). | Low | Out of scope. Relay ownership checks will not widen it. |
 
 ---
@@ -313,9 +314,9 @@ are `{ "error": "<sentence>", "code": "<machine_code>" }`.
 - The code is looked up by HMAC. It must be unused, not expired, and its relay not disabled.
 - It returns `{relay: {id, name, site}, credential_id, credential}`, where the credential is shown once:
   `rk_` + base64url(32 random bytes).
-- **The code is single-use per kind.** One code pairs both the integration and the add-on, so the
+- **The code is single-use per kind (D3).** One code pairs both the integration and the add-on, so the
   admin types it twice within 10 minutes, once in each. It becomes invalid when both have used it or
-  when it expires. If the owner prefers two separate codes, see [D3](#9-decisions-needed-before-stage-2).
+  when it expires.
 - **Rate limits:** 10 attempts per minute per source address, and 50 per hour overall. After that,
   answers are 429. Wrong codes all return the same 401.
 - Neither codes nor credentials are logged. The request logger redacts `code`, `credential` and the
@@ -374,7 +375,7 @@ missed from the last 10 minutes. If it was away longer, it does a full `GET /pla
 - Commands are idempotent by `id`. A newer `play_playlist` for the same TV supersedes an older
   queued one.
 - `show_announcement` and `screen_control` are **not offered** until the TV supports them (see
-  [D4](#9-decisions-needed-before-stage-2)).
+  [D4](#9-decisions)).
 
 ---
 
@@ -536,42 +537,42 @@ Cases 7–10 (native automation, server outage, Tailscale drop, relay restart) a
 
 ---
 
-## 9. Decisions needed before Stage 2
+## 9. Decisions
 
-**D1: Public dashboard and Google sign-in.** The handover says the public web dashboard needs
-separate Google-approved accounts, published with Tailscale Funnel. In 0.6.0 Google sign-in was
-removed at the owner's request, and port 3000 uses Kiosk usernames and passwords. Options:
+Answered by the owner on 13 Nov 2026.
 
-- **a)** Keep username and password for everything. If the dashboard goes on Funnel, put a small
-  path-restricted proxy in front (web UI and `/api/*` used by the UI only; no `/api/relay/v1`, no
-  `/api/player`).
-- **b)** Bring back Google sign-in for the **web dashboard only**, as a separate path from the phone
-  app's username and password, as the handover says. This needs the Google Cloud web client again.
-- **c)** Decide later. Stages 2–4 don't depend on it.
+| | Question | Decision |
+|---|---|---|
+| D1 | Public dashboard sign-in | **(b) Google sign-in for the web dashboard only.** The phone app keeps its username and password. They are separate sign-in paths. Planned as Stage 7 (below). Stages 2–6 don't depend on it. |
+| D2 | HA ingress | **(a) Keep it.** The sidebar stays full (Spongebob) access behind Home Assistant's own admin login, and remains the recovery path. The public dashboard (port 3000 or Funnel) never trusts ingress headers. That is already the case, and Stage 2 adds a test that proves it. |
+| D3 | Pairing codes | **One code** per relay, used once by the integration and once by the relay add-on, within 10 minutes. |
+| D4 | Announcements and screen control | **Left out of this project.** They will come with the planned overlays work (PR #28). The HA services can be added then. |
+| D5 | Integration repository | **`hybrid87sg/kiosk-player-ha`**. The owner creates it when Stage 4 is ready to publish. |
 
-**D2: HA ingress = superadmin.** Today any HA admin opening the sidebar is Spongebob, and that is also
-how a forgotten password is recovered. The handover says HA ingress alone must not grant dashboard
-superadmin. Options:
+### Stage 7: Google sign-in for the web dashboard (from D1)
 
-- **a)** Keep it. The sidebar is behind HA's own admin login; the public dashboard (port 3000 or
-  Funnel) never trusts it.
-- **b)** Ingress shows a Kiosk sign-in too. Recovery moves to an add-on option, *reset admin
-  password*.
-- **c)** Map specific HA users to Kiosk users, and give unmapped ones no access.
-
-Note: the ingress headers can only be sent through port 8099 from the Supervisor's address, so they
-are never trusted on port 3000 or Funnel today.
-
-**D3: One pairing code for both relay pieces, or two?** A single code, used once by the integration
-and once by the add-on within 10 minutes, is simpler. Two codes is stricter.
-
-**D4: Announcements and screen control.** The TV can't do either today. Build them as part of the
-planned overlays work (PR #28) and add the HA services afterwards? Or leave them out of this project?
-
-**D5: Integration repository.** Is `hybrid87sg/kiosk-player-ha` the right name for the published HACS
-repository? The owner would need to create it, as with `kiosk-addons`.
-
----
+- **Who can sign in.** A user record gets an optional linked Google account (`users.google_email`,
+  added with `addColumnIfMissing`). Spongebob links it on the Users page. Signing in to the web
+  dashboard with Google gives that user's role. A Google account not linked to any user is refused.
+- **Separate paths.**
+  - The phone app keeps `POST /api/auth/login` (username and password). The web dashboard on the
+    public address uses Google only.
+  - The plain local address (port 3000 on the home network or Tailscale) can still offer the
+    password form. Whether to keep that is to be confirmed at Stage 7.
+  - HA ingress is unchanged (D2).
+- **How.** The normal Google web sign-in (redirect) flow. It needs an https address, which Tailscale
+  Funnel provides. It also needs a Google Cloud "Web application" client with that address as its
+  redirect URI (the README's Part 1 grows by two steps again). The returned ID token is checked on
+  the server as before 0.6.0: signature, audience, verified email.
+- **Funnel.** Funnel points at a small path filter in the add-on that exposes only the dashboard and
+  the API calls it uses. It never exposes `/api/relay/v1`, `/api/player/*` or `/media`.
+- **Needs from the owner:** the public Funnel hostname, and the Google Cloud web client (step-by-step
+  guide provided).
+- **Tests:**
+  - A linked Google account gets its role; an unlinked one is refused.
+  - A password sign-in on the public path is refused, and phone sign-in is unaffected.
+  - Ingress headers are ignored on the public path.
+  - Relay and player paths aren't reachable through the filter.
 
 ## 10. What does not change
 
