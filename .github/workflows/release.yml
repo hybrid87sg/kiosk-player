@@ -1,14 +1,14 @@
 # Publishes a GitHub release with everything you need:
 #   KioskAdmin-for-phone.apk, KioskPlayer-for-TV.apk and kiosk_server-addon.zip
 #
-# How: Actions tab -> "Release" -> "Run workflow", type a version (e.g. 0.4.0).
+# How: Actions tab -> "Release" -> "Run workflow", type a version (e.g. 0.6.0).
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, e.g. 0.2.0"
+        description: "Version to publish, e.g. 0.6.0"
         required: true
       prerelease:
         description: "Mark it as a test version (pre-release)"
@@ -79,7 +79,8 @@ jobs:
             | `kiosk_server-addon.zip` | Home Assistant | The server, as an add-on, for installing by hand. The easy way is the add-on repository: https://github.com/hybrid87sg/kiosk-addons |
 
             Both apps have a **Demo mode** with sample data, so they can be tried
-            without a server. Connecting to the real server needs the add-on running
-            and the one-time Google setup.
+            without a server. Connecting to the real server needs the add-on running,
+            and a username and password from the admin. Google is only needed for
+            the Drive folder.
 
             The apps are test builds signed with the shared test key in `android/keystore`.

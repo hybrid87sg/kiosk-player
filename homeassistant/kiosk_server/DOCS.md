@@ -6,7 +6,7 @@ from Google Drive to the TVs.
 
 ## Before you start
 
-You need the one-time Google setup, which gives you:
+Google is only needed for the Drive folder. You need:
 
 - **Google Drive folder ID**: the last part of the Signage folder's web address.
 - **The service account key file** (a `.json` file), and the folder shared with that service account.

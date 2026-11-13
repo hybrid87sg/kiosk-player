@@ -116,12 +116,31 @@ people use a username and password you make in Kiosk (Part 3).
 
 2. **Install it.** Refresh the page, find **Kiosk Signage Server** in the store, open it and click
    **Install**. Home Assistant downloads the add-on ready-made, so this takes about a minute.
+
+   To install by hand instead, download `kiosk_server-addon.zip` from the
+   [Releases](https://github.com/hybrid87sg/kiosk-player/releases) page, unzip it into the **addons**
+   share as a folder named `kiosk_server`, then in the store's **⋮** menu choose **Check for updates**
+   and install it from **Local add-ons**. Home Assistant builds that copy on your device, which takes a
+   few minutes. The add-on repository above is the easier way.
+
 3. **Fill in the Configuration tab** with the values from your settings sheet, then click **Save**:
 
    ![The add-on's Configuration tab](docs/images/ha-addon-configuration.svg)
 
    Leave **Mode** as `main`. **Site name** is optional (e.g. `Head office`); it matters once you
-   [add another site](#adding-another-site). Leave **Service account key file** as it is.
+   [add another site](#adding-another-site). Leave **Main server address** empty (it's only for a
+   relay). Leave **Service account key file** as `service-account.json`.
+
+   **Make playback copies** stays off. After a video arrives it makes a 1080p H.264 copy and a 720p
+   fallback, which can leave a Raspberry Pi unresponsive.
+
+   **Also make a 4K HEVC copy** stays off. It's an extra copy for a 4K screen that can decode HEVC, and
+   the slowest to make, so leave it off on a Raspberry Pi.
+
+   **Encoder threads** stays at 1. That's how many processor cores one copy may use, and 1 keeps a
+   Raspberry Pi responsive.
+
+   The longer notes are on the add-on's **Documentation** tab.
 4. Go back to the **Info** tab, switch on **Start on boot**, **Watchdog** and **Show in sidebar**, and click
    **Start**. The **Log** tab should end with `Kiosk server running on port 3000`.
 5. **Add the Google key.** Open **Kiosk Signage** in Home Assistant's sidebar and go to
@@ -179,6 +198,9 @@ flowchart TB
    then the **username** and **password** you made in Part 3, step 7, and tap **Sign in**.
 
    ![Connecting the apps](docs/images/apps-connect.svg)
+
+   Both apps have a **Demo mode** with sample data, and no server is needed. On the phone, open
+   **Try the demo**. On the TV, choose **Try the demo** on the first screen.
 
 3. **Library** shows your test files, sorted into **Landscape** and **Portrait**.
 4. **Add a location**, the place your screens are in, e.g. `Main lobby`: on the web page, **Locations →
@@ -263,8 +285,9 @@ What's on it:
 - **In a playlist:** drag rows to reorder them, and optionally set an inclusive start/end date window for each file.
   Dates use the browser's local timezone; players include files only during that window.
 - **Settings** (Spongebob): pick who gets **notifications** when a screen goes offline, change the Drive
-  folder and test the connection, switch local copies on or off and clear them, and check which sign-in
-  methods are set up.
+  folder and test the connection, and switch local copies on or off and clear them. **Signing in** shows
+  how many people have a username and password, with a **Manage users** link. The phone app and this web
+  address both ask for them. Opened from the Home Assistant sidebar, the page needs no Kiosk sign-in.
 
 The **‹** button next to the name folds the side menu down to icons; it's remembered in that browser.
 
@@ -404,7 +427,7 @@ same way, connect with Tailscale, and sign in.
 | [`android/`](android) | `core` (shared Kotlin, `./gradlew :core:test`), `admin` (phone app), `player` (TV app) |
 | [`.github/workflows/`](.github/workflows) | Builds and checks on every push; **Release** publishes the APKs and the add-on |
 
-**To publish a release:** go to **Actions → Release → Run workflow** and enter a version (e.g. `0.4.0`).
+**To publish a release:** go to **Actions → Release → Run workflow** and enter a version (e.g. `0.6.0`).
 
 The APKs are test builds signed with the shared test key in `android/keystore`. Make a private
 release key before publishing anywhere public.
