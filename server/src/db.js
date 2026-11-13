@@ -176,6 +176,73 @@ function openDatabase(dataDir) {
     );
   `);
 
+  // ---------- Relays: the Home Assistants at other sites (added in 0.7.0) ----------
+  // All new tables, so existing data is untouched. SCHEMA_VERSION must stay as it is:
+  // raising it would drop the tables above.
+  db.exec(`
+    -- One per relay Home Assistant. The id is made by this server and isn't sequential.
+    CREATE TABLE IF NOT EXISTS relays (
+      id           TEXT PRIMARY KEY,           -- 'rly_' + random
+      name         TEXT NOT NULL,
+      site         TEXT NOT NULL UNIQUE,       -- the site its TVs are recorded under (devices.site)
+      description  TEXT,
+      status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'disabled')),
+      created_at   INTEGER NOT NULL,
+      created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      paired_at    INTEGER,
+      last_seen_at INTEGER,
+      last_version TEXT,
+      disabled_at  INTEGER
+    );
+
+    -- Short-lived, single-use pairing codes. Only a keyed hash of the code is kept.
+    -- One code pairs both pieces of a relay: its integration ('control') and its add-on ('proxy').
+    CREATE TABLE IF NOT EXISTS relay_pairing_codes (
+      id              INTEGER PRIMARY KEY,
+      relay_id        TEXT NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
+      code_hash       TEXT NOT NULL UNIQUE,
+      expires_at      INTEGER NOT NULL,
+      used_control_at INTEGER,
+      used_proxy_at   INTEGER,
+      cancelled_at    INTEGER,
+      created_at      INTEGER NOT NULL
+    );
+
+    -- Long-lived relay credentials. Only a hash is kept; the secret is shown to the relay once.
+    CREATE TABLE IF NOT EXISTS relay_credentials (
+      id             TEXT PRIMARY KEY,         -- 'rcr_' + random; not secret
+      relay_id       TEXT NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
+      kind           TEXT NOT NULL CHECK (kind IN ('control', 'proxy')),
+      secret_hash    TEXT NOT NULL UNIQUE,
+      replaces_id    TEXT,                     -- set by a rotation; the old one is revoked once this is used
+      created_at     INTEGER NOT NULL,
+      last_used_at   INTEGER,
+      revoked_at     INTEGER,
+      revoked_reason TEXT
+    );
+
+    -- Which relay owns which TV: one owner per TV.
+    CREATE TABLE IF NOT EXISTS relay_player_assignments (
+      device_id   INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      relay_id    TEXT NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
+      assigned_at INTEGER NOT NULL,
+      assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL -- empty = done automatically
+    );
+
+    -- What happened: pairing, credentials, assignments, refused requests. Never secrets.
+    CREATE TABLE IF NOT EXISTS relay_events (
+      id         INTEGER PRIMARY KEY,
+      relay_id   TEXT,
+      device_id  INTEGER,
+      kind       TEXT NOT NULL,
+      detail     TEXT,                         -- JSON
+      actor      TEXT,                         -- 'user:<id>', 'relay:<id>', 'system'
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS relay_events_by_relay ON relay_events (relay_id, created_at);
+    CREATE INDEX IF NOT EXISTS relay_assignments_by_relay ON relay_player_assignments (relay_id);
+  `);
+
   return db;
 }
 
@@ -206,4 +273,4 @@ function playlistsUsingMedia(db, mediaId) {
   return db.prepare(`SELECT DISTINCT playlist_id FROM playlist_items WHERE media_id = ?`).all(mediaId).map((r) => r.playlist_id);
 }
 
-module.exports = { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting };
+module.exports = { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting, SCHEMA_VERSION };
