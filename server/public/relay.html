@@ -35,6 +35,14 @@
       r.append(name, v);
       return r;
     }
+    function pairingRow(p) {
+      if (!p) return row('Pairing', 'Unknown');
+      if (p.state === 'paired') return row('Pairing', p.relay_name ? `Paired as ${p.relay_name}` : 'Paired');
+      if (p.state === 'pairing') return row('Pairing', 'Pairing now…');
+      if (p.message) return row('Pairing', p.message, true);
+      return row('Pairing', p.code_given ? 'Not paired yet'
+        : "Not paired. Make a pairing code on the main server (Settings → Home Assistant Relays) and put it in this add-on's Configuration tab.", true);
+    }
     function size(bytes) {
       return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
     }
@@ -47,6 +55,7 @@
         link.textContent = s.main_url;
         link.href = s.main_url;
         box.replaceChildren(
+          pairingRow(s.pairing),
           row('Main Kiosk server', s.main.reachable ? `Connected (version ${s.main.version})` : (s.main.reason || "Can't reach it. Check that Tailscale is running at both sites, and the main server address in this add-on's Configuration tab."), !s.main.reachable),
           row('TVs at this site', `${s.tvs_seen} active in the last 10 minutes`),
           row('Copies of files kept here', `${s.cache.files} files, ${size(s.cache.bytes)}`),

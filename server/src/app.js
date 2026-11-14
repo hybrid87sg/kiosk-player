@@ -20,6 +20,7 @@ const http = require('node:http');
 const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting } = require('./db');
 const auth = require('./auth');
 const { createRelays } = require('./relays');
+const { createRelayHub } = require('./relay-ws');
 const { MediaCache } = require('./media-cache');
 const { checkHours, summarizeHours, isOpenAt } = require('./hours');
 const { createTranscoder } = require('./transcode');
@@ -124,6 +125,11 @@ function createApp({
   }
   const relays = createRelays({ db, log, ownSite });
   relays.pruneEvents();
+  // The live connections from relays' Home Assistant integrations (relay-ws.js); set up with the relay routes.
+  let relayHub = null;
+  let acknowledgeCommands = () => {}; // also set up with the relay routes
+  let expireCommands = () => {};
+  const tellRelayAbout = (deviceId) => { if (relayHub) relayHub.playerChanged(deviceId); };
   // Location names typed on screens before locations existed become real locations.
   db.prepare(
     `INSERT OR IGNORE INTO locations (site, name, created_at)
@@ -246,7 +252,9 @@ function createApp({
     const secret = req.get('x-kiosk-relay-auth');
     if (secret) {
       const result = relays.authenticate(secret, ['proxy']);
-      if (result.error) return res.status(result.status).json({ error: result.error });
+      // 503, never 401/403: a TV reads 401 as "removed" and forgets its pairing and files.
+      // A refused relay is a problem at the relay, so its TVs keep playing what they have.
+      if (result.error) return res.status(503).json({ error: `Relay refused by the main Kiosk server: ${result.error}` });
       req.relay = result.relay;
       req.kioskSite = result.relay.site;
       return next();
@@ -259,7 +267,7 @@ function createApp({
     const known = relays.relayBySite(claimed);
     const paired = known && db.prepare(`SELECT 1 FROM relay_credentials WHERE relay_id = ? AND kind = 'proxy' AND revoked_at IS NULL`).get(known.id);
     if (getSetting(db, 'relays_require_credentials') || paired || (known && known.status === 'disabled')) {
-      return res.status(401).json({ error: 'This relay must be paired with the main Kiosk server. Add its pairing code in the relay add-on’s Configuration tab.' });
+      return res.status(503).json({ error: 'This relay must be paired with the main Kiosk server. Add its pairing code in the relay add-on’s Configuration tab.' });
     }
     req.unpairedRelay = known || null;
     req.kioskSite = claimed;
@@ -1103,13 +1111,16 @@ function createApp({
     if (fields.flipped && (fields.orientation ?? device.orientation) !== 'landscape') fields.flipped = 0;
     applyDeviceFields(device.id, fields);
     ensureLocation(device.site, fields.location);
+    tellRelayAbout(device.id);
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
 
   // Removing a device makes its token useless; the TV will show a new code.
   app.delete('/api/devices/:id', requireDevices, (req, res) => {
+    const owner = relays.ownerOf(Number(req.params.id) || 0);
     const result = db.prepare(`DELETE FROM devices WHERE id = ?`).run(req.params.id);
     if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
+    if (owner && relayHub) relayHub.relayChanged(owner.id);
     res.json({ ok: true });
   });
 
@@ -1540,7 +1551,10 @@ function createApp({
 
   app.get('/api/player/playlist', auth.requireDevice(db), (req, res) => {
     expireDue();
-    res.json(playerPlaylist(req.device));
+    const playlist = playerPlaylist(req.device);
+    // The TV now has what its relay asked for: those commands are acknowledged.
+    acknowledgeCommands(req.device.id);
+    res.json(playlist);
   });
 
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
@@ -1578,6 +1592,7 @@ function createApp({
     params.push(req.device.id);
     db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...params);
     noteRelayOf(req, req.device.id);
+    tellRelayAbout(req.device.id);
     const device = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.device.id);
     res.json({ ok: true, version: playerPlaylist(device).version });
   });
@@ -1594,13 +1609,15 @@ function createApp({
       if (!relay) res.status(404).json({ error: 'Not found' });
       return relay;
     };
+    // What the admin page shows: the relay, and whether its Home Assistant is connected right now.
+    const viewOf = (r) => ({ ...relays.relayView(r), connected: relayHub.isConnected(r.id) });
 
     // ----- for admins (Spongebob) -----
 
     app.get('/api/relays', requireUsers, (req, res) => {
       const rows = db.prepare(`SELECT * FROM relays ORDER BY name COLLATE NOCASE`).all();
       res.json({
-        relays: rows.map(relays.relayView),
+        relays: rows.map(viewOf),
         require_credentials: Boolean(getSetting(db, 'relays_require_credentials')),
         own_site: siteName || null,
       });
@@ -1620,12 +1637,12 @@ function createApp({
         .run(id, name, site, description, Date.now(), userIdOf(req));
       relays.event(id, 'created', { actor: actorOf(req), detail: { name, site } });
       const pairing = relays.newPairingCode(id, actorOf(req));
-      res.status(201).json({ relay: relays.relayView(relays.findRelay(id)), pairing_code: pairing.code, expires_at: pairing.expires_at });
+      res.status(201).json({ relay: viewOf(relays.findRelay(id)), pairing_code: pairing.code, expires_at: pairing.expires_at });
     });
 
     app.get('/api/relays/:id', requireUsers, (req, res) => {
       const relay = findOr404(req, res);
-      if (relay) res.json(relays.relayView(relay));
+      if (relay) res.json(viewOf(relay));
     });
 
     app.patch('/api/relays/:id', requireUsers, (req, res) => {
@@ -1644,8 +1661,9 @@ function createApp({
       db.prepare(`UPDATE relays SET name = ?, description = ?, status = ?, disabled_at = ? WHERE id = ?`)
         .run(name, description, status, status === 'disabled' ? (relay.disabled_at || Date.now()) : null, relay.id);
       if (status !== relay.status) relays.event(relay.id, status === 'disabled' ? 'disabled' : 'enabled', { actor: actorOf(req) });
+      if (status === 'disabled') relayHub.closeRelay(relay.id, 'relay.disabled');
       if (name !== relay.name || description !== relay.description) relays.event(relay.id, 'edited', { actor: actorOf(req), detail: { name } });
-      res.json(relays.relayView(relays.findRelay(relay.id)));
+      res.json(viewOf(relays.findRelay(relay.id)));
     });
 
     app.post('/api/relays/:id/pairing-code', requireUsers, (req, res) => {
@@ -1653,7 +1671,7 @@ function createApp({
       if (!relay) return;
       if (relay.status === 'disabled') return res.status(409).json({ error: 'Enable this relay before pairing it' });
       const pairing = relays.newPairingCode(relay.id, actorOf(req));
-      res.status(201).json({ relay: relays.relayView(relays.findRelay(relay.id)), pairing_code: pairing.code, expires_at: pairing.expires_at });
+      res.status(201).json({ relay: viewOf(relays.findRelay(relay.id)), pairing_code: pairing.code, expires_at: pairing.expires_at });
     });
 
     app.post('/api/relays/:id/credentials/:cid/revoke', requireUsers, (req, res) => {
@@ -1662,7 +1680,27 @@ function createApp({
       if (!relays.revokeCredential(relay.id, req.params.cid, 'revoked by an admin', actorOf(req))) {
         return res.status(404).json({ error: 'No such credential, or it was already revoked' });
       }
-      res.json(relays.relayView(relays.findRelay(relay.id)));
+      res.json(viewOf(relays.findRelay(relay.id)));
+    });
+
+    // A new credential for the relay's Home Assistant integration, handed to it over its live
+    // connection. Its old credential keeps working until the integration first uses the new one.
+    app.post('/api/relays/:id/rotate', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (!relay) return;
+      if ((req.body || {}).kind !== 'control') {
+        return res.status(400).json({ error: 'Only the Home Assistant integration (kind "control") can be handed a new credential. For the add-on, revoke its credential and pair it again.' });
+      }
+      if (relay.status === 'disabled') return res.status(409).json({ error: 'Enable this relay first' });
+      const current = db.prepare(
+        `SELECT * FROM relay_credentials WHERE relay_id = ? AND kind = 'control' AND revoked_at IS NULL AND replaces_id IS NULL ORDER BY created_at DESC LIMIT 1`
+      ).get(relay.id);
+      if (!current) return res.status(409).json({ error: 'This relay’s Home Assistant integration hasn’t paired yet' });
+      if (!relayHub.isConnected(relay.id)) return res.status(409).json({ error: 'This relay’s Home Assistant isn’t connected right now. Try again when it is.' });
+      const rotated = relays.rotate(relay, current);
+      relayHub.pushCredential(relay.id, rotated.credentialId, rotated.credential);
+      relays.event(relay.id, 'credential_rotation_sent', { actor: actorOf(req), detail: { credential_id: rotated.credentialId } });
+      res.status(201).json({ credential_id: rotated.credentialId, relay: viewOf(relays.findRelay(relay.id)) });
     });
 
     app.get('/api/relays/:id/events', requireUsers, (req, res) => {
@@ -1685,6 +1723,7 @@ function createApp({
       const view = relays.relayView(relay);
       if (view.players.length) return res.status(409).json({ error: `Move its screens to another relay first: ${view.players.map((p) => p.name).join(', ')}` });
       db.prepare(`DELETE FROM relays WHERE id = ?`).run(relay.id);
+      relayHub.closeRelay(relay.id, 'relay.deleted');
       relays.event(null, 'relay_deleted', { actor: actorOf(req), detail: { id: relay.id, name: relay.name } });
       res.json({ ok: true });
     });
@@ -1695,7 +1734,10 @@ function createApp({
       if (!device) return res.status(404).json({ error: 'Not found' });
       const relayId = (req.body || {}).relay_id ?? null;
       if (relayId !== null && !relays.findRelay(relayId)) return res.status(400).json({ error: 'Unknown relay' });
+      const before = relays.ownerOf(device.id);
       relays.assign(device.id, relayId, { userId: userIdOf(req), label: actorOf(req) });
+      if (before) relayHub.relayChanged(before.id);
+      if (relayId) relayHub.relayChanged(relayId);
       res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
     });
 
@@ -1773,6 +1815,130 @@ function createApp({
       if (!d) return res.status(404).json({ error: 'Not found' });
       res.json(relayPlayerView(d));
     });
+
+    // ----- commands -----
+    //
+    // A relay can change what one of its screens plays, or make it fetch its playlist again.
+    // TVs aren't reached directly: they pick the change up at their next check-in (within a
+    // minute). "applied" means the server made the change; "acknowledged" means the TV fetched
+    // it; "expired" means it didn't within ttl_s seconds (it stays applied on the server).
+    const COMMAND_KINDS = ['play_playlist', 'refresh'];
+    const COMMAND_ID = /^cmd_[A-Za-z0-9_-]{6,64}$/;
+    const commandView = (c) => ({
+      id: c.id, player_id: c.device_id, kind: c.kind, payload: c.payload ? JSON.parse(c.payload) : {},
+      status: c.status, reason: c.reason || null,
+      created_at: c.created_at, applied_at: c.applied_at, acknowledged_at: c.acked_at, expires_at: c.expires_at,
+    });
+    const findCommand = (id) => db.prepare(`SELECT * FROM relay_commands WHERE id = ?`).get(id);
+
+    app.post('/api/relay/v1/players/:id/commands', requireRelay(['control']), (req, res) => {
+      const body = req.body || {};
+      if (body.id !== undefined && !(typeof body.id === 'string' && COMMAND_ID.test(body.id))) {
+        return res.status(400).json({ error: 'id must look like cmd_ followed by 6 to 64 letters, digits, _ or -' });
+      }
+      // The same id again (e.g. a retry after a lost answer) gets the first answer back.
+      if (body.id) {
+        const earlier = findCommand(body.id);
+        if (earlier && earlier.relay_id !== req.relay.id) return res.status(409).json({ error: 'That command id is already used' });
+        if (earlier) return res.status(200).json(commandView(earlier));
+      }
+      const device = db.prepare(
+        `SELECT d.* FROM relay_player_assignments a JOIN devices d ON d.id = a.device_id
+         WHERE a.relay_id = ? AND d.id = ? AND d.claimed = 1`
+      ).get(req.relay.id, Number(req.params.id) || 0);
+      if (!device) return res.status(404).json({ error: 'Not found' });
+      if (!COMMAND_KINDS.includes(body.kind)) return res.status(400).json({ error: `kind must be one of: ${COMMAND_KINDS.join(', ')}` });
+      const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {};
+      let ttl = 300;
+      if (body.ttl_s !== undefined) {
+        if (!Number.isInteger(body.ttl_s) || body.ttl_s < 30 || body.ttl_s > 3600) return res.status(400).json({ error: 'ttl_s must be a whole number from 30 to 3600' });
+        ttl = body.ttl_s;
+      }
+
+      // What the command does, checked before anything changes.
+      let clean;
+      let refusal = null;
+      if (body.kind === 'play_playlist') {
+        if (payload.automatic === true && payload.playlist_id === undefined) clean = { automatic: true };
+        else if (Number.isInteger(payload.playlist_id) && payload.automatic === undefined) {
+          clean = { playlist_id: payload.playlist_id };
+          const playlist = findPlaylist(payload.playlist_id);
+          const loc = locationOf(device);
+          if (!playlist) refusal = 'There is no such playlist';
+          else if (!loc || playlist.location_id !== loc.id) refusal = 'That playlist belongs to another location than this screen';
+        } else {
+          return res.status(400).json({ error: 'play_playlist needs payload {"playlist_id": <number>} or {"automatic": true}' });
+        }
+      } else {
+        clean = {};
+      }
+
+      const id = body.id || relays.randomId('cmd');
+      const t = Date.now();
+      if (refusal) {
+        db.prepare(`INSERT INTO relay_commands (id, relay_id, device_id, kind, payload, status, reason, created_at) VALUES (?, ?, ?, ?, ?, 'rejected', ?, ?)`)
+          .run(id, req.relay.id, device.id, body.kind, JSON.stringify(clean), refusal, t);
+        const rejected = commandView(findCommand(id));
+        relayHub.commandUpdated(req.relay.id, rejected);
+        return res.status(422).json({ ...rejected, error: refusal });
+      }
+      const superseded = [];
+      db.transaction(() => {
+        if (body.kind === 'play_playlist') {
+          // A newer choice of playlist replaces any earlier one the TV hasn't picked up yet.
+          for (const old of db.prepare(`SELECT id FROM relay_commands WHERE device_id = ? AND kind = 'play_playlist' AND status = 'applied'`).all(device.id)) {
+            db.prepare(`UPDATE relay_commands SET status = 'superseded', reason = ? WHERE id = ?`).run(`Replaced by ${id}`, old.id);
+            superseded.push(old.id);
+          }
+          db.prepare(`UPDATE devices SET playlist_id = ?, config_version = config_version + 1 WHERE id = ?`).run(clean.automatic ? null : clean.playlist_id, device.id);
+        } else {
+          db.prepare(`UPDATE devices SET config_version = config_version + 1 WHERE id = ?`).run(device.id);
+        }
+        db.prepare(
+          `INSERT INTO relay_commands (id, relay_id, device_id, kind, payload, status, created_at, applied_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, 'applied', ?, ?, ?)`
+        ).run(id, req.relay.id, device.id, body.kind, JSON.stringify(clean), t, t, t + ttl * 1000);
+      })();
+      relays.event(req.relay.id, 'command', { deviceId: device.id, actor: `relay:${req.relay.id}`, detail: { id, kind: body.kind, payload: clean } });
+      for (const old of superseded) relayHub.commandUpdated(req.relay.id, commandView(findCommand(old)));
+      const made = commandView(findCommand(id));
+      relayHub.commandUpdated(req.relay.id, made);
+      relayHub.relayChanged(req.relay.id);
+      res.status(201).json(made);
+    });
+
+    app.get('/api/relay/v1/commands/:id', requireRelay(['control']), (req, res) => {
+      expireCommands();
+      const c = findCommand(req.params.id);
+      if (!c || c.relay_id !== req.relay.id) return res.status(404).json({ error: 'Not found' });
+      res.json(commandView(c));
+    });
+
+    acknowledgeCommands = (deviceId) => {
+      const due = db.prepare(`SELECT id FROM relay_commands WHERE device_id = ? AND status = 'applied'`).all(deviceId);
+      if (!due.length) return;
+      const t = Date.now();
+      for (const c of due) {
+        db.prepare(`UPDATE relay_commands SET status = 'acknowledged', acked_at = ? WHERE id = ? AND status = 'applied'`).run(t, c.id);
+        const row = findCommand(c.id);
+        relayHub.commandUpdated(row.relay_id, commandView(row));
+      }
+    };
+    expireCommands = () => {
+      const due = db.prepare(`SELECT id FROM relay_commands WHERE status = 'applied' AND expires_at <= ?`).all(Date.now());
+      for (const c of due) {
+        db.prepare(`UPDATE relay_commands SET status = 'expired', reason = 'The screen didn’t check in before the command expired' WHERE id = ?`).run(c.id);
+        const row = findCommand(c.id);
+        relayHub.commandUpdated(row.relay_id, commandView(row));
+      }
+      // Finished commands are kept for 30 days, for the history.
+      db.prepare(`DELETE FROM relay_commands WHERE created_at < ? AND status != 'applied'`).run(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    };
+
+    // ----- the live connection (relay-ws.js) -----
+
+    relayHub = createRelayHub({ relays, log, listPlayers: (relayId) => ownedDevices(relayId).map(relayPlayerView) });
+    relays.onCredentialRevoked((credentialId) => relayHub.closeCredential(credentialId));
   }
 
   // Anything that throws ends up here, so the apps always get JSON back.
@@ -1787,6 +1953,8 @@ function createApp({
 
   // Expired files leave the screens within a minute, even with nobody signed in.
   if (syncIntervalMs > 0) setInterval(expireDue, 60 * 1000).unref();
+  // Relay commands that a screen didn't pick up in time are marked expired.
+  setInterval(() => { try { expireCommands(); } catch (err) { log(err); } }, 30 * 1000).unref();
   // Offline screens are noticed (and notified) within a minute.
   if (monitorIntervalMs > 0) setInterval(() => checkScreens(), monitorIntervalMs).unref();
 
@@ -1799,6 +1967,21 @@ function createApp({
   app.locals.syncDriveFolder = syncDriveFolder;
   app.locals.checkScreens = checkScreens;
   app.locals.transcoder = transcoder;
+  app.locals.relayHub = relayHub;
+  app.locals.expireRelayCommands = () => expireCommands();
+  // Relays' live connections arrive on the main port as a WebSocket "upgrade" of a normal request.
+  // Only /api/relay/v1/ws upgrades; the Home Assistant sidebar port (ingress) never does.
+  app.attachRelaySockets = (server) => {
+    server.on('upgrade', (req, socket, head) => {
+      socket.on('error', () => {});
+      if (String(req.url || '').split('?')[0] === '/api/relay/v1/ws') relayHub.handleUpgrade(req, socket, head);
+      else socket.destroy();
+    });
+    server.on('close', () => relayHub.close());
+    return server;
+  };
+  const listen = app.listen.bind(app);
+  app.listen = (...args) => app.attachRelaySockets(listen(...args));
   return app;
 }
 

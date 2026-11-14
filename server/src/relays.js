@@ -59,6 +59,7 @@ function createRelays({ db, log = () => {}, ownSite = '', now = () => Date.now()
   // doesn't let anyone test guesses offline.
   let secret = getSetting(db, 'relay_hmac_secret');
   if (!secret) setSetting(db, 'relay_hmac_secret', (secret = crypto.randomBytes(32).toString('hex')));
+  const revokeListeners = []; // told when a credential stops working, e.g. to close its connection
   const codeHash = (code) => crypto.createHmac('sha256', secret).update(normaliseCode(code)).digest('hex');
 
   // ---------- history ----------
@@ -218,7 +219,10 @@ function createRelays({ db, log = () => {}, ownSite = '', now = () => Date.now()
     const result = db.prepare(
       `UPDATE relay_credentials SET revoked_at = ?, revoked_reason = ? WHERE id = ? AND relay_id = ? AND revoked_at IS NULL`
     ).run(now(), reason, credentialId, relayId);
-    if (result.changes) event(relayId, 'credential_revoked', { actor, detail: { credential_id: credentialId, reason } });
+    if (result.changes) {
+      event(relayId, 'credential_revoked', { actor, detail: { credential_id: credentialId, reason } });
+      for (const fn of revokeListeners) fn(credentialId, relayId);
+    }
     return result.changes > 0;
   }
 
@@ -307,6 +311,7 @@ function createRelays({ db, log = () => {}, ownSite = '', now = () => Date.now()
     pair,
     authenticate,
     revokeCredential,
+    onCredentialRevoked: (fn) => revokeListeners.push(fn),
     rotate,
     noteTvVia,
     assign,
