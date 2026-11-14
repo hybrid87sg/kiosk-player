@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - "homeassistant/integration/**"
+      - "docs/ha-examples.md"
       - "homeassistant/package-integration.sh"
       - "server/**"
       - ".github/workflows/integration.yml"
