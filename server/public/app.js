@@ -1574,9 +1574,9 @@ function pairingCodeDialog(relay, code, expiresAt, onDone) {
       el('div', { class: 'code', 'aria-label': `Pairing code ${code.split('').join(' ')}` }, code),
       el('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(code).then(() => toast('Code copied')) }, 'Copy code'),
       el('ol', { style: 'margin:4px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:6px' },
-        el('li', {}, el('strong', {}, 'Kiosk Player integration: '), 'Settings → Devices & services → Add integration → Kiosk Player. Enter this main server’s address and the code.'),
+        el('li', {}, el('strong', {}, 'Kiosk Player integration: '), 'install it from HACS (custom repository hybrid87sg/kiosk-player-ha), then Settings → Devices & services → Add integration → Kiosk Player. Enter this main server’s address and the code.'),
         el('li', {}, el('strong', {}, 'Kiosk add-on (relay mode): '), 'its Configuration tab → Pairing code. Save and restart the add-on.')),
-      el('p', { class: 'meta', style: 'margin:0' }, 'The Kiosk Player integration arrives in the next update; the add-on can pair now. The code isn’t shown again; you can always make a new one.'),
+      el('p', { class: 'meta', style: 'margin:0' }, 'The code isn’t shown again; you can always make a new one.'),
       el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => dialog.close() }, 'Done')));
   });
 }

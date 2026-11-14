@@ -1,0 +1,54 @@
+# The Home Assistant integration (homeassistant/integration): its tests, run against the real
+# Kiosk server, lint, and Home Assistant's own checks (hassfest) on the packaged copy.
+name: Home Assistant integration
+
+on:
+  push:
+    paths:
+      - "homeassistant/integration/**"
+      - "homeassistant/package-integration.sh"
+      - "server/**"
+      - ".github/workflows/integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install the server (the tests run it)
+        working-directory: server
+        run: npm ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: homeassistant/integration/requirements_test.txt
+      - name: Install Home Assistant's test kit
+        working-directory: homeassistant/integration
+        run: pip install -r requirements_test.txt ruff==0.8.6
+      - name: Lint
+        working-directory: homeassistant/integration
+        run: ruff check . && ruff format --check .
+      - name: Tests
+        working-directory: homeassistant/integration
+        run: pytest -q
+
+  hassfest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package as it will be published
+        run: homeassistant/package-integration.sh
+      - name: Home Assistant's checks (hassfest)
+        run: docker run --rm -v "$PWD/homeassistant/dist/kiosk-player-ha:/github/workspace" ghcr.io/home-assistant/hassfest
