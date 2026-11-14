@@ -1099,6 +1099,7 @@ function createApp({
       applyDeviceFields(device.id, fields);
       ensureLocation(device.site, fields.location);
     })();
+    tellRelayAbout(device.id); // its relay's Home Assistant shows the new screen within seconds
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
 
