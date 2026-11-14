@@ -19,6 +19,7 @@ const { pipeline } = require('node:stream/promises');
 const http = require('node:http');
 const { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting } = require('./db');
 const auth = require('./auth');
+const { createRelays } = require('./relays');
 const { MediaCache } = require('./media-cache');
 const { checkHours, summarizeHours, isOpenAt } = require('./hours');
 const { createTranscoder } = require('./transcode');
@@ -100,8 +101,6 @@ function createApp({
   // A random ID made once, so a TV can recognise "its" server if the address changes.
   let serverId = getSetting(db, 'server_id');
   if (!serverId) setSetting(db, 'server_id', (serverId = crypto.randomUUID()));
-  // Which site a TV is at: relays add the "X-Kiosk-Site" header; TVs talking
-  // to this server directly are at this server's own site.
   // What went wrong with Google Drive, as one sentence that says what to do.
   // The log gets the short reason too, not Google's whole request dump.
   function driveProblem(err) {
@@ -109,7 +108,11 @@ function createApp({
     log(`Google Drive: ${(err && err.message) || err} -> ${reason}`);
     return reason;
   }
-  const siteOf = (req) => String(req.get('x-kiosk-site') || '').trim().slice(0, 80) || siteName || null;
+  // Which site a TV is at. A paired relay proves who it is with its credential (see
+  // relayGate below); its site comes from that. TVs talking to this server directly are
+  // at this server's own site. An unpaired relay (from before 0.7.0) only says its site
+  // in the X-Kiosk-Site header, which is accepted until relays are required to pair.
+  const siteOf = (req) => (req.kioskSite !== undefined ? req.kioskSite : siteName || null);
 
   // Locations are keyed by site; '' is this server's own site while it has no name.
   const ownSite = siteName || '';
@@ -119,6 +122,8 @@ function createApp({
     db.prepare(`UPDATE playlists SET site = ? WHERE site = ''`).run(siteName);
     db.prepare(`UPDATE devices SET site = ? WHERE site IS NULL`).run(siteName);
   }
+  const relays = createRelays({ db, log, ownSite });
+  relays.pruneEvents();
   // Location names typed on screens before locations existed become real locations.
   db.prepare(
     `INSERT OR IGNORE INTO locations (site, name, created_at)
@@ -230,6 +235,43 @@ function createApp({
 
   const app = express();
   app.use(express.json());
+
+  // Every TV request (and file download) says which relay, if any, it came through.
+  //  - A paired relay add-on sends its credential in X-Kiosk-Relay-Auth: the site is that relay's.
+  //  - Without one, an X-Kiosk-Site header is an unpaired relay from before 0.7.0. It is refused
+  //    once relays must pair (Settings), and always for a site whose relay has paired or is
+  //    disabled, so a paired relay's site can't be claimed by anything else.
+  //  - With neither, the TV talks to this server directly.
+  function relayGate(req, res, next) {
+    const secret = req.get('x-kiosk-relay-auth');
+    if (secret) {
+      const result = relays.authenticate(secret, ['proxy']);
+      if (result.error) return res.status(result.status).json({ error: result.error });
+      req.relay = result.relay;
+      req.kioskSite = result.relay.site;
+      return next();
+    }
+    const claimed = String(req.get('x-kiosk-site') || '').trim().slice(0, 80);
+    if (!claimed) {
+      req.kioskSite = siteName || null;
+      return next();
+    }
+    const known = relays.relayBySite(claimed);
+    const paired = known && db.prepare(`SELECT 1 FROM relay_credentials WHERE relay_id = ? AND kind = 'proxy' AND revoked_at IS NULL`).get(known.id);
+    if (getSetting(db, 'relays_require_credentials') || paired || (known && known.status === 'disabled')) {
+      return res.status(401).json({ error: 'This relay must be paired with the main Kiosk server. Add its pairing code in the relay add-on’s Configuration tab.' });
+    }
+    req.unpairedRelay = known || null;
+    req.kioskSite = claimed;
+    next();
+  }
+  app.use(['/api/player', '/media'], relayGate);
+
+  // A TV seen through a relay belongs to that relay, if no relay owns it yet.
+  function noteRelayOf(req, deviceId) {
+    if (req.relay) relays.noteTvVia(req.relay, deviceId);
+    else if (req.unpairedRelay && req.unpairedRelay.status !== 'disabled' && !relays.ownerOf(deviceId)) relays.noteTvVia(req.unpairedRelay, deviceId);
+  }
 
   // The web interface: plain files in server/public, served as they are.
   app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -925,6 +967,7 @@ function createApp({
   // ---------- Devices (superadmin, system manager) ----------
 
   function deviceView(d) {
+    const owner = relays.ownerOf(d.id);
     const current = d.current_media_id
       ? db.prepare(`SELECT filename FROM media WHERE id = ?`).get(d.current_media_id)
       : null;
@@ -952,6 +995,7 @@ function createApp({
       app_version: d.app_version,
       model: d.model,
       site: d.site,
+      relay: owner ? { id: owner.id, name: owner.name, status: owner.status } : null,
       location_id: loc ? loc.id : null,
       hours_summary: summarizeHours(hoursOf(loc)),
       // false outside the location's working hours (the TV is dark then).
@@ -1266,6 +1310,8 @@ function createApp({
         ? { available: true, enabled: cacheOn(), ...cacheStore.stats() }
         : { available: false, enabled: false, files: 0, bytes: 0 },
       users: db.prepare(`SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL`).get().n,
+      // Refuse TVs coming through relays that haven't paired (see relayGate).
+      relays_require_credentials: Boolean(getSetting(db, 'relays_require_credentials')),
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
       notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
       transcode: {
@@ -1291,6 +1337,10 @@ function createApp({
     if (body.cache_media !== undefined) {
       if (typeof body.cache_media !== 'boolean') return res.status(400).json({ error: 'cache_media must be true or false' });
       setSetting(db, 'cache_media', body.cache_media);
+    }
+    if (body.relays_require_credentials !== undefined) {
+      if (typeof body.relays_require_credentials !== 'boolean') return res.status(400).json({ error: 'relays_require_credentials must be true or false' });
+      setSetting(db, 'relays_require_credentials', body.relays_require_credentials || null);
     }
     if (body.notify_targets !== undefined) {
       const list = body.notify_targets;
@@ -1390,7 +1440,8 @@ function createApp({
       const code = randomPairingCode();
       try {
         const now = Date.now();
-        insert.run(token, code, appVersion, model, siteOf(req), caps ? JSON.stringify(caps) : null, now, now);
+        const made = insert.run(token, code, appVersion, model, siteOf(req), caps ? JSON.stringify(caps) : null, now, now);
+        noteRelayOf(req, made.lastInsertRowid);
         return res.status(201).json({ token, pairing_code: code, qr_payload: `kiosk-pair:${code}` });
       } catch (err) {
         if (err.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err; // otherwise: code taken, try another
@@ -1403,6 +1454,7 @@ function createApp({
     const d = req.device;
     // A TV waiting to be added asks every few seconds; that keeps it on the "waiting" list.
     if (!d.claimed) db.prepare(`UPDATE devices SET last_seen = ?, site = ? WHERE id = ?`).run(Date.now(), siteOf(req), d.id);
+    noteRelayOf(req, d.id);
     res.json({
       claimed: !!d.claimed,
       name: d.name,
@@ -1525,13 +1577,210 @@ function createApp({
     }
     params.push(req.device.id);
     db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    noteRelayOf(req, req.device.id);
     const device = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.device.id);
     res.json({ ok: true, version: playerPlaylist(device).version });
   });
 
+  installRelayRoutes();
+
+  // ---------- Relays (see relays.js) ----------
+
+  function installRelayRoutes() {
+    const actorOf = (req) => (req.user.viaHomeAssistant ? 'user:home-assistant' : `user:${req.user.id}`);
+    const userIdOf = (req) => (req.user.viaHomeAssistant ? null : req.user.id);
+    const findOr404 = (req, res) => {
+      const relay = relays.findRelay(req.params.id);
+      if (!relay) res.status(404).json({ error: 'Not found' });
+      return relay;
+    };
+
+    // ----- for admins (Spongebob) -----
+
+    app.get('/api/relays', requireUsers, (req, res) => {
+      const rows = db.prepare(`SELECT * FROM relays ORDER BY name COLLATE NOCASE`).all();
+      res.json({
+        relays: rows.map(relays.relayView),
+        require_credentials: Boolean(getSetting(db, 'relays_require_credentials')),
+        own_site: siteName || null,
+      });
+    });
+
+    app.post('/api/relays', requireUsers, (req, res) => {
+      const body = req.body || {};
+      const name = String(body.name || '').trim();
+      const site = String(body.site || name).trim();
+      const description = String(body.description || '').trim().slice(0, 200) || null;
+      if (!name || name.length > 60) return res.status(400).json({ error: 'Give the relay a name of up to 60 characters' });
+      if (!site || site.length > 80) return res.status(400).json({ error: 'The site name must be 1 to 80 characters' });
+      if (site === (siteName || '')) return res.status(409).json({ error: 'That is this main server’s own site name' });
+      if (relays.relayBySite(site)) return res.status(409).json({ error: `There's already a relay for the site ${site}` });
+      const id = relays.randomId('rly');
+      db.prepare(`INSERT INTO relays (id, name, site, description, status, created_at, created_by) VALUES (?, ?, ?, ?, 'pending', ?, ?)`)
+        .run(id, name, site, description, Date.now(), userIdOf(req));
+      relays.event(id, 'created', { actor: actorOf(req), detail: { name, site } });
+      const pairing = relays.newPairingCode(id, actorOf(req));
+      res.status(201).json({ relay: relays.relayView(relays.findRelay(id)), pairing_code: pairing.code, expires_at: pairing.expires_at });
+    });
+
+    app.get('/api/relays/:id', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (relay) res.json(relays.relayView(relay));
+    });
+
+    app.patch('/api/relays/:id', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (!relay) return;
+      const body = req.body || {};
+      const name = body.name === undefined ? relay.name : String(body.name || '').trim();
+      if (!name || name.length > 60) return res.status(400).json({ error: 'Give the relay a name of up to 60 characters' });
+      const description = body.description === undefined ? relay.description : (String(body.description || '').trim().slice(0, 200) || null);
+      let status = relay.status;
+      if (body.status !== undefined) {
+        if (!['active', 'disabled'].includes(body.status)) return res.status(400).json({ error: 'status must be active or disabled' });
+        // Enabling a relay that never paired leaves it waiting for its pairing.
+        status = body.status === 'disabled' ? 'disabled' : (relay.paired_at ? 'active' : 'pending');
+      }
+      db.prepare(`UPDATE relays SET name = ?, description = ?, status = ?, disabled_at = ? WHERE id = ?`)
+        .run(name, description, status, status === 'disabled' ? (relay.disabled_at || Date.now()) : null, relay.id);
+      if (status !== relay.status) relays.event(relay.id, status === 'disabled' ? 'disabled' : 'enabled', { actor: actorOf(req) });
+      if (name !== relay.name || description !== relay.description) relays.event(relay.id, 'edited', { actor: actorOf(req), detail: { name } });
+      res.json(relays.relayView(relays.findRelay(relay.id)));
+    });
+
+    app.post('/api/relays/:id/pairing-code', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (!relay) return;
+      if (relay.status === 'disabled') return res.status(409).json({ error: 'Enable this relay before pairing it' });
+      const pairing = relays.newPairingCode(relay.id, actorOf(req));
+      res.status(201).json({ relay: relays.relayView(relays.findRelay(relay.id)), pairing_code: pairing.code, expires_at: pairing.expires_at });
+    });
+
+    app.post('/api/relays/:id/credentials/:cid/revoke', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (!relay) return;
+      if (!relays.revokeCredential(relay.id, req.params.cid, 'revoked by an admin', actorOf(req))) {
+        return res.status(404).json({ error: 'No such credential, or it was already revoked' });
+      }
+      res.json(relays.relayView(relays.findRelay(relay.id)));
+    });
+
+    app.get('/api/relays/:id/events', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (!relay) return;
+      const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+      const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER;
+      const rows = db.prepare(
+        `SELECT e.id, e.kind, e.detail, e.actor, e.created_at, e.device_id, d.name AS device_name
+         FROM relay_events e LEFT JOIN devices d ON d.id = e.device_id
+         WHERE e.relay_id = ? AND e.id < ? ORDER BY e.id DESC LIMIT ?`
+      ).all(relay.id, before, limit);
+      res.json(rows.map((r) => ({ ...r, detail: r.detail ? JSON.parse(r.detail) : null })));
+    });
+
+    app.delete('/api/relays/:id', requireUsers, (req, res) => {
+      const relay = findOr404(req, res);
+      if (!relay) return;
+      if (String((req.body || {}).confirm_name || '') !== relay.name) return res.status(400).json({ error: `Type ${relay.name} exactly to delete it` });
+      const view = relays.relayView(relay);
+      if (view.players.length) return res.status(409).json({ error: `Move its screens to another relay first: ${view.players.map((p) => p.name).join(', ')}` });
+      db.prepare(`DELETE FROM relays WHERE id = ?`).run(relay.id);
+      relays.event(null, 'relay_deleted', { actor: actorOf(req), detail: { id: relay.id, name: relay.name } });
+      res.json({ ok: true });
+    });
+
+    // Which relay owns a screen (null: this main server's own).
+    app.put('/api/devices/:id/relay', requireDevices, (req, res) => {
+      const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+      if (!device) return res.status(404).json({ error: 'Not found' });
+      const relayId = (req.body || {}).relay_id ?? null;
+      if (relayId !== null && !relays.findRelay(relayId)) return res.status(400).json({ error: 'Unknown relay' });
+      relays.assign(device.id, relayId, { userId: userIdOf(req), label: actorOf(req) });
+      res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
+    });
+
+    // ----- for relays -----
+
+    // Every relay request is checked: a valid credential of an allowed kind, for an enabled relay.
+    const requireRelay = (kinds) => (req, res, next) => {
+      const header = req.get('authorization') || '';
+      const result = relays.authenticate(header.startsWith('Bearer ') ? header.slice(7) : '', kinds);
+      if (result.error) return res.status(result.status).json({ error: result.error });
+      req.relay = result.relay;
+      req.relayCredential = result.credential;
+      next();
+    };
+
+    // Pairing: a code from Settings → Home Assistant Relays, used once by each piece of the relay.
+    app.post('/api/relay/v1/pair', (req, res) => {
+      if (!relays.pairingAllowed(req.ip || req.socket.remoteAddress || '')) {
+        return res.status(429).json({ error: 'Too many pairing attempts. Wait a minute and try again.' });
+      }
+      const body = req.body || {};
+      const result = relays.pair(body.code, body.kind, body.client || {});
+      if (result.error) return res.status(result.status).json({ error: result.error });
+      res.status(201).json({
+        relay: { id: result.relay.id, name: result.relay.name, site: result.relay.site },
+        credential_id: result.credentialId,
+        credential: result.credential, // shown once; only its hash is kept
+        server: { version: SERVER_VERSION, server_id: serverId },
+      });
+    });
+
+    app.get('/api/relay/v1/me', requireRelay(['control', 'proxy']), (req, res) => {
+      res.json({
+        relay: { id: req.relay.id, name: req.relay.name, site: req.relay.site, status: req.relay.status },
+        credential: { id: req.relayCredential.id, kind: req.relayCredential.kind },
+        server: { version: SERVER_VERSION, server_id: serverId, time: Date.now() },
+      });
+    });
+
+    app.post('/api/relay/v1/heartbeat', requireRelay(['control', 'proxy']), (req, res) => {
+      const version = typeof (req.body || {}).version === 'string' ? req.body.version.slice(0, 40) : null;
+      if (version && version !== req.relay.last_version) db.prepare(`UPDATE relays SET last_version = ? WHERE id = ?`).run(version, req.relay.id);
+      db.prepare(`UPDATE relays SET last_seen_at = ? WHERE id = ?`).run(Date.now(), req.relay.id);
+      res.json({ ok: true, server_time: Date.now() });
+    });
+
+    // A new credential for the caller. The old one keeps working until the new one is first used.
+    app.post('/api/relay/v1/credentials/rotate', requireRelay(['control', 'proxy']), (req, res) => {
+      const rotated = relays.rotate(req.relay, req.relayCredential);
+      res.status(201).json({ credential_id: rotated.credentialId, credential: rotated.credential });
+    });
+
+    // A relay's own screens only. Another relay's screen is 404, as if it didn't exist.
+    const RELAY_PLAYER_FIELDS = [
+      'id', 'name', 'location', 'location_id', 'orientation', 'flipped', 'online', 'last_seen', 'current_media_id',
+      'current_filename', 'playlist_id', 'playlist_name', 'playlist_auto', 'playing_playlist_id', 'app_version', 'model',
+      'free_bytes', 'open_now', 'after_hours', 'hours_summary', 'playback_error', 'download',
+    ];
+    const relayPlayerView = (d) => {
+      const full = deviceView(d);
+      return Object.fromEntries(RELAY_PLAYER_FIELDS.map((k) => [k, full[k] ?? null]));
+    };
+    const ownedDevices = (relayId) => db.prepare(
+      `SELECT d.* FROM relay_player_assignments a JOIN devices d ON d.id = a.device_id
+       WHERE a.relay_id = ? AND d.claimed = 1 ORDER BY d.name COLLATE NOCASE`
+    ).all(relayId);
+    app.get('/api/relay/v1/players', requireRelay(['control']), (req, res) => {
+      res.json(ownedDevices(req.relay.id).map(relayPlayerView));
+    });
+    app.get('/api/relay/v1/players/:id', requireRelay(['control']), (req, res) => {
+      const d = db.prepare(
+        `SELECT d.* FROM relay_player_assignments a JOIN devices d ON d.id = a.device_id
+         WHERE a.relay_id = ? AND d.id = ? AND d.claimed = 1`
+      ).get(req.relay.id, Number(req.params.id) || 0);
+      if (!d) return res.status(404).json({ error: 'Not found' });
+      res.json(relayPlayerView(d));
+    });
+  }
+
   // Anything that throws ends up here, so the apps always get JSON back.
   app.use((err, req, res, next) => {
-    log(err);
+    // A request the caller got wrong (e.g. broken JSON) is logged without its body:
+    // the body could hold a password, pairing code or relay credential.
+    if (err.status && err.status < 500) log(`Bad request to ${req.method} ${req.path}: ${err.message}`);
+    else log(err);
     if (res.headersSent) return next(err);
     res.status(err.status || 500).json({ error: err.status ? err.message : 'Server error' });
   });

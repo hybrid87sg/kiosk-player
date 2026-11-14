@@ -1,0 +1,14 @@
+{
+  "made_with": "0.6.0",
+  "boss_session": "e33a0a880094314970d09e2379894ee41280648c597af6d1cfb4ca88f886cd90",
+  "patrick_session": "5c23c040f5fe42c2840746a9142c28cc4ec16cdac2e008c04b7cfe30579b1fea",
+  "tv_tokens": {
+    "Cafe wall": "2f0e24d8624e21b81643426b5f166673cd9f878dfc016359eec6cb801da35aed",
+    "Counter": "001b1748364eac9abc64d289c00f0e9aad7395508e3460a8feff26cebb3868f0",
+    "Lobby": "cdf7add729d384b882a8c949446937bfdacfdf8c8d1d147e935db3ee2e01104d"
+  },
+  "passwords": {
+    "boss": "boss-password-1",
+    "patrick": "patrick-password-1"
+  }
+}

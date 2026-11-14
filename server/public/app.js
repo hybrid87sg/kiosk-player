@@ -62,6 +62,7 @@ const ICONS = {
   collapse: '<path d="M15 18l-6-6 6-6"/>',
   expand: '<path d="M9 18l6-6-6-6"/>',
   bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
+  relay: '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 11l10-5M7 13l10 5"/>',
 };
 
 /** An icon from the fixed set above (our own markup, never server text). */
@@ -412,10 +413,10 @@ function route() {
   if (!me) return;
   clearInterval(pageTimer);
   const [, section, id] = (location.hash || '').split('/');
-  const allowed = [...tabsFor(me.role).map(([key]) => key), 'playlists'];
+  const allowed = [...tabsFor(me.role).map(([key]) => key), 'playlists', ...(me.role === 'superadmin' ? ['relays'] : [])];
   const current = allowed.includes(section) ? section : allowed[0];
   // A playlist is opened from Locations, so that stays lit in the menu while it is open.
-  const lit = current === 'playlists' && me.role !== 'content_uploader' ? 'locations' : current;
+  const lit = current === 'playlists' && me.role !== 'content_uploader' ? 'locations' : current === 'relays' ? 'settings' : current;
   document.querySelectorAll('.nav a[data-tab]').forEach((a) => {
     if (a.dataset.tab === lit && !(current === 'locations' && id)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -424,7 +425,7 @@ function route() {
   const page = document.getElementById('page');
   if (!page) return;
   fill(page, el('p', { class: 'loading' }, 'Loading…'));
-  const pages = { screens: pageScreens, locations: pageLocations, library: pageLibrary, playlists: pagePlaylists, users: pageUsers, settings: pageSettings };
+  const pages = { screens: pageScreens, locations: pageLocations, library: pageLibrary, playlists: pagePlaylists, users: pageUsers, settings: pageSettings, relays: pageRelays };
   if (current === 'playlists' && id) pagePlaylist(page, Number(id));
   else if (current === 'locations' && id) pageLocation(page, Number(id));
   else pages[current](page);
@@ -1431,6 +1432,276 @@ async function pageUsers(page) {
   await attempt(draw);
 }
 
+// ---------- Settings → Home Assistant Relays ----------
+
+const RELAY_STATUS = {
+  pending: { label: 'Waiting to pair', chip: 'attention' },
+  active: { label: 'Paired', chip: 'online' },
+  disabled: { label: 'Disabled', chip: 'offline' },
+};
+
+/** "in 9 min", for a pairing code's expiry. */
+function minutesLeft(at) {
+  const m = Math.max(0, Math.ceil((at - Date.now()) / 60000));
+  return m <= 1 ? 'in under a minute' : `in ${m} min`;
+}
+
+async function pageRelays(page) {
+  async function draw() {
+    const [data, devices] = await Promise.all([api('GET', 'api/relays'), api('GET', 'api/devices')]);
+    const unpaired = data.relays.filter((r) => r.status !== 'disabled' && !r.paired.proxy);
+    fill(page,
+      el('div', { class: 'page-head' },
+        el('div', {},
+          el('a', { href: '#/settings', class: 'meta' }, '← Settings'),
+          el('h1', {}, 'Home Assistant Relays'),
+          el('p', { class: 'sub' }, 'A relay is the Home Assistant at one of your other sites. Its TVs reach this main server through it. Each relay controls only the screens assigned to it.')),
+        el('button', { class: 'btn primary', onclick: () => addRelayDialog(draw) }, '+ Add relay')),
+
+      el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:10px' },
+        el('label', { class: 'row', style: 'font-weight:600;gap:10px' },
+          el('input', {
+            type: 'checkbox', checked: data.require_credentials, style: 'width:20px;height:20px;accent-color:var(--primary)',
+            onchange: (e) => attempt(async () => {
+              await api('PATCH', 'api/settings', { relays_require_credentials: e.target.checked });
+              toast(e.target.checked ? 'Only paired relays are accepted now' : 'Unpaired relays are accepted again');
+              draw();
+            }),
+          }),
+          'Only accept relays that have paired'),
+        el('p', { class: 'meta', style: 'margin:0' }, 'A paired relay proves who it is with its own credential. Relays set up before version 0.7.0 only give their site’s name, which anything on your network could copy. Switch this on once every relay is paired.'),
+        unpaired.length && !data.require_credentials
+          ? el('p', { class: 'note', style: 'margin:0' }, `Not paired yet: ${unpaired.map((r) => r.name).join(', ')}. Their screens would stop updating if you switched this on now.`)
+          : null),
+
+      data.relays.length === 0
+        ? el('div', { class: 'empty' }, 'No relays yet. Add one for each Home Assistant at another site.')
+        : el('div', { class: 'grid', style: 'margin-top:16px' }, data.relays.map((r) => relayCard(r, data.relays, devices, draw))),
+    );
+  }
+  await attempt(draw);
+  pageTimer = setInterval(() => { if (!document.querySelector('dialog[open]')) attempt(draw); }, 15000);
+}
+
+function relayCard(r, relays, devices, redraw) {
+  const st = RELAY_STATUS[r.status] || RELAY_STATUS.pending;
+  const piece = (paired, label) => el('div', { class: 'row', style: 'gap:6px' },
+    el('span', { 'aria-hidden': 'true' }, paired ? '✓' : '○'), el('span', {}, `${label}: `), el('strong', {}, paired ? 'paired' : 'not paired'));
+  return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:10px' },
+    el('div', { class: 'row', style: 'justify-content:space-between;align-items:flex-start' },
+      el('div', {},
+        el('strong', { style: 'font-size:18px' }, r.name),
+        r.site === r.name ? null : el('div', { class: 'meta' }, `Site: ${r.site}`),
+        r.description ? el('div', { class: 'meta' }, r.description) : null),
+      el('span', { class: `chip ${st.chip}` }, st.label)),
+    el('div', { style: 'display:flex;flex-direction:column;gap:4px' },
+      piece(r.paired.control, 'Home Assistant integration'),
+      piece(r.paired.proxy, 'Kiosk add-on')),
+    el('div', { class: 'meta' }, r.last_seen_at ? `Last heard from ${timeAgo(r.last_seen_at)}${r.last_version ? ` · version ${r.last_version}` : ''}` : 'Never connected'),
+    r.pairing ? el('div', { class: 'note', style: 'margin:0' },
+      `A pairing code is waiting (it ends ${minutesLeft(r.pairing.expires_at)}). Used by: ${[r.pairing.control_done ? 'integration' : null, r.pairing.proxy_done ? 'add-on' : null].filter(Boolean).join(' and ') || 'nothing yet'}.`) : null,
+    el('div', {},
+      el('div', { class: 'section-label', style: 'margin:4px 0 6px' }, `Screens it controls · ${r.players.length}`),
+      r.players.length
+        ? el('div', { class: 'meta' }, r.players.map((p) => p.name || 'Unnamed').join(', '))
+        : el('div', { class: 'meta' }, 'None yet. TVs that come in through this relay are added to it by themselves.')),
+    el('div', { class: 'row', style: 'gap:6px' },
+      r.status === 'disabled' ? null : el('button', { class: 'btn small primary', onclick: () => attempt(async () => {
+        const made = await api('POST', `api/relays/${r.id}/pairing-code`);
+        pairingCodeDialog(made.relay, made.pairing_code, made.expires_at, redraw);
+      }) }, r.status === 'pending' ? 'Pairing code' : 'New pairing code'),
+      el('button', { class: 'btn small', onclick: () => moveScreensToRelayDialog(r, relays, devices, redraw) }, 'Screens…'),
+      el('button', { class: 'btn small', onclick: () => relayHistoryDialog(r) }, 'History'),
+      el('button', { class: 'btn small', onclick: () => editRelayDialog(r, redraw) }, 'Edit'),
+      r.status === 'disabled'
+        ? el('button', { class: 'btn small', onclick: () => attempt(async () => { await api('PATCH', `api/relays/${r.id}`, { status: 'active' }); toast(`${r.name} enabled`); redraw(); }) }, 'Enable')
+        : el('button', {
+          class: 'btn small danger',
+          onclick: () => confirmDialog(`Disable ${r.name}?`, 'Its Home Assistant and its add-on are refused straight away. Its TVs keep playing what they have, but get no updates until it’s enabled again.', 'Disable',
+            () => attempt(async () => { await api('PATCH', `api/relays/${r.id}`, { status: 'disabled' }); toast(`${r.name} disabled`); redraw(); })),
+        }, 'Disable'),
+      r.credentials.length ? el('button', { class: 'btn small danger', onclick: () => revokeDialog(r, redraw) }, 'Revoke…') : null,
+      r.players.length ? null : el('button', { class: 'btn small danger', onclick: () => deleteRelayDialog(r, redraw) }, 'Delete')),
+  );
+}
+
+function addRelayDialog(onDone) {
+  openDialog((dialog) => {
+    const name = el('input', { type: 'text', id: 'relay-name', placeholder: 'e.g. Qoltured', maxLength: 60, required: true });
+    const site = el('input', { type: 'text', id: 'relay-site', placeholder: 'Same as the name', maxLength: 80 });
+    const description = el('input', { type: 'text', id: 'relay-description', placeholder: 'e.g. Cafe, level 2', maxLength: 200 });
+    const problem = el('div', { class: 'error', role: 'alert' });
+    return el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          const made = await api('POST', 'api/relays', { name: name.value.trim(), site: site.value.trim() || undefined, description: description.value.trim() });
+          dialog.close();
+          pairingCodeDialog(made.relay, made.pairing_code, made.expires_at, onDone);
+          onDone();
+        } catch (err) { problem.textContent = err.message; }
+      },
+    },
+    el('h2', {}, 'Add a relay'),
+    el('label', { class: 'field', for: 'relay-name' }, 'Name', name),
+    el('label', { class: 'field', for: 'relay-site' }, 'Site name (optional)', site),
+    el('p', { class: 'meta', style: 'margin:0' }, 'If this relay was already running before, use the Site name from its add-on’s Configuration tab, so its screens stay with it.'),
+    el('label', { class: 'field', for: 'relay-description' }, 'Description (optional)', description),
+    problem,
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { class: 'btn primary' }, 'Add and get pairing code')));
+  });
+}
+
+/** Shows a pairing code once. It can't be shown again; a new one can be made. */
+function pairingCodeDialog(relay, code, expiresAt, onDone) {
+  openDialog((dialog) => {
+    const left = el('span', {}, minutesLeft(expiresAt));
+    const timer = setInterval(() => { left.textContent = minutesLeft(expiresAt); if (Date.now() > expiresAt) left.textContent = 'now. Make a new one'; }, 15000);
+    dialog.addEventListener('close', () => { clearInterval(timer); onDone?.(); });
+    return el('div', { class: 'dialog-body' },
+      el('h2', {}, `Pair ${relay.name}`),
+      el('p', { class: 'sub' }, 'Type this code on the relay’s Home Assistant, in both places below. It works once in each, and stops working ', left, '.'),
+      el('div', { class: 'code', 'aria-label': `Pairing code ${code.split('').join(' ')}` }, code),
+      el('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(code).then(() => toast('Code copied')) }, 'Copy code'),
+      el('ol', { style: 'margin:4px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:6px' },
+        el('li', {}, el('strong', {}, 'Kiosk Player integration: '), 'Settings → Devices & services → Add integration → Kiosk Player. Enter this main server’s address and the code.'),
+        el('li', {}, el('strong', {}, 'Kiosk add-on (relay mode): '), 'its Configuration tab → Pairing code. Save and restart the add-on.')),
+      el('p', { class: 'meta', style: 'margin:0' }, 'The integration and the add-on’s pairing option arrive in the next updates. The code isn’t shown again; you can always make a new one.'),
+      el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => dialog.close() }, 'Done')));
+  });
+}
+
+function editRelayDialog(r, onDone) {
+  openDialog((dialog) => {
+    const name = el('input', { type: 'text', id: 'relay-edit-name', value: r.name, maxLength: 60, required: true });
+    const description = el('input', { type: 'text', id: 'relay-edit-description', value: r.description || '', maxLength: 200 });
+    const problem = el('div', { class: 'error', role: 'alert' });
+    return el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          await api('PATCH', `api/relays/${r.id}`, { name: name.value.trim(), description: description.value.trim() });
+          dialog.close();
+          toast('Relay updated');
+          onDone();
+        } catch (err) { problem.textContent = err.message; }
+      },
+    },
+    el('h2', {}, `Edit ${r.name}`),
+    el('label', { class: 'field', for: 'relay-edit-name' }, 'Name', name),
+    el('label', { class: 'field', for: 'relay-edit-description' }, 'Description', description),
+    el('p', { class: 'meta', style: 'margin:0' }, `Site name: ${r.site}. It can’t be changed, because its screens are recorded under it.`),
+    problem,
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', { class: 'btn primary' }, 'Save')));
+  });
+}
+
+function revokeDialog(r, onDone) {
+  const labels = { control: 'Home Assistant integration', proxy: 'Kiosk add-on' };
+  openDialog((dialog) => el('div', { class: 'dialog-body' },
+    el('h2', {}, `Revoke a credential of ${r.name}`),
+    el('p', { class: 'sub' }, 'A revoked credential stops working straight away. That piece of the relay then needs a new pairing code.'),
+    el('div', { class: 'list' }, r.credentials.map((c) => el('div', { class: 'list-row' },
+      el('div', { class: 'grow' }, el('div', { class: 'name' }, labels[c.kind] || c.kind),
+        el('div', { class: 'meta' }, `${c.id} · made ${timeAgo(c.created_at)}${c.last_used_at ? ` · last used ${timeAgo(c.last_used_at)}` : ''}`)),
+      el('button', {
+        class: 'btn small danger',
+        onclick: () => attempt(async () => {
+          await api('POST', `api/relays/${r.id}/credentials/${c.id}/revoke`);
+          dialog.close();
+          toast(`${labels[c.kind]} of ${r.name} revoked`);
+          onDone();
+        }),
+      }, 'Revoke')))),
+    el('div', { class: 'dialog-actions' }, el('button', { class: 'btn text', onclick: () => dialog.close() }, 'Close'))));
+}
+
+function deleteRelayDialog(r, onDone) {
+  openDialog((dialog) => {
+    const typed = el('input', { type: 'text', id: 'relay-delete-name', autocomplete: 'off' });
+    const go = el('button', { class: 'btn danger solid', disabled: true }, 'Delete relay');
+    typed.addEventListener('input', () => { go.disabled = typed.value !== r.name; });
+    const problem = el('div', { class: 'error', role: 'alert' });
+    return el('form', {
+      method: 'dialog',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          await api('DELETE', `api/relays/${r.id}`, { confirm_name: typed.value });
+          dialog.close();
+          toast(`${r.name} deleted`);
+          onDone();
+        } catch (err) { problem.textContent = err.message; }
+      },
+    },
+    el('h2', {}, `Delete ${r.name}?`),
+    el('p', { class: 'sub' }, 'Its credentials stop working and its history is kept. Type its name to delete it.'),
+    el('label', { class: 'field', for: 'relay-delete-name' }, `Type ${r.name}`, typed),
+    problem,
+    el('div', { class: 'dialog-actions' }, el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'), go));
+  });
+}
+
+/** Choose which relay controls each screen. */
+function moveScreensToRelayDialog(r, relays, devices, onDone) {
+  openDialog((dialog) => el('div', { class: 'dialog-body' },
+    el('h2', {}, 'Which relay controls each screen'),
+    el('p', { class: 'sub' }, 'A relay can only see and control its own screens. A screen with no relay is controlled from this main server only.'),
+    el('div', { class: 'list', style: 'max-height:55vh;overflow:auto' }, devices.map((d) => el('div', { class: 'list-row' },
+      el('div', { class: 'grow' }, el('div', { class: 'name' }, d.name || 'Unnamed'), el('div', { class: 'meta' }, d.location || 'No location yet')),
+      el('select', {
+        'aria-label': `Relay for ${d.name}`,
+        onchange: (e) => attempt(async () => {
+          await api('PUT', `api/devices/${d.id}/relay`, { relay_id: e.target.value || null });
+          toast(`${d.name}: ${e.target.selectedOptions[0].textContent}`);
+        }),
+      },
+      el('option', { value: '', selected: !d.relay }, 'Main server only'),
+      relays.map((x) => el('option', { value: x.id, selected: d.relay?.id === x.id }, x.name)))))),
+    el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => { dialog.close(); onDone(); } }, 'Done'))));
+}
+
+const RELAY_EVENT_TEXT = {
+  created: 'Relay added',
+  edited: 'Name or description changed',
+  pairing_code_created: 'Pairing code made',
+  paired: 'Paired',
+  credential_revoked: 'Credential revoked',
+  credential_rotated: 'Credential renewed by the relay',
+  disabled: 'Disabled',
+  enabled: 'Enabled',
+  player_assigned: 'Screen assigned',
+  player_unassigned: 'Screen moved away',
+  player_seen_elsewhere: 'Screen showed up through another relay',
+};
+
+async function relayHistoryDialog(r) {
+  const events = await attempt(() => api('GET', `api/relays/${r.id}/events?limit=100`));
+  if (!events) return;
+  const pieces = { control: 'integration', proxy: 'add-on' };
+  const describe = (e) => {
+    const d = e.detail || {};
+    if (e.kind === 'paired') return `${pieces[d.kind] || d.kind}${d.client && d.client.version ? `, version ${d.client.version}` : ''}`;
+    if (e.kind === 'credential_revoked') return d.reason || '';
+    if (e.kind === 'player_seen_elsewhere') return d.via_name ? `via ${d.via_name}` : '';
+    return '';
+  };
+  openDialog((dialog) => el('div', { class: 'dialog-body' },
+    el('h2', {}, `${r.name}: history`),
+    events.length === 0 ? el('p', { class: 'meta' }, 'Nothing yet.') : el('div', { class: 'list', style: 'max-height:60vh;overflow:auto' }, events.map((e) => el('div', { class: 'list-row' },
+      el('div', { class: 'grow' },
+        el('div', { class: 'name' }, RELAY_EVENT_TEXT[e.kind] || e.kind, e.device_name ? `: ${e.device_name}` : ''),
+        el('div', { class: 'meta' }, [describe(e), e.actor && e.actor.startsWith('user:') ? 'by an admin' : e.actor && e.actor.startsWith('relay:') ? 'by the relay' : ''].filter(Boolean).join(' · '))),
+      el('span', { class: 'meta', title: new Date(e.created_at).toLocaleString() }, timeAgo(e.created_at))))),
+    el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => dialog.close() }, 'Close'))));
+}
+
 // ---------- Settings ----------
 
 // Settings → Google key. The key is the service account's .json file. It can be
@@ -1631,6 +1902,15 @@ async function pageSettings(page) {
           }),
           'Also make a 4K HEVC copy for boxes that can play it'),
         s.transcode.ffmpeg ? null : el('p', { class: 'error', style: 'margin:0' }, 'ffmpeg is not installed on this server, so copies cannot be made.')),
+
+      el('a', { class: 'card link-card', href: '#/relays', style: 'display:flex;gap:14px;align-items:center;margin-top:16px;text-decoration:none;color:inherit' },
+        el('span', { style: 'color:var(--primary)' }, icon('relay', 26)),
+        el('div', { class: 'grow' },
+          el('h2', { style: 'margin:0' }, 'Home Assistant Relays'),
+          el('div', { class: 'meta' }, s.relays_require_credentials
+            ? 'The Home Assistants at your other sites. Only paired relays are accepted.'
+            : 'The Home Assistants at your other sites: pair them, see if they’re connected, and choose which screens each one controls.')),
+        el('span', { class: 'meta', 'aria-hidden': 'true' }, '›')),
 
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px;margin-top:16px' },
         el('h2', {}, 'Signing in'),

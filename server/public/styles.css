@@ -268,3 +268,6 @@ input[type=password] {
   background: var(--input-bg); color: var(--input-ink); color-scheme: light;
 }
 .signin form.card { margin-top: 8px; }
+
+/* Settings → Home Assistant Relays */
+.link-card:hover { border-color: var(--accent-primary); }
