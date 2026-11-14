@@ -1798,7 +1798,13 @@ function createApp({
     ];
     const relayPlayerView = (d) => {
       const full = deviceView(d);
-      return Object.fromEntries(RELAY_PLAYER_FIELDS.map((k) => [k, full[k] ?? null]));
+      const view = Object.fromEntries(RELAY_PLAYER_FIELDS.map((k) => [k, full[k] ?? null]));
+      // What a play_playlist command may pick for this screen: its location's playlists.
+      view.playlists = full.location_id
+        ? db.prepare(`SELECT id, name, orientation, auto FROM playlists WHERE location_id = ? ORDER BY auto DESC, name COLLATE NOCASE`)
+          .all(full.location_id).map((p) => ({ id: p.id, name: p.name, orientation: p.orientation, auto: Boolean(p.auto) }))
+        : [];
+      return view;
     };
     const ownedDevices = (relayId) => db.prepare(
       `SELECT d.* FROM relay_player_assignments a JOIN devices d ON d.id = a.device_id

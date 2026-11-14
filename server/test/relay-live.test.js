@@ -184,6 +184,9 @@ test('commands: play a playlist or refresh; acknowledged when the TV fetches it,
   assert.notEqual(await versionOf(cafe), before);
   const device = await (await call('GET', `/api/relay/v1/players/${cafe.id}`, { token: q.control })).json();
   assert.deepEqual([device.playlist_id, device.playlist_name, device.playlist_auto], [promo.id, 'Promo', false]);
+  // The choices a relay can offer: this location's playlists only.
+  for (const name of ['Landscape', 'Promo']) assert.ok(device.playlists.some((p) => p.name === name), name);
+  assert.equal(device.playlists.some((p) => p.id === linsyPromo.id), false);
   // Sending the same command again (a retry) changes nothing and gives the same answer.
   const retry = await command(cafe.id, { id: 'cmd_promo_0001', kind: 'play_playlist', payload: { playlist_id: promo.id } });
   assert.equal(retry.status, 200);
