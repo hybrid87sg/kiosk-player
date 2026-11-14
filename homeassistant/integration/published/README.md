@@ -27,6 +27,12 @@ Events: `kiosk_player_player_online`, `kiosk_player_player_offline`,
 TVs check in about once a minute, so a change reaches the screen within a minute. The
 **command updated** event says when it did (status `acknowledged`).
 
+## Needs
+
+- The main Kiosk server (Kiosk Signage add-on) **0.7.0 or newer**, with the relay set up under
+  Settings → Home Assistant Relays. Earlier versions have no relay pairing.
+- Home Assistant 2025.1 or newer, and Tailscale (or another private network) between the sites.
+
 ## Install
 
 1. In HACS: ⋮ → **Custom repositories** → add `https://github.com/hybrid87sg/kiosk-player-ha`,
