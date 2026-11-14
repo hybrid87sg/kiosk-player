@@ -332,18 +332,57 @@ TVs over the local network. If a site's internet goes down, its TVs keep playing
 1. **On the main Home Assistant:** in the Kiosk add-on's **Configuration** tab, set **Site name**
    (e.g. `Head office`). Note its Tailscale `100.x.y.z` address
    ([admin console](https://login.tailscale.com/admin/machines)).
-2. **At the new site, install Tailscale.** Install the **Tailscale** add-on in that site's Home Assistant
+2. **Make the relay on the main server.** In the web interface: **Settings → Home Assistant Relays →
+   Add relay**. Give it the site's name (e.g. `Orchard branch`). You get a **pairing code** like
+   `ABCDE-23456`. It works once in each place below, for 10 minutes; press **Pairing code** on the relay
+   for a new one at any time.
+3. **At the new site, install Tailscale.** Install the **Tailscale** add-on in that site's Home Assistant
    and log in with the **same Tailscale account** as the main site. Sharing a machine in from a different account isn't enough: a shared machine can't start connections, and a relay has to. In the Tailscale add-on's **Configuration**, turn
    **userspace networking** off, so other add-ons can use Tailscale too, then restart it.
-3. **Install the Kiosk add-on there** (Part 3, steps 1–2). You don't need the Google settings or the key
+4. **Install the Kiosk add-on there** (Part 3, steps 1–2). You don't need the Google settings or the key
    file there. In **Configuration**, set:
    - **Mode**: `relay`
-   - **Site name**: e.g. `Orchard branch`
+   - **Site name**: the same name as the relay, e.g. `Orchard branch`
    - **Main server address**: the main Home Assistant's Tailscale address plus `:3000`,
      e.g. `100.101.102.103:3000`
-4. **Start it.** Its sidebar page shows **Connected** when it can reach the main server.
-5. **Add that site's TVs** as in Part 6. They find their local relay by themselves, and appear on the main
-   web interface under **New screens waiting**, labelled with the site.
+   - **Pairing code**: the code from step 2
+5. **Start it.** Its sidebar page shows **Paired as Orchard branch** and **Connected**.
+6. **Optional: the Kiosk Player integration**, to see and control this site's screens in its own
+   Home Assistant (a device per screen, playlist choice, refresh, and automations). In HACS:
+   **⋮ → Custom repositories** → `https://github.com/hybrid87sg/kiosk-player-ha`, type **Integration**,
+   download **Kiosk Player**, restart Home Assistant. Then **Settings → Devices & services → Add
+   integration → Kiosk Player**: the main server's Tailscale address and the same code (make a new one
+   if 10 minutes have passed). Examples of what to do with it: [docs/ha-examples.md](docs/ha-examples.md).
+7. **Add that site's TVs** as in Part 6. They find their local relay by themselves, and appear on the main
+   web interface under **New screens waiting**, labelled with the site. They belong to that relay.
+8. **When every relay is paired**, switch on **Only accept relays that have paired** (Settings → Home
+   Assistant Relays). From then on nothing on your network can pretend to be one of your sites.
+
+Each relay controls only its own screens: one site's Home Assistant can't see or change another
+site's. The main server's web interface still shows and controls everything.
+
+#### Upgrading relays from before 0.7.0
+
+Relays set up before 0.7.0 keep working after the update, without a pairing code. On the main server
+they appear under **Settings → Home Assistant Relays**, named after their site and marked
+**Waiting to pair**, with their TVs already assigned. To pair one: **Pairing code**, then steps 4–6
+above (only the **Pairing code** box is new in the add-on). Update the main add-on first, then the relays.
+
+Back up first: **Settings → System → Backups → Back up now** on the main Home Assistant. The update
+only adds to the database (screens, users, playlists and files stay as they are), and 0.6.0 can still
+open it if you ever need to go back.
+
+#### If a site's Home Assistant is lost, stolen or reset
+
+On the main server, **Settings → Home Assistant Relays**, on that relay:
+
+1. **Revoke…** its credentials. Its add-on and integration are refused at once. Its TVs keep playing
+   what they have; they are not removed.
+2. **New pairing code**, then put it in the add-on's **Pairing code** option (restart the add-on) and,
+   if you use the integration, in the **Reconfigure** form Home Assistant shows for Kiosk Player.
+   The same TVs come back without being added again.
+
+To stop a site entirely, **Disable** the relay instead; **Enable** brings it back.
 
 ### Adding other people
 
@@ -390,6 +429,14 @@ same way, connect with Tailscale, and sign in.
 | TV says "No server found" | Is the Kiosk add-on running, and is the TV on the same network as Home Assistant (not a guest Wi-Fi)? Or choose **Type the address**. |
 | TV shows "Can't reach the server" | If you typed an address, it must be the **home-network** one, not the Tailscale one. The TV also searches again by itself after 2 minutes. |
 | Relay page says it can't reach the main server | The page says which it is. **No answer:** both Home Assistants must be in the **same Tailscale account** (a machine that was only *shared* in from another account can't start connections), both online in Tailscale, and userspace networking off in the relay site's Tailscale add-on. **Nothing listening:** start the Kiosk add-on at the main site; the address is the main site's Tailscale address plus `:3000`. |
+| Relay page: **Not paired** | Make a code on the main server (**Settings → Home Assistant Relays → Pairing code**), put it in the add-on's **Pairing code** option, **Save**, restart the add-on. |
+| Relay page: **That pairing code isn't valid** | The code was mistyped, already used by the add-on, or more than 10 minutes old. Make a new one. |
+| Relay page: **no longer accepts this relay's credential** | It was revoked on the main server. Pair it again with a new code (see *If a site's Home Assistant is lost*). |
+| Relay page: **disabled on the main server** | **Enable** the relay under **Settings → Home Assistant Relays**. |
+| TVs at a site say "Can't reach the server" after switching on **Only accept relays that have paired** | That site's relay isn't paired yet. Pair it, or switch the setting off until it is. |
+| Kiosk Player integration asks to **Reconfigure** | The main server revoked its credential or the relay is disabled. Enter a new pairing code. |
+| Kiosk Player: **Main server connected** is off | The site can't reach the main server: same checks as "Relay page says it can't reach the main server". It reconnects by itself. |
+| HACS: "Repository not found" for kiosk-player-ha | Type it exactly: `https://github.com/hybrid87sg/kiosk-player-ha`, category **Integration**. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
 
@@ -401,6 +448,8 @@ same way, connect with Tailscale, and sign in.
 |---|---|
 | [`server/`](server) | Node.js + Express + SQLite API (`npm test` runs the end-to-end tests) |
 | [`homeassistant/`](homeassistant) | The Home Assistant add-on; `package-addon.sh` builds the add-on folder |
+| [`homeassistant/integration/`](homeassistant/integration) | The Kiosk Player integration for relay sites (`pytest`, against the real server); `package-integration.sh` builds the copy for [kiosk-player-ha](https://github.com/hybrid87sg/kiosk-player-ha) |
+| [`docs/multi-relay/`](docs/multi-relay) | How relays work: plan, API, and the checklist for real installations |
 | [`android/`](android) | `core` (shared Kotlin, `./gradlew :core:test`), `admin` (phone app), `player` (TV app) |
 | [`.github/workflows/`](.github/workflows) | Builds and checks on every push; **Release** publishes the APKs and the add-on |
 
