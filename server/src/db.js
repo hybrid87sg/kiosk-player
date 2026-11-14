@@ -241,6 +241,23 @@ function openDatabase(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS relay_events_by_relay ON relay_events (relay_id, created_at);
     CREATE INDEX IF NOT EXISTS relay_assignments_by_relay ON relay_player_assignments (relay_id);
+
+    -- Commands a relay's Home Assistant sent for one of its screens (0.7.0).
+    -- applied: the server changed what the screen plays; acknowledged: the TV fetched it.
+    CREATE TABLE IF NOT EXISTS relay_commands (
+      id         TEXT PRIMARY KEY,             -- 'cmd_…', may be chosen by the relay (repeat-safe)
+      relay_id   TEXT NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
+      device_id  INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+      kind       TEXT NOT NULL,
+      payload    TEXT,                         -- JSON
+      status     TEXT NOT NULL CHECK (status IN ('applied','acknowledged','expired','rejected','superseded')),
+      reason     TEXT,
+      created_at INTEGER NOT NULL,
+      applied_at INTEGER,
+      acked_at   INTEGER,
+      expires_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS relay_commands_by_device ON relay_commands (device_id, status);
   `);
 
   return db;

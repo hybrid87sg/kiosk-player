@@ -98,6 +98,12 @@ that site's **Site name** and the main server's Tailscale address (e.g. `100.101
 needs no Google settings. Its TVs find it by themselves and show up on the main web interface, labelled
 with their site.
 
+From 0.7.0, pair each relay so the main server knows it's really that site: on the main server, open
+**Settings → Home Assistant Relays**, add the relay (or press **Pairing code** on it), and type the code
+into the relay add-on's **Pairing code** option. Save and restart the add-on. The code works once and
+for 10 minutes; the relay's status page then shows **Paired**. Relays that aren't paired keep working
+until you switch on **Only accept relays that have paired**.
+
 ## Managing screens away from home
 
 Your phone needs a way into your home network. The simplest is the **Tailscale**

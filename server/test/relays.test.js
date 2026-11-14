@@ -206,7 +206,7 @@ test('ownership: a relay only sees its own screens; three relays at once', async
   assert.equal('token' in own || 'pairing_code' in own, false);
   // A proxy credential can't read the player list; a control one can't pass TVs on.
   assert.equal((await call('GET', '/api/relay/v1/players', { token: relays.Qoltured.proxy })).status, 403);
-  assert.equal((await tvVia(relays.Qoltured.control)).res.status, 403);
+  assert.equal((await tvVia(relays.Qoltured.control)).res.status, 503);
 
   // The Qoltured TV turns up through Linsy's add-on: it stays Qoltured's, and that's logged.
   const hb = await call('POST', '/api/player/heartbeat', { token: tvs['Cafe wall'].token, json: { app_version: '0.6.0' }, headers: { 'x-kiosk-relay-auth': relays.Linsy.proxy } });
@@ -238,21 +238,22 @@ test('a paired relay’s site can’t be claimed with a header; unpaired relays 
   const { relay, pairing_code: code } = await makeRelay('Qoltured');
   await pair(code, 'proxy');
   const spoof = await tvVia(null, { 'x-kiosk-site': 'Qoltured' });
-  assert.equal(spoof.res.status, 401);
+  // 503, not 401: a TV takes 401 to mean "removed" and would forget its pairing and files.
+  assert.equal(spoof.res.status, 503);
   assert.match((await spoof.res.json()).error, /must be paired/);
   // Its file downloads too.
-  assert.equal((await call('GET', '/media/1', { headers: { 'x-kiosk-site': 'Qoltured', authorization: `Bearer ${legacy.tv.token}` } })).status, 401);
+  assert.equal((await call('GET', '/media/1', { headers: { 'x-kiosk-site': 'Qoltured', authorization: `Bearer ${legacy.tv.token}` } })).status, 503);
   // Requiring credentials refuses every unpaired relay, but not TVs talking to this server directly.
   const settings = await (await call('PATCH', '/api/settings', { token: boss, json: { relays_require_credentials: true } })).json();
   assert.equal(settings.relays_require_credentials, true);
-  assert.equal((await tvVia(null, { 'x-kiosk-site': 'Old branch' })).res.status, 401);
+  assert.equal((await tvVia(null, { 'x-kiosk-site': 'Old branch' })).res.status, 503);
   assert.equal((await tvVia(null)).res.status, 201);
   // A disabled relay's add-on is refused too.
   const { pairing_code: code2, relay: linsy } = await makeRelay('Linsy');
   const proxy = await (await pair(code2, 'proxy')).json();
   assert.equal((await tvVia(proxy.credential)).res.status, 201);
   await call('PATCH', `/api/relays/${linsy.id}`, { token: boss, json: { status: 'disabled' } });
-  assert.equal((await tvVia(proxy.credential)).res.status, 403);
+  assert.equal((await tvVia(proxy.credential)).res.status, 503);
   assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { relays_require_credentials: 'yes' } })).status, 400);
   assert.ok(relay.id);
 });

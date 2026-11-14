@@ -1497,7 +1497,8 @@ function relayCard(r, relays, devices, redraw) {
     el('div', { style: 'display:flex;flex-direction:column;gap:4px' },
       piece(r.paired.control, 'Home Assistant integration'),
       piece(r.paired.proxy, 'Kiosk add-on')),
-    el('div', { class: 'meta' }, r.last_seen_at ? `Last heard from ${timeAgo(r.last_seen_at)}${r.last_version ? ` · version ${r.last_version}` : ''}` : 'Never connected'),
+    el('div', { class: 'meta' }, r.connected ? `Home Assistant connected now${r.last_version ? ` · version ${r.last_version}` : ''}`
+      : r.last_seen_at ? `Last heard from ${timeAgo(r.last_seen_at)}${r.last_version ? ` · version ${r.last_version}` : ''}` : 'Never connected'),
     r.pairing ? el('div', { class: 'note', style: 'margin:0' },
       `A pairing code is waiting (it ends ${minutesLeft(r.pairing.expires_at)}). Used by: ${[r.pairing.control_done ? 'integration' : null, r.pairing.proxy_done ? 'add-on' : null].filter(Boolean).join(' and ') || 'nothing yet'}.`) : null,
     el('div', {},
@@ -1520,6 +1521,12 @@ function relayCard(r, relays, devices, redraw) {
           onclick: () => confirmDialog(`Disable ${r.name}?`, 'Its Home Assistant and its add-on are refused straight away. Its TVs keep playing what they have, but get no updates until it’s enabled again.', 'Disable',
             () => attempt(async () => { await api('PATCH', `api/relays/${r.id}`, { status: 'disabled' }); toast(`${r.name} disabled`); redraw(); })),
         }, 'Disable'),
+      r.connected ? el('button', {
+        class: 'btn small',
+        title: 'Give its Home Assistant integration a new credential over its live connection. The old one stops working once the new one is used.',
+        onclick: () => confirmDialog(`New credential for ${r.name}?`, 'Its Home Assistant integration is handed a new credential over its live connection, and the old one stops working once the new one is in use. Nothing else changes.', 'Send new credential',
+          () => attempt(async () => { await api('POST', `api/relays/${r.id}/rotate`, { kind: 'control' }); toast(`New credential sent to ${r.name}`); redraw(); })),
+      }, 'New credential') : null,
       r.credentials.length ? el('button', { class: 'btn small danger', onclick: () => revokeDialog(r, redraw) }, 'Revoke…') : null,
       r.players.length ? null : el('button', { class: 'btn small danger', onclick: () => deleteRelayDialog(r, redraw) }, 'Delete')),
   );
@@ -1569,7 +1576,7 @@ function pairingCodeDialog(relay, code, expiresAt, onDone) {
       el('ol', { style: 'margin:4px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:6px' },
         el('li', {}, el('strong', {}, 'Kiosk Player integration: '), 'Settings → Devices & services → Add integration → Kiosk Player. Enter this main server’s address and the code.'),
         el('li', {}, el('strong', {}, 'Kiosk add-on (relay mode): '), 'its Configuration tab → Pairing code. Save and restart the add-on.')),
-      el('p', { class: 'meta', style: 'margin:0' }, 'The integration and the add-on’s pairing option arrive in the next updates. The code isn’t shown again; you can always make a new one.'),
+      el('p', { class: 'meta', style: 'margin:0' }, 'The Kiosk Player integration arrives in the next update; the add-on can pair now. The code isn’t shown again; you can always make a new one.'),
       el('div', { class: 'dialog-actions' }, el('button', { class: 'btn primary', onclick: () => dialog.close() }, 'Done')));
   });
 }

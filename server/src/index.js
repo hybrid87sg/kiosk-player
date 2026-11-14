@@ -18,6 +18,7 @@
 //   MODE                         "main" (default) or "relay", for a Home Assistant at
 //   MAIN_SERVER_URL                another site: its TVs then reach the main server
 //                                  at MAIN_SERVER_URL through this one (see relay.js)
+//   PAIRING_CODE                 relay only: the code made for this relay on the main server
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -51,6 +52,7 @@ function loadSettings() {
       mode: o.mode === 'relay' ? 'relay' : 'main',
       siteName: (o.site_name || '').trim() || null,
       mainServerUrl: (o.main_server_url || '').trim(),
+      pairingCode: (o.pairing_code || '').trim(),
     };
   }
   return {
@@ -68,6 +70,7 @@ function loadSettings() {
     mode: env.MODE === 'relay' ? 'relay' : 'main',
     siteName: (env.SITE_NAME || '').trim() || null,
     mainServerUrl: (env.MAIN_SERVER_URL || '').trim(),
+    pairingCode: (env.PAIRING_CODE || '').trim(),
   };
 }
 
@@ -92,7 +95,8 @@ if (settings.mode === 'relay') {
     process.exit(1);
   }
   const mainUrl = normalizeMainUrl(settings.mainServerUrl);
-  const relay = createRelay({ mainUrl, siteName: settings.siteName, dataDir: settings.dataDir });
+  const relay = createRelay({ mainUrl, siteName: settings.siteName, dataDir: settings.dataDir, pairingCode: settings.pairingCode });
+  if (!settings.pairingCode) console.log('No pairing code yet. Make one on the main server (Settings → Home Assistant Relays) and put it in this add-on\'s Configuration tab.');
   relay.listen(settings.port, '0.0.0.0', () => {
     console.log(`Kiosk relay for site "${settings.siteName}" running on port ${settings.port}, main server ${mainUrl}`);
   });
