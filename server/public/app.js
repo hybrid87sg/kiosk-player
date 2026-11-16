@@ -958,29 +958,7 @@ function moveScreensDialog(loc, others, onDone) {
 
 // ---------- Library ----------
 
-function uploadFile(file, onProgress, startsAt = null, expiresAt = null) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', 'api/media');
-    const t = token();
-    if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
-    xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
-    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-    if (startsAt) xhr.setRequestHeader('X-Starts-At', String(startsAt));
-    if (expiresAt) xhr.setRequestHeader('X-Expires-At', String(expiresAt));
-    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-    xhr.onload = () => {
-      let data = {};
-      try { data = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
-      if (xhr.status < 300) resolve(data); else reject(new Error(data.error || 'Upload failed'));
-    };
-    xhr.onerror = () => reject(new Error("Can't reach the server"));
-    xhr.send(file);
-  });
-}
-
 async function pageLibrary(page) {
-  const uploads = el('div', { style: 'display:flex;flex-direction:column;gap:10px;margin-top:12px' });
   const listArea = el('div');
   const status = el('span', { class: 'meta' });
   let library = null;
@@ -997,7 +975,7 @@ async function pageLibrary(page) {
       ['Portrait files', items.filter((m) => m.orientation === 'portrait')],
     ].filter(([, list]) => list.length);
     fill(listArea,
-      groups.length === 0 ? el('div', { class: 'empty', style: 'margin-top:20px' }, 'No files yet. Drop files above, or add them to the Signage folder in Google Drive.') : null,
+      groups.length === 0 ? el('div', { class: 'empty', style: 'margin-top:20px' }, 'No files yet. Add them to the Signage folder in Google Drive, then press Sync with Drive.') : null,
       groups.map(([title, list]) => [
         el('div', { class: 'section-label' }, `${title} · ${list.length}`),
         el('div', { class: 'list' }, list.map((m) => el('div', { class: 'list-row' },
@@ -1060,51 +1038,16 @@ async function pageLibrary(page) {
     draw();
   }
 
-  // Optional: first and last day for the files about to be uploaded.
-  const uploadStart = el('input', { type: 'date', class: 'date-input', id: 'upload-start', 'aria-label': 'New uploads show from' });
-  const uploadExpiry = el('input', { type: 'date', class: 'date-input', id: 'upload-expiry', min: lastDayValue(Date.now() + 1), 'aria-label': 'New uploads show until' });
-
-  async function addFiles(files) {
-    const startsAt = startOfDay(uploadStart.value);
-    const expiresAt = expiryFromLastDay(uploadExpiry.value);
-    for (const file of files) {
-      const bar = el('div', { style: 'width:0%' });
-      const label = el('span', { class: 'meta' }, '0%');
-      const row = el('div', { class: 'card' },
-        el('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:8px' }, el('strong', {}, `Uploading ${file.name}`), label),
-        el('div', { class: 'progress' }, bar));
-      uploads.append(row);
-      try {
-        await uploadFile(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = `${Math.round(p * 100)}%`; }, startsAt, expiresAt);
-        toast(`${file.name} saved to Google Drive`);
-      } catch (e) {
-        toast(`${file.name}: ${e.message}`);
-      }
-      row.remove();
-      await attempt(() => load());
-    }
-  }
-
-  const picker = el('input', { type: 'file', multiple: true, accept: 'video/mp4,image/jpeg,image/png,image/webp', hidden: true, onchange: () => addFiles([...picker.files]) });
-  const drop = el('div', {
-    class: 'drop', tabIndex: 0, role: 'button',
-    onclick: () => picker.click(),
-    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picker.click(); } },
-    ondragover: (e) => { e.preventDefault(); drop.classList.add('over'); },
-    ondragleave: () => drop.classList.remove('over'),
-    ondrop: (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles([...e.dataTransfer.files]); },
-  },
-  el('strong', {}, 'Drop videos and pictures here, or click to choose'),
-  el('div', { class: 'meta' }, '.mp4 videos up to 4K, and .jpg, .png, .webp pictures. They’re saved into the Signage folder in Google Drive.'));
+  // Files come from Google Drive only: this card says where to put them.
+  const howTo = el('div', { class: 'card' },
+    el('strong', {}, 'Add files in Google Drive'),
+    el('div', { class: 'meta' }, 'Put .mp4 videos (up to 4K) and .jpg, .png, .webp pictures in the Signage folder in Google Drive, then press Sync with Drive. Kiosk also checks the folder by itself every 5 minutes.'));
 
   fill(page,
     el('div', { class: 'page-head' },
       el('div', {}, el('h1', {}, 'Library'), el('p', { class: 'sub' }, status)),
       el('button', { class: 'btn', onclick: () => attempt(async () => { await load(true); toast('Library is up to date'); }) }, icon('refresh', 18), 'Sync with Drive')),
-    drop,
-    el('div', { class: 'row meta upload-expiry' }, icon('calendar', 16), 'New uploads (optional) show from', uploadStart, 'until', uploadExpiry,
-      el('button', { type: 'button', class: 'btn text small', onclick: () => { uploadStart.value = ''; uploadExpiry.value = ''; } }, 'Clear')),
-    picker, uploads, listArea,
+    howTo, listArea,
   );
   await attempt(() => load());
   // While a file's shape is still being checked, look again every few seconds.

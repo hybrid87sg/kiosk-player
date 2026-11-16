@@ -246,8 +246,8 @@ What's on it:
   Every location is also listed in the side menu; open one to rename it or **move a screen here**.
   **+ Add location** makes a new one.
   **Delete location** asks you to type the location's name, and only works once no screens are left in it.
-- **Library:** drag files from your computer onto the page to upload them.
-  - **Show from / until:** click a file's calendar button (or pick dates before uploading) to choose the
+- **Library:** files come from Google Drive. Put them in the Signage folder, then press **Sync with Drive**.
+  - **Show from / until:** click a file's calendar button to choose the
     first and last day it shows. Before the first day it waits in the library (TVs download it a day early,
     so it starts on time). After the last day it leaves Kiosk, every playlist and every screen by itself.
   - **Remove** takes a file out of Kiosk straight away.
