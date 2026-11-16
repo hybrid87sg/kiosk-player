@@ -1,5 +1,6 @@
 # Publishes a GitHub release with everything you need:
-#   KioskAdmin-for-phone.apk, KioskPlayer-for-TV.apk and kiosk_server-addon.zip
+#   KioskAdmin-for-phone.apk, KioskPlayer-for-TV.apk, kiosk_server-addon.zip and the
+#   Windows Kiosk Browser installer (KioskBrowser-Setup-<version>.exe)
 #
 # How: Actions tab -> "Release" -> "Run workflow", type a version (e.g. 0.4.0).
 name: Release
@@ -76,6 +77,7 @@ jobs:
             |---|---|---|
             | `KioskAdmin-for-phone.apk` | Your Android phone | Kiosk Admin app |
             | `KioskPlayer-for-TV.apk` | Each Android TV box | Kiosk Player app |
+            | `KioskBrowser-Setup-…exe` | A Windows PC with a touch screen | Kiosk Browser: signage when idle, your web page on touch |
             | `kiosk_server-addon.zip` | Home Assistant | The server, as an add-on, for installing by hand. The easy way is the add-on repository: https://github.com/hybrid87sg/kiosk-addons |
 
             Both apps have a **Demo mode** with sample data, so they can be tried
@@ -83,3 +85,10 @@ jobs:
             and the one-time Google setup.
 
             The apps are test builds signed with the shared test key in `android/keystore`.
+
+  # The Windows installer, built on Windows and added to the release made above.
+  windows:
+    needs: [publish]
+    uses: ./.github/workflows/windows.yml
+    with:
+      release_tag: v${{ inputs.version }}

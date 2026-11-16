@@ -1,0 +1,61 @@
+# The Windows "Kiosk Browser" (windows/): its tests, the whole app driven like a customer on a
+# real Windows machine, and the installer (KioskBrowser-Setup-<version>.exe).
+# The "Release" workflow uses this to build the installer for a release.
+name: Windows Kiosk Browser
+
+on:
+  push:
+    paths:
+      - "windows/**"
+      - "server/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ""
+
+permissions:
+  contents: write # only used by a release, to attach the installer
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the server (the tests run it)
+        working-directory: server
+        run: npm ci
+      - name: Install the app
+        working-directory: windows
+        run: npm ci
+      - name: Core tests
+        working-directory: windows
+        timeout-minutes: 5
+        run: npm test
+      - name: The whole app on Windows, as a customer and staff would use it
+        working-directory: windows
+        timeout-minutes: 10
+        run: npm run e2e
+      - name: Build the installer
+        working-directory: windows
+        timeout-minutes: 10
+        run: npm run dist
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true # a full artifact store must not stop the build
+        with:
+          name: KioskBrowser-Setup
+          path: windows/dist/*.exe
+          retention-days: 3
+      - name: Attach it to the release
+        if: inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          fail_on_unmatched_files: true
+          files: windows/dist/*.exe

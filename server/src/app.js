@@ -1071,6 +1071,9 @@ function createApp({
       app_version: d.app_version,
       model: d.model,
       site: d.site,
+      kind: d.kind === 'browser' ? 'browser' : 'tv',
+      // A Kiosk Browser's settings, without the PIN itself.
+      browser: d.kind === 'browser' ? (({ pin, ...rest }) => ({ ...rest, has_pin: Boolean(pin) }))(browserSettings(d)) : null,
       relay: owner ? { id: owner.id, name: owner.name, status: owner.status } : null,
       location_id: loc ? loc.id : null,
       hours_summary: summarizeHours(hoursOf(loc)),
@@ -1117,6 +1120,41 @@ function createApp({
       if (body.playlist_id !== null && !findPlaylist(body.playlist_id)) return { error: 'Unknown playlist' };
       out.playlist_id = body.playlist_id;
     }
+    // A Kiosk Browser's settings.
+    if (body.kiosk_url !== undefined) {
+      if (body.kiosk_url === null || body.kiosk_url === '') out.kiosk_url = null;
+      else {
+        let url;
+        try { url = new URL(String(body.kiosk_url).trim()); } catch { return { error: 'The web address should start with https:// (or http://)' }; }
+        if (!['https:', 'http:'].includes(url.protocol) || String(body.kiosk_url).length > 2000) return { error: 'The web address should start with https:// (or http://)' };
+        out.kiosk_url = url.toString();
+      }
+    }
+    if (body.kiosk_idle_seconds !== undefined) {
+      const n = body.kiosk_idle_seconds;
+      if (!Number.isInteger(n) || n < 15 || n > 3600) return { error: 'Back to signage after 15 to 3600 seconds' };
+      out.kiosk_idle_seconds = n;
+    }
+    if (body.kiosk_allowed_hosts !== undefined) {
+      const list = Array.isArray(body.kiosk_allowed_hosts) ? body.kiosk_allowed_hosts : [];
+      const hosts = [];
+      for (const raw of list) {
+        let host = String(raw || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        if (!host) continue;
+        if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) || host.length > 253) return { error: `${raw} isn’t a website name, e.g. shop.example.com` };
+        if (!hosts.includes(host)) hosts.push(host);
+      }
+      if (hosts.length > 20) return { error: 'Allow at most 20 other websites' };
+      out.kiosk_allowed_hosts = JSON.stringify(hosts);
+    }
+    if (body.kiosk_pin !== undefined) {
+      if (body.kiosk_pin === null || body.kiosk_pin === '') { out.kiosk_pin_hash = null; out.kiosk_pin_salt = null; }
+      else {
+        if (!/^[0-9]{4,8}$/.test(String(body.kiosk_pin))) return { error: 'The staff PIN is 4 to 8 digits' };
+        out.kiosk_pin_salt = crypto.randomBytes(16).toString('hex');
+        out.kiosk_pin_hash = crypto.createHash('sha256').update(`${out.kiosk_pin_salt}:${body.kiosk_pin}`).digest('hex');
+      }
+    }
     return { fields: out };
   }
 
@@ -1150,6 +1188,7 @@ function createApp({
       id: d.id,
       model: d.model,
       site: d.site,
+      kind: d.kind === 'browser' ? 'browser' : 'tv',
       pairing_code: d.pairing_code,
       last_seen: d.last_seen,
     })));
@@ -1528,15 +1567,16 @@ function createApp({
     const appVersion = typeof body.app_version === 'string' ? body.app_version : null;
     const model = typeof body.model === 'string' ? body.model.trim().slice(0, 80) || null : null;
     const caps = normalizeDecoderCaps(body.decoders);
+    const kind = body.kind === 'browser' ? 'browser' : null; // a Windows Kiosk Browser, or a TV
     const insert = db.prepare(
-      `INSERT INTO devices (token, pairing_code, app_version, model, site, decoder_caps, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO devices (token, pairing_code, app_version, model, site, decoder_caps, last_seen, created_at, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = randomPairingCode();
       try {
         const now = Date.now();
-        const made = insert.run(token, code, appVersion, model, siteOf(req), caps ? JSON.stringify(caps) : null, now, now);
+        const made = insert.run(token, code, appVersion, model, siteOf(req), caps ? JSON.stringify(caps) : null, now, now, kind);
         noteRelayOf(req, made.lastInsertRowid);
         return res.status(201).json({ token, pairing_code: code, qr_payload: `kiosk-pair:${code}` });
       } catch (err) {
@@ -1631,6 +1671,22 @@ function createApp({
       upcoming: ahead,
       // The location's working hours; the TV goes dark outside them (null = always on).
       hours: hoursOf(locationOf(device)),
+      // A Windows Kiosk Browser's page and rules (null for TVs).
+      browser: device.kind === 'browser' ? browserSettings(device) : null,
+    };
+  }
+
+  // What a Kiosk Browser needs: its page, when to go back to signage, which other sites
+  // customers may open, and the staff PIN (only as a salted hash; it is checked on the PC).
+  const KIOSK_IDLE_DEFAULT = 90;
+  function browserSettings(device) {
+    let allowed = [];
+    try { allowed = JSON.parse(device.kiosk_allowed_hosts || '[]'); } catch { /* none */ }
+    return {
+      url: device.kiosk_url || null,
+      idle_seconds: device.kiosk_idle_seconds || KIOSK_IDLE_DEFAULT,
+      allowed_hosts: Array.isArray(allowed) ? allowed : [],
+      pin: device.kiosk_pin_hash ? { salt: device.kiosk_pin_salt, sha256: device.kiosk_pin_hash } : null,
     };
   }
 

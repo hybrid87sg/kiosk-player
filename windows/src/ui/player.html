@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; media-src 'self' file:; style-src 'self'; script-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kiosk Browser</title>
+  <link rel="stylesheet" href="player.css">
+</head>
+<body>
+  <main id="screen"></main>
+  <div id="badge" hidden></div>
+  <div id="notice" role="status" hidden></div>
+  <nav id="bar" hidden>
+    <button id="back" class="bar-btn" type="button" aria-label="Back">‹ Back</button>
+    <span class="bar-hint">Tap Start over when you’re done</span>
+    <button id="start-over" class="bar-btn primary" type="button">⟲ Start over</button>
+  </nav>
+  <div id="staff" hidden></div>
+  <script src="player.js"></script>
+</body>
+</html>

@@ -443,6 +443,48 @@ On **Users**, press **Link Google** next to each person and enter their Google a
 Google account that isn't linked is refused. Their username and password keep working at home and
 in the phone app.
 
+### Windows web kiosk: Kiosk Browser (optional)
+
+A Windows PC with a touch screen can be a **web kiosk**: while nobody uses it, it plays its playlist
+like a TV; when a customer touches it, it opens **your web page** (a shop, a menu, a check-in form).
+Customers can only use that website (and sites you allow). After the time you set untouched, or when
+they tap **Start over**, everything they did is wiped (cookies, logins, what they typed) and the
+signage comes back for the next person.
+
+**Install it (once per PC)**
+
+1. Download `KioskBrowser-Setup-….exe` from the latest release
+   (<https://github.com/hybrid87sg/kiosk-player/releases>) and run it. Windows warns **"Windows
+   protected your PC"** because the app isn't signed with a paid certificate: click **More info → Run
+   anyway**.
+2. It opens full screen. Tap **Find the Kiosk server** (or type the Home Assistant's address, e.g.
+   `192.168.1.20`). At another site, choose that site's relay.
+3. It shows a code. On the Kiosk web page: **Screens → New screens waiting → Add** (it's listed as
+   *Windows kiosk*). Give it a name and location as for a TV, then the **Web kiosk** part:
+   - **Web address**: the page customers start on, e.g. `https://shop.example.com/start`
+   - **Back to the playlist after**: seconds untouched (90 is a good start)
+   - **Other websites customers may open**: e.g. a payment page on another site; one per line
+   - **Staff PIN**: 4 to 8 digits
+
+Changes on the dashboard reach the PC within a minute. Working hours apply as for TVs: outside
+them the screen is black and touches do nothing.
+
+**Staff:** tap the **top-left corner 5 times quickly**, then type the PIN, for: *Check for new
+content now*, *Leave the kiosk for 15 minutes* (to use Windows), *Forget the server and pair again*,
+or *Quit*. The PIN keeps curious customers out; it isn't strong security, so don't reuse a password.
+
+**Set the PC up as a kiosk (recommended)**
+
+- **Sign in automatically**: a kiosk PC should start straight into Kiosk Browser after a power cut.
+  Use a separate local Windows account for it, and turn on automatic sign-in (search "netplwiz", or
+  *Settings → Accounts → Sign-in options*). Kiosk Browser starts by itself when Windows does.
+- **Touch keyboard**: *Settings → Time & language → Typing → Touch keyboard → Show the touch keyboard*:
+  **Always** (or "when there's no keyboard attached").
+- **Never sleep**: *Settings → System → Power*: screen and sleep **Never** (Kiosk Browser also keeps the
+  screen awake during working hours).
+- **Windows Update**: set *Active hours* to your opening hours, so it doesn't restart while open.
+- **Rotation**: for a portrait screen, set it in *Settings → System → Display → Display orientation*.
+
 ### Adding other people
 
 In the web interface or Kiosk Admin, go to **Users → Add someone**. Give them a **username**, a
@@ -501,6 +543,11 @@ same way, connect with Tailscale, and sign in.
 | Public address: Google says the **origin isn't allowed** (error 400) | In Google Cloud, the client's **Authorized JavaScript origins** must be exactly the address shown under Settings, starting `https://`, with no slash at the end. Changes there can take a few minutes. |
 | Public address: "… isn't linked to a Kiosk user" | On **Users**, press **Link Google** for that person and enter exactly that Google account. |
 | Public address: Google says "access blocked" or "app not verified" | In Google Cloud's consent screen, add that account as a test user, or **Publish app**. |
+| Kiosk Browser: "Windows protected your PC" when installing | It isn't signed with a paid certificate. Click **More info → Run anyway**. |
+| Kiosk Browser: "That page isn't available on this kiosk" | The link goes to another website. Add that site under **Other websites customers may open** (Screens → Edit). |
+| Kiosk Browser: "No web address yet" | Screens → Edit that kiosk → **Web address**. |
+| Kiosk Browser: no on-screen keyboard | Windows *Settings → Time & language → Typing → Touch keyboard*: show it **Always**. |
+| Kiosk Browser: forgot the staff PIN | Set a new one on the dashboard (Screens → Edit); the PC picks it up within a minute. |
 | HACS: "Repository not found" for kiosk-player-ha | Type it exactly: `https://github.com/hybrid87sg/kiosk-player-ha`, category **Integration**. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
@@ -516,8 +563,9 @@ same way, connect with Tailscale, and sign in.
 | [`homeassistant/`](homeassistant) | The Home Assistant add-on; `package-addon.sh` builds the add-on folder |
 | [`homeassistant/integration/`](homeassistant/integration) | The Kiosk Player integration for relay sites (`pytest`, against the real server); `package-integration.sh` builds the copy for [kiosk-player-ha](https://github.com/hybrid87sg/kiosk-player-ha) |
 | [`docs/multi-relay/`](docs/multi-relay) | How relays work: plan, API, and the checklist for real installations |
+| [`windows/`](windows) | Kiosk Browser for Windows (Electron): `npm test` (core, against the real server), `npm run e2e` (the whole app), `npm run dist` (installer) |
 | [`android/`](android) | `core` (shared Kotlin, `./gradlew :core:test`), `admin` (phone app), `player` (TV app) |
-| [`.github/workflows/`](.github/workflows) | Builds and checks on every push; **Release** publishes the APKs and the add-on |
+| [`.github/workflows/`](.github/workflows) | Builds and checks on every push; **Release** publishes the APKs, the add-on and the Windows installer |
 
 **To publish a release:** go to **Actions → Release → Run workflow** and enter a version (e.g. `0.4.0`).
 
