@@ -9,6 +9,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -30,6 +31,7 @@ class ContentSyncTest {
     private val md5 = MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02x".format(it) }
     private val item = PlayerItem(7, MediaType.VIDEO, "promo.mp4", "/media/7", md5, bytes.size.toLong())
     private var cutAfter: Int? = null // pretend the connection drops after this many bytes
+    private var dropMidway = false // the connection really breaks halfway through the file
     private val ranges = mutableListOf<String?>()
 
     @Before fun start() {
@@ -40,7 +42,9 @@ class ContentSyncTest {
                 val from = range?.removePrefix("bytes=")?.removeSuffix("-")?.toInt() ?: 0
                 val end = cutAfter?.coerceAtMost(bytes.size) ?: bytes.size
                 val body = Buffer().write(bytes.copyOfRange(from, end))
-                return if (from > 0) MockResponse().setResponseCode(206).setBody(body) else MockResponse().setBody(body)
+                val response = if (from > 0) MockResponse().setResponseCode(206).setBody(body) else MockResponse().setBody(body)
+                if (dropMidway) response.socketPolicy = SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY
+                return response
             }
         }
         server.start()
@@ -61,6 +65,34 @@ class ContentSyncTest {
         val sync = sync()
         sync.sync(PlayerPlaylist("1", items = emptyList(), upcoming = listOf(item)))
         assertTrue(sync.isReady(item)) // ready before it's due to play
+    }
+
+    // A real dropped connection (Wi-Fi blip, relay restarting) used to escape as a raw IOException,
+    // which closed the TV app to the home screen. It must be an ordinary DownloadException.
+    @Test fun aConnectionDroppedMidFileIsADownloadProblemNotACrash() = runTest {
+        val sync = sync()
+        dropMidway = true
+        try {
+            sync.sync(PlayerPlaylist("1", items = listOf(item)))
+            fail("should report the broken download")
+        } catch (e: DownloadException) {
+            assertTrue(e.message!!.contains("connection lost"))
+            assertFalse(sync.isReady(item))
+        }
+        dropMidway = false
+        sync.sync(PlayerPlaylist("1", items = listOf(item)))
+        assertTrue(sync.isReady(item))
+        assertArrayEquals(bytes, sync.fileFor(item).readBytes())
+    }
+
+    @Test fun noServerAtAllIsADownloadProblemNotACrash() = runTest {
+        val sync = ContentSync(OkHttpClient(), "http://127.0.0.1:1/", tmp.root)
+        try {
+            sync.sync(PlayerPlaylist("1", items = listOf(item)))
+            fail("should report the download problem")
+        } catch (e: DownloadException) {
+            assertTrue(e.message!!.contains("connection lost"))
+        }
     }
 
     @Test fun resumesAnInterruptedDownload() = runTest {

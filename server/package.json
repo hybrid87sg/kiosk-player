@@ -1,6 +1,6 @@
 {
   "name": "kiosk-server",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "description": "API server for the kiosk player and admin apps",
   "main": "src/index.js",
