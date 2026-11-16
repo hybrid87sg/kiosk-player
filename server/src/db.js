@@ -142,6 +142,10 @@ function openDatabase(dataDir) {
   // People sign in with a username and password. The username is kept in the "email"
   // column (it used to hold a Google account's email); password_hash is never the password.
   addColumnIfMissing(db, 'users', 'password_hash', 'TEXT');
+  // 0.8.0: a Google account linked to the user, for the public web dashboard (lower case).
+  addColumnIfMissing(db, 'users', 'google_email', 'TEXT');
+  // 0.8.0: how a session signed in: 'password' or 'google'. Sessions from before are passwords.
+  addColumnIfMissing(db, 'sessions', 'method', 'TEXT');
   // Playlists belong to a location (see the playlists table's "auto" column below).
   addColumnIfMissing(db, 'playlists', 'location_id', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'flipped', 'INTEGER'); // 1 = a landscape screen mounted upside down

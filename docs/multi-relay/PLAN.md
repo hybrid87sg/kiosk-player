@@ -551,6 +551,13 @@ Answered by the owner on 13 Nov 2026.
 
 ### Stage 7: Google sign-in for the web dashboard (from D1)
 
+> **As built (0.8.0), two changes from the plan below, agreed with the owner on 16 Nov 2026:**
+> Home Assistant's Tailscale add-on can only put Home Assistant itself on Funnel, so the Kiosk
+> add-on runs **its own Tailscale** (`public-access.js`, userspace, its own machine name) and funnels
+> only its path-filtered door (`createPublicServer`, reachable only inside the add-on). And instead
+> of a redirect flow, the page uses Google's sign-in button, which needs an **Authorized JavaScript
+> origin** rather than a redirect URI. Password sign-in stays on the local address (owner's choice).
+
 - **Who can sign in.** A user record gets an optional linked Google account (`users.google_email`,
   added with `addColumnIfMissing`). Spongebob links it on the Users page. Signing in to the web
   dashboard with Google gives that user's role. A Google account not linked to any user is refused.

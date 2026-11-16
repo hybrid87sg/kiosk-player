@@ -19,10 +19,14 @@
 //   MAIN_SERVER_URL                another site: its TVs then reach the main server
 //                                  at MAIN_SERVER_URL through this one (see relay.js)
 //   PAIRING_CODE                 relay only: the code made for this relay on the main server
+//   PUBLIC_DASHBOARD             "on" for the public web dashboard (Google sign-in) through the
+//   TAILSCALE_AUTH_KEY             server's own Tailscale Funnel (see public-access.js), as
+//   PUBLIC_HOSTNAME                that Tailscale machine's name (default "kiosk")
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { createApp, createIngressServer } = require('./app');
+const { createApp, createIngressServer, createPublicServer } = require('./app');
+const { createPublicAccess } = require('./public-access');
 const { transcodeOptIn } = require('./transcode');
 const { createGoogle, parseServiceAccountKey } = require('./google');
 const { createRelay, normalizeMainUrl } = require('./relay');
@@ -53,6 +57,9 @@ function loadSettings() {
       siteName: (o.site_name || '').trim() || null,
       mainServerUrl: (o.main_server_url || '').trim(),
       pairingCode: (o.pairing_code || '').trim(),
+      publicDashboard: Boolean(o.public_dashboard),
+      tailscaleAuthKey: (o.tailscale_auth_key || '').trim(),
+      publicHostname: (o.public_hostname || '').trim() || 'kiosk',
     };
   }
   return {
@@ -71,6 +78,9 @@ function loadSettings() {
     siteName: (env.SITE_NAME || '').trim() || null,
     mainServerUrl: (env.MAIN_SERVER_URL || '').trim(),
     pairingCode: (env.PAIRING_CODE || '').trim(),
+    publicDashboard: env.PUBLIC_DASHBOARD === 'on',
+    tailscaleAuthKey: (env.TAILSCALE_AUTH_KEY || '').trim(),
+    publicHostname: (env.PUBLIC_HOSTNAME || '').trim() || 'kiosk',
   };
 }
 
@@ -133,7 +143,20 @@ if (!serviceAccountKey) {
   console.log('No Google key yet. Open Kiosk Signage → Settings → Google key and upload or paste it.');
 }
 
+// The public web dashboard (off unless switched on in the add-on's options). Its door listens
+// only inside the add-on; the add-on's own Tailscale Funnel is the only way in from outside.
+const PUBLIC_DOOR_PORT = 3001;
+const publicAccess = createPublicAccess({
+  enabled: settings.publicDashboard,
+  dataDir: settings.dataDir,
+  authKey: settings.tailscaleAuthKey,
+  hostname: settings.publicHostname,
+  doorPort: PUBLIC_DOOR_PORT,
+  log: console.log,
+});
+
 const app = createApp({
+  publicAccess,
   dataDir: settings.dataDir,
   firstAdmin: settings.firstAdmin,
   mediaCacheDir: path.join(settings.dataDir, 'media-cache'),
@@ -171,6 +194,7 @@ const server = app.listen(settings.port, '0.0.0.0', () => {
 // Home Assistant stops the add-on with SIGTERM. Kill ffmpeg so it cannot keep the CPU.
 function stop() {
   if (app.locals.transcoder) app.locals.transcoder.shutdown();
+  publicAccess.stop();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }
@@ -178,3 +202,10 @@ process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 
 startIngress(app);
+
+if (settings.publicDashboard) {
+  createPublicServer(app).listen(PUBLIC_DOOR_PORT, '127.0.0.1', () => {
+    console.log('Public dashboard door ready (reached only through this add-on\'s Tailscale Funnel)');
+    publicAccess.start();
+  });
+}
