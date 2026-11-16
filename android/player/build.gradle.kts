@@ -13,8 +13,8 @@ android {
         applicationId = "com.kiosk.player"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.9.2"
+        versionCode = 9
+        versionName = "0.10.0"
     }
 
     signingConfigs {

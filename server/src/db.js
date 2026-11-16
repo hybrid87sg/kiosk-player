@@ -152,6 +152,13 @@ function openDatabase(dataDir) {
   // Playlists belong to a location (see the playlists table's "auto" column below).
   addColumnIfMissing(db, 'playlists', 'location_id', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'flipped', 'INTEGER'); // 1 = a landscape screen mounted upside down
+  // 0.10.0: a Windows "Kiosk Browser" (kind 'browser'): shows signage when idle and a web page on touch.
+  addColumnIfMissing(db, 'devices', 'kind', 'TEXT'); // null = a TV running Kiosk Player
+  addColumnIfMissing(db, 'devices', 'kiosk_url', 'TEXT'); // the page customers use
+  addColumnIfMissing(db, 'devices', 'kiosk_idle_seconds', 'INTEGER'); // back to signage after this long untouched
+  addColumnIfMissing(db, 'devices', 'kiosk_allowed_hosts', 'TEXT'); // JSON: other websites customers may open
+  addColumnIfMissing(db, 'devices', 'kiosk_pin_hash', 'TEXT'); // staff PIN, as sha256(salt:pin)
+  addColumnIfMissing(db, 'devices', 'kiosk_pin_salt', 'TEXT');
   // Playlists belong to a site. Each site has two automatic ones (auto = 1), Landscape
   // and Portrait; a screen with no playlist of its own plays the one that fits it.
   // site is empty ('') for this server's own site, and NULL for a playlist from before
