@@ -46,5 +46,51 @@ class PlayerSettings(context: Context) {
         get() = prefs.getBoolean("keep_in_front", true)
         set(value) = prefs.edit().putBoolean("keep_in_front", value).apply()
 
+    /**
+     * "Leave for 15 minutes" ends at this time (unix ms). Saved, so a player
+     * that Android closed and the watchdog reopened still leaves staff alone.
+     */
+    var pausedUntil: Long
+        get() = prefs.getLong("paused_until", 0L)
+        set(value) = prefs.edit().putLong("paused_until", value).apply()
+
+    /** Why the app last closed without being asked to, e.g. "Android closed it to free memory". */
+    val lastRestartReason: String? get() = prefs.getString("restart_reason", null)
+    val lastRestartAt: Long? get() = prefs.getLong("restart_at", 0L).takeIf { it > 0 }
+
+    fun noteRestart(reason: String, at: Long) {
+        prefs.edit().putString("restart_reason", reason.take(300)).putLong("restart_at", at).apply()
+    }
+
+    /** The newest Android exit record already looked at, so each is reported once. */
+    var exitInfoSeenUntil: Long
+        get() = prefs.getLong("exit_seen_until", 0L)
+        set(value) = prefs.edit().putLong("exit_seen_until", value).apply()
+
+    /**
+     * Written by the crash handler just before the app dies: saved straight
+     * away ([commit]), since the process is about to end.
+     */
+    fun noteCrash(text: String, at: Long) {
+        val recent = prefs.getString("crash_times", "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }
+            .filter { at - it < CRASH_WINDOW_MS }
+        prefs.edit()
+            .putString("crash_text", text.take(300))
+            .putLong("crash_at", at)
+            .putString("crash_times", (recent + at).joinToString(","))
+            .commit()
+    }
+
+    val lastCrashText: String? get() = prefs.getString("crash_text", null)
+    val lastCrashAt: Long get() = prefs.getLong("crash_at", 0L)
+
+    /** How many times the app crashed in the last 10 minutes (to slow down a crash loop). */
+    fun recentCrashes(now: Long): Int =
+        prefs.getString("crash_times", "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }.count { now - it < CRASH_WINDOW_MS }
+
     fun clear() = prefs.edit().clear().apply()
+
+    companion object {
+        const val CRASH_WINDOW_MS = 10 * 60_000L
+    }
 }

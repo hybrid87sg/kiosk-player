@@ -682,6 +682,20 @@ test('playback copies: weak TVs get 1080p, capable ones get 4K, the original sta
   await call('POST', '/api/player/heartbeat', { token: weak.token, json: { playback_error: '' } });
   [device] = (await (await call('GET', '/api/devices', { token: boss })).json()).filter((d) => d.name === '720 box');
   assert.equal(device.playback_error, null);
+  assert.equal(device.last_restart, null);
+
+  // The TV's app closed by itself and reopened: shown for a week.
+  const closedAt = Date.now() - 60_000;
+  await call('POST', '/api/player/heartbeat', { token: weak.token, json: { last_restart_reason: 'Android closed it to free memory', last_restart_at: closedAt } });
+  [device] = (await (await call('GET', '/api/devices', { token: boss })).json()).filter((d) => d.name === '720 box');
+  assert.deepEqual(device.last_restart, { reason: 'Android closed it to free memory', at: closedAt });
+  // A heartbeat without it keeps the note; an old one isn't shown.
+  await call('POST', '/api/player/heartbeat', { token: weak.token, json: {} });
+  [device] = (await (await call('GET', '/api/devices', { token: boss })).json()).filter((d) => d.name === '720 box');
+  assert.equal(device.last_restart.reason, 'Android closed it to free memory');
+  await call('POST', '/api/player/heartbeat', { token: weak.token, json: { last_restart_reason: 'The app crashed', last_restart_at: Date.now() - 8 * 24 * 3600_000 } });
+  [device] = (await (await call('GET', '/api/devices', { token: boss })).json()).filter((d) => d.name === '720 box');
+  assert.equal(device.last_restart, null);
 
   await call('DELETE', `/api/media/${video.id}`, { token: boss });
   assert.equal(fs.readdirSync(dir).length, 0);

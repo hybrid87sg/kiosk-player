@@ -336,6 +336,16 @@ private fun DeviceCard(d: Device, onEdit: () -> Unit, onRemove: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            d.lastRestart?.let {
+                val ago = android.text.format.DateUtils.getRelativeTimeSpanString(it.at).toString().lowercase()
+                Text(
+                    "Closed by itself $ago and reopened: ${it.reason}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Row {
                 TextButton(onClick = onEdit, modifier = Modifier.heightIn(min = 48.dp)) { Text("Edit") }
                 TextButton(onClick = onRemove, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove", color = MaterialTheme.colorScheme.error) }

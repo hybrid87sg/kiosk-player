@@ -195,6 +195,8 @@ data class Device(
     @SerialName("after_hours") val afterHours: String? = null,
     /** Last playback failure reported by the TV, if it is still failing. */
     @SerialName("playback_error") val playbackError: String? = null,
+    /** When the TV's app last closed by itself (and reopened), if in the past week. */
+    @SerialName("last_restart") val lastRestart: LastRestart? = null,
     /** What the TV said it can decode, from its last heartbeat. */
     val decoders: DeviceCapabilities? = null,
     /** A landscape screen mounted upside down. Use [mounting] to read it. */
@@ -313,3 +315,7 @@ data class PlayerPlaylist(
 /** Opening and closing time on one day, e.g. "08:00" and "18:00". */
 @Serializable
 data class DayHours(val open: String, val close: String)
+
+/** The TV's app closed without being asked to (crash, out of memory…) and reopened. */
+@Serializable
+data class LastRestart(val reason: String, val at: Long)

@@ -35,6 +35,7 @@ interface PlayerRepository {
         afterHours: String? = null,
         decoders: DeviceCapabilities? = null,
         playbackError: String? = null,
+        lastRestart: Pair<String, Long>? = null,
     ): String?
 }
 
@@ -65,10 +66,12 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
         afterHours: String?,
         decoders: DeviceCapabilities?,
         playbackError: String?,
+        lastRestart: Pair<String, Long>?,
     ): String? = apiCall {
         api.heartbeat(HeartbeatBody(
             currentMediaId, freeBytes, appVersion, download?.first, download?.second,
             timeZone = timeZone, afterHours = afterHours, decoders = decoders, playbackError = playbackError,
+            lastRestartReason = lastRestart?.first, lastRestartAt = lastRestart?.second,
         ))
     }.version
 }

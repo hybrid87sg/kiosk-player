@@ -22,11 +22,37 @@ object KeepInFront {
     private val handler = Handler(Looper.getMainLooper())
     private var pending: Runnable? = null
 
-    /** "Leave for 15 minutes" sets this, so staff can use the TV box's settings. */
+    /**
+     * "Leave for 15 minutes" sets this, so staff can use the TV box's settings.
+     * Kept in [PlayerSettings] too, so it survives the app being closed.
+     */
     @Volatile var pausedUntil = 0L
         private set
 
+    /** True while the player is on screen. Starts false in a fresh process. */
+    @Volatile var onScreen = false
+
+    /** When the player last left the screen (0 in a fresh process). */
+    @Volatile var leftAt = 0L
+
+    /** Reads the saved pause once, when the app starts. */
+    fun load(context: Context) {
+        pausedUntil = PlayerSettings(context).pausedUntil
+    }
+
     fun hasPermission(context: Context): Boolean = Settings.canDrawOverlays(context)
+
+    /** Whether the player should be brought back now (on, allowed, not paused). */
+    fun shouldReturn(context: Context): Boolean =
+        System.currentTimeMillis() >= pausedUntil && PlayerSettings(context).keepInFront && hasPermission(context)
+
+    /** Opens the player (from the background: needs "Display over other apps"). */
+    fun bringBack(context: Context) {
+        context.startActivity(
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+        )
+    }
 
     /** Called when the player goes to the background. */
     fun scheduleReturn(context: Context) {
@@ -37,11 +63,8 @@ object KeepInFront {
             pending = null
             if (System.currentTimeMillis() < pausedUntil) {
                 scheduleReturn(app) // still paused: check again later
-            } else if (PlayerSettings(app).keepInFront && hasPermission(app)) {
-                app.startActivity(
-                    Intent(app, MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
-                )
+            } else if (shouldReturn(app)) {
+                bringBack(app)
             }
         }
         pending = task
@@ -54,12 +77,22 @@ object KeepInFront {
         pending = null
     }
 
-    fun pauseFor(minutes: Int) {
+    fun pauseFor(context: Context, minutes: Int) {
         pausedUntil = System.currentTimeMillis() + minutes * 60_000L
+        PlayerSettings(context).pausedUntil = pausedUntil
     }
 
-    fun resume() {
+    fun resume(context: Context) {
         pausedUntil = 0L
+        PlayerSettings(context).pausedUntil = 0L
+    }
+
+    /** Opens the TV box's own settings (for staff, during "Leave for 15 minutes"). */
+    fun openTvSettings(activity: Activity): Boolean = try {
+        activity.startActivity(Intent(Settings.ACTION_SETTINGS))
+        true
+    } catch (e: ActivityNotFoundException) {
+        false
     }
 
     /**
