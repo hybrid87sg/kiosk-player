@@ -6,6 +6,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -64,6 +66,7 @@ import com.kiosk.core.model.Mounting
 import com.kiosk.core.player.FoundServer
 import com.kiosk.player.BuildConfig
 import com.kiosk.player.AfterHours
+import com.kiosk.player.HomeScreen
 import com.kiosk.player.KeepInFront
 import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
@@ -315,7 +318,8 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.background(Ink, RoundedCornerShape(28.dp)).padding(48.dp).widthIn(max = 900.dp),
+            Modifier.padding(vertical = 24.dp).background(Ink, RoundedCornerShape(28.dp))
+                .verticalScroll(rememberScrollState()).padding(48.dp).widthIn(max = 900.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
             Text("Settings", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
@@ -325,6 +329,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             )
             Text("Kiosk Player ${BuildConfig.VERSION_NAME}", fontSize = 20.sp, color = Muted)
             KeepInFrontSection()
+            HomeScreenSection()
             AfterHoursSection()
             if (vm.isDemo) {
                 Text("Demo: how this screen is mounted", fontSize = 22.sp, color = Muted)
@@ -378,7 +383,7 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
                 !granted -> "Needs the “Display over other apps” permission, so the player can reopen itself after a restart or when someone leaves it."
                 !enabled -> "Off"
                 paused -> "Paused for 15 minutes"
-                else -> "On · returns 30 seconds after someone leaves the app"
+                else -> "On · returns 30 seconds after someone leaves the app, and reopens within a minute if Android closes it"
             },
             fontSize = 20.sp,
             color = if (!granted) Warning else Muted,
@@ -386,7 +391,7 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             if (!granted) {
                 TvButton("Allow display over other apps", {
-                    KeepInFront.pauseFor(3) // don't jump back while the permission screen is open
+                    KeepInFront.pauseFor(context, 3) // don't jump back while the permission screen is open
                     val activity = context as? Activity
                     if (activity == null || !KeepInFront.openPermissionScreen(activity)) showAdb = true
                 }, primary = true)
@@ -397,15 +402,81 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
                 })
                 if (enabled) {
                     TvButton(if (paused) "Resume now" else "Leave for 15 minutes", {
-                        if (paused) KeepInFront.resume() else KeepInFront.pauseFor(15)
+                        if (paused) KeepInFront.resume(context) else KeepInFront.pauseFor(context, 15)
                         paused = !paused
                     })
+                }
+                if (!enabled || paused) {
+                    TvButton("Open TV settings", { (context as? Activity)?.let(KeepInFront::openTvSettings) })
                 }
             }
         }
         if (showAdb) {
             Text(
                 "This TV box hides that setting. From a computer on the same network, run:\n${KeepInFront.ADB_COMMAND}",
+                fontSize = 18.sp, color = Warning,
+            )
+        }
+        LastRestartNote(settings)
+    }
+}
+
+/** "Last closed by itself": why Android last closed the player, if it did in the past week. */
+@Composable
+private fun LastRestartNote(settings: PlayerSettings) {
+    val at = settings.lastRestartAt ?: return
+    val reason = settings.lastRestartReason ?: return
+    if (System.currentTimeMillis() - at > 7 * 24 * 3_600_000L) return
+    val time = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(at))
+    Text("Last closed by itself: $time · $reason. It reopened automatically.", fontSize = 18.sp, color = Muted)
+}
+
+/**
+ * Optional: the player as this TV box's home screen. Android always reopens
+ * its home screen, even after a cleaner app force-stops it.
+ */
+@Composable
+private fun HomeScreenSection(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var offered by remember { mutableStateOf(HomeScreen.isOffered(context)) }
+    var isDefault by remember { mutableStateOf(HomeScreen.isDefault(context)) }
+    var showAdb by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        offered = HomeScreen.isOffered(context)
+        isDefault = HomeScreen.isDefault(context)
+        onPauseOrDispose { }
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Use as this TV's home screen", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text(
+            when {
+                isDefault -> "On · Android reopens the player whatever closes it. The Home button also leads here: use Leave for 15 minutes, then Open TV settings."
+                offered -> "Not chosen yet. Pick Kiosk Player as the home screen (choose Always), or run the command below."
+                else -> "Off · the strongest protection against the player being closed, for TV boxes with a cleaner app."
+            },
+            fontSize = 20.sp,
+            color = if (offered && !isDefault) Warning else Muted,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (!isDefault) {
+                TvButton(if (offered) "Choose home screen again" else "Make it the home screen", {
+                    val activity = context as? Activity
+                    offered = true
+                    if (activity == null || !HomeScreen.offer(activity)) showAdb = true
+                })
+            }
+            if (offered || isDefault) {
+                TvButton("Stop being the home screen", {
+                    HomeScreen.stop(context)
+                    offered = false
+                    isDefault = HomeScreen.isDefault(context)
+                    showAdb = false
+                })
+            }
+        }
+        if (showAdb || (offered && !isDefault)) {
+            Text(
+                "If the TV doesn't ask, from a computer on the same network run:\n${HomeScreen.ADB_COMMAND}",
                 fontSize = 18.sp, color = Warning,
             )
         }
@@ -443,7 +514,7 @@ private fun AfterHoursSection(modifier: Modifier = Modifier) {
         )
         if (!allowed) {
             TvButton("Allow turning the screen off", {
-                KeepInFront.pauseFor(3) // don't jump back while Android's screen is open
+                KeepInFront.pauseFor(context, 3) // don't jump back while Android's screen is open
                 val activity = context as? Activity
                 if (activity == null || !AfterHours.openPermissionScreen(activity)) showAdb = true
             })

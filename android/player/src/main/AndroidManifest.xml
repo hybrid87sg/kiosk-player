@@ -10,12 +10,16 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- To switch the screen back on at opening time (see AfterHours.kt). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Runs as a media app, so Android doesn't close it to free memory (see KeepAliveService.kt). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <!-- An Android TV app: no touch screen needed, and it shows up on the TV home screen. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
+        android:name=".KioskPlayerApp"
         android:allowBackup="false"
         android:banner="@drawable/banner"
         android:icon="@mipmap/ic_launcher"
@@ -36,6 +40,30 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Optional: the player as the TV box's home screen (see HomeScreen.kt). Off until turned on. -->
+        <activity-alias
+            android:name=".HomeScreen"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Keeps the player counted as a media app (see KeepAliveService.kt). -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- Reopens the player if it was closed (see Watchdog.kt). -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="false" />
 
         <!-- "Allow Kiosk Player to turn the screen off": for after hours (AfterHours.kt). -->
         <receiver

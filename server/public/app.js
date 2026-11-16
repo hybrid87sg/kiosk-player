@@ -548,6 +548,8 @@ function screenCard(d, playlists, devices, redraw) {
     el('div', { class: 'row meta' }, shapeIcon(mount.shape), `${mount.label} · ${d.playlist_name ? `${d.playlist_name}${d.playlist_auto ? ' (automatic)' : ''}` : 'No playlist'}`),
     el('div', {}, d.current_filename ? `Now playing: ${d.current_filename}` : 'Waiting for content'),
     d.playback_error ? el('div', { class: 'error' }, d.playback_error) : null,
+    d.last_restart ? el('div', { class: 'warn', title: new Date(d.last_restart.at).toLocaleString() },
+      `Closed by itself ${timeAgo(d.last_restart.at)} and reopened: ${d.last_restart.reason}`) : null,
     d.decoders && d.decoders.display_width ? el('div', { class: 'meta' },
       `Screen ${d.decoders.display_width}×${d.decoders.display_height}`
       + (d.decoders.h264_level ? ` · H.264 level ${d.decoders.h264_level === 9 ? '1b' : (d.decoders.h264_level / 10).toFixed(1)}` : '')

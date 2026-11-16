@@ -37,6 +37,8 @@ const DEVICE_ORIENTATIONS = ['landscape', 'portrait_right', 'portrait_left'];
 
 // A player counts as "online" if it sent a heartbeat in the last 2 minutes.
 const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+// A TV's "closed by itself" note shows for a week after it happened.
+const RESTART_SHOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
 // A TV is "waiting to be added" while it asked for its code in the last 10
 // minutes. One that never gets added is forgotten after a day.
@@ -1076,6 +1078,9 @@ function createApp({
       open_now: isOpenAt(hoursOf(loc), Date.now(), d.time_zone || serverTimeZone),
       after_hours: d.after_hours || 'black',
       playback_error: d.playback_error || null,
+      // The TV's app closed by itself in the past week (and reopened): why and when.
+      last_restart: d.restart_reason && d.restart_at && Date.now() - d.restart_at < RESTART_SHOWN_MS
+        ? { reason: d.restart_reason, at: d.restart_at } : null,
       decoders: deviceCaps(d),
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
@@ -1669,6 +1674,11 @@ function createApp({
       sets.push('playback_error = ?');
       params.push(playbackError);
     }
+    if (typeof body.last_restart_reason === 'string' && body.last_restart_reason.trim()
+      && Number.isSafeInteger(body.last_restart_at) && body.last_restart_at > 0) {
+      sets.push('restart_reason = ?', 'restart_at = ?');
+      params.push(body.last_restart_reason.trim().slice(0, 300), body.last_restart_at);
+    }
     params.push(req.device.id);
     db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...params);
     noteRelayOf(req, req.device.id);
@@ -1874,7 +1884,7 @@ function createApp({
     const RELAY_PLAYER_FIELDS = [
       'id', 'name', 'location', 'location_id', 'orientation', 'flipped', 'online', 'last_seen', 'current_media_id',
       'current_filename', 'playlist_id', 'playlist_name', 'playlist_auto', 'playing_playlist_id', 'app_version', 'model',
-      'free_bytes', 'open_now', 'after_hours', 'hours_summary', 'playback_error', 'download',
+      'free_bytes', 'open_now', 'after_hours', 'hours_summary', 'playback_error', 'last_restart', 'download',
     ];
     const relayPlayerView = (d) => {
       const full = deviceView(d);

@@ -36,11 +36,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        KeepInFront.onScreen = true
         KeepInFront.cancel() // we're on screen again
+        // Asks Android to treat the player like a media app, so it isn't closed to free memory.
+        KeepAliveService.start(this)
     }
 
     override fun onStop() {
         super.onStop()
+        KeepInFront.onScreen = false
+        KeepInFront.leftAt = System.currentTimeMillis()
         // Someone pressed Home or opened another app: come back in a moment.
         if (!isChangingConfigurations) KeepInFront.scheduleReturn(this)
     }

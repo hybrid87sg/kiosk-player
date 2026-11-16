@@ -126,6 +126,9 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'download_total', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'decoder_caps', 'TEXT'); // JSON: screen size and what the TV can decode
   addColumnIfMissing(db, 'devices', 'playback_error', 'TEXT');
+  // When the TV's app last closed by itself (crash, out of memory…) and reopened, and why.
+  addColumnIfMissing(db, 'devices', 'restart_reason', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'restart_at', 'INTEGER'); // unix ms
   addColumnIfMissing(db, 'playlist_items', 'start_at', 'INTEGER');
   addColumnIfMissing(db, 'playlist_items', 'end_at', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'model', 'TEXT'); // e.g. "Xiaomi MIBOX4", shown while waiting to be added

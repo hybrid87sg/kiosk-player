@@ -202,6 +202,19 @@ flowchart TB
    - If your TV box hides that menu, run this from a computer instead:
      `adb shell appops set com.kiosk.player SYSTEM_ALERT_WINDOW allow`
 
+   The same permission lets it **reopen itself if Android closes it** (a crash, or the box running out of
+   memory): it checks about once a minute, and is back within a minute or so. It also runs as a media app,
+   so Android is less likely to close it in the first place. When it does happen, the screen's card on the
+   dashboard says **Closed by itself … and reopened**, with the reason, for a week.
+
+   **Optional: make it the TV's home screen.** Some TV boxes have a "memory cleaner" or "auto-close apps"
+   feature that force-stops apps; nothing comes back from that except the home screen app. In Kiosk Player's
+   **Settings**, choose **Make it the home screen** and pick Kiosk Player (**Always**). If the TV doesn't
+   ask, run `adb shell cmd package set-home-activity com.kiosk.player/.HomeScreen` from a computer. The
+   Home button then also leads back to the player: to reach the box's own settings, use **Leave for 15
+   minutes**, then **Open TV settings**. **Stop being the home screen** undoes it. Better still, switch the
+   cleaner off in the box's settings if it lets you.
+
    **Optional: let it switch the screen off after hours.** In Kiosk Player's **Settings**, choose
    **Allow turning the screen off** and confirm. Outside the location's working hours the player then puts
    the TV into standby where it can, and wakes it at opening time (see
@@ -491,6 +504,7 @@ same way, connect with Tailscale, and sign in.
 | HACS: "Repository not found" for kiosk-player-ha | Type it exactly: `https://github.com/hybrid87sg/kiosk-player-ha`, category **Integration**. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
+| Screen card says **Closed by itself … and reopened** | The reason is shown with it. *Free memory* or *ran out of memory*: the box is short of memory, so close other apps on it or use smaller videos. *Force-stopped*: a cleaner app on the box closed it; switch that off, or make Kiosk Player the home screen (Part 6, step 2). *Crashed*: send us the text. |
 
 ---
 

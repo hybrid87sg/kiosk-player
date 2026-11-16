@@ -104,6 +104,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Why the app last closed by itself (see Watchdog), for the dashboard. */
+    private fun lastRestart(): Pair<String, Long>? {
+        val reason = settings.lastRestartReason ?: return null
+        val at = settings.lastRestartAt ?: return null
+        return reason to at
+    }
+
     private suspend fun deviceCapabilities(): DeviceCapabilities {
         val known = capabilities ?: withContext(Dispatchers.Default) {
             runCatching { DeviceCapabilitiesReader.read(getApplication()) }.getOrDefault(DeviceCapabilities())
@@ -215,7 +222,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         reportStatus = {
             repo.heartbeat(
                 currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
-                decoders = deviceCapabilities(), playbackError = playbackError.orEmpty(),
+                decoders = deviceCapabilities(), playbackError = playbackError.orEmpty(), lastRestart = lastRestart(),
             )
         }
 
@@ -254,7 +261,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 repo.heartbeat(
                     currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
                     timeZone = ZoneId.systemDefault().id, afterHours = AfterHours.mode(getApplication()),
-                    decoders = latestCaps, playbackError = playbackError.orEmpty(),
+                    decoders = latestCaps, playbackError = playbackError.orEmpty(), lastRestart = lastRestart(),
                 )
                 unreachableSince = null
             } catch (e: ApiException) {
@@ -338,7 +345,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     try {
                         repo.heartbeat(
                             currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME, done to total,
-                            decoders = caps, playbackError = playbackError.orEmpty(),
+                            decoders = caps, playbackError = playbackError.orEmpty(), lastRestart = lastRestart(),
                         )
                     } catch (e: CancellationException) {
                         throw e

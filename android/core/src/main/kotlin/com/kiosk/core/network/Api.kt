@@ -155,6 +155,9 @@ internal data class HeartbeatBody(
     val decoders: DeviceCapabilities? = null,
     /** Empty string clears a previous error. Omitted when the app doesn't know. */
     @SerialName("playback_error") val playbackError: String? = null,
+    /** Why the app last closed without being asked to (crash, out of memory…), and when (unix ms). */
+    @SerialName("last_restart_reason") val lastRestartReason: String? = null,
+    @SerialName("last_restart_at") val lastRestartAt: Long? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)
