@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
 
@@ -85,23 +86,30 @@ class ContentSync(
             if (part.length() > 0) header("Range", "bytes=${part.length()}-")
         }.build()
 
-        client.newCall(request).execute().use { response ->
-            if (response.code == 416) { part.delete(); throw DownloadException("${item.filename}: starting again") }
-            if (!response.isSuccessful) throw DownloadException("${item.filename}: server answered ${response.code}")
-            // 206 means "here is the rest"; 200 means the whole file, so start over.
-            val append = response.code == 206
-            val body = response.body ?: throw DownloadException("${item.filename}: empty reply")
-            FileOutputStream(part, append).use { out ->
-                body.byteStream().use { input ->
-                    val buffer = ByteArray(256 * 1024)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        out.write(buffer, 0, read)
+        // A dropped connection (Wi-Fi blip, the relay or server restarting) is an ordinary
+        // download problem: the part already saved stays, and the next try resumes it.
+        // Left as a raw IOException it would escape the player's loop and close the app.
+        try {
+            client.newCall(request).execute().use { response ->
+                if (response.code == 416) { part.delete(); throw DownloadException("${item.filename}: starting again") }
+                if (!response.isSuccessful) throw DownloadException("${item.filename}: server answered ${response.code}")
+                // 206 means "here is the rest"; 200 means the whole file, so start over.
+                val append = response.code == 206
+                val body = response.body ?: throw DownloadException("${item.filename}: empty reply")
+                FileOutputStream(part, append).use { out ->
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(256 * 1024)
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            out.write(buffer, 0, read)
+                        }
                     }
                 }
             }
+        } catch (e: IOException) {
+            throw DownloadException("${item.filename}: connection lost, will resume")
         }
 
         if (part.length() != item.size) throw DownloadException("${item.filename}: incomplete, will resume")

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kiosk.core.model.DeviceCapabilities
@@ -299,6 +300,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     else -> current
                 }
                 wait = 15_000
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Anything unexpected (an odd reply, a storage hiccup): keep playing what's on the
+                // box and try again shortly. Letting it escape would close the app to the TV's home screen.
+                Log.w("KioskPlayer", "Unexpected problem, retrying", e)
+                offline("Something went wrong (${e.javaClass.simpleName}). Retrying…")
+                wait = 15_000
             }
             // Working hours (from the last playlist, so they hold even while offline).
             wait = minOf(wait, applyHours(settings.cachedPlaylist?.hours) { settings.cachedPlaylist?.let { show(it, sync) } })
@@ -329,6 +338,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     _ui.value = lastCode?.copy(problem = e.message)
                         ?: PlayerUi.Waiting(null, "Can't reach the server", "${e.message}\nServer: ${settings.serverUrl}")
                 }
+                delay(10_000)
+                continue
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("KioskPlayer", "Unexpected problem while waiting to be added, retrying", e)
                 delay(10_000)
                 continue
             }
