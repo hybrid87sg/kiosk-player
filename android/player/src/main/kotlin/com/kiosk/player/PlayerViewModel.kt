@@ -296,7 +296,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 val current = _ui.value
                 _ui.value = when (current) {
                     is PlayerUi.Playing -> current.copy(badge = text)
-                    is PlayerUi.Waiting -> current.copy(detail = text)
+                    // Waiting for its first files: say which file and why, so it can be read off the screen.
+                    is PlayerUi.Waiting -> current.copy(detail = e.message?.let { "$text\n$it" } ?: text)
                     else -> current
                 }
                 wait = 15_000

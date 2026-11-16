@@ -30,6 +30,9 @@ const TOKEN_CHECK_MS = 5 * 60 * 1000;
 const KEEP_UNUSED_MS = 24 * 60 * 60 * 1000;
 // A TV counts as "seen" for the status page if it asked something recently.
 const SEEN_WINDOW_MS = 10 * 60 * 1000;
+// A playback copy's name, as the main server gives it in a playlist (e.g. h264_1080).
+const RENDITION = /^[a-z0-9_]{1,32}$/;
+const mediaKey = (id, rendition) => (rendition ? `${id}?rendition=${rendition}` : String(id));
 // How often the relay tells the main server it is alive, and retries a pairing that couldn't reach it.
 const HEARTBEAT_MS = 30 * 1000;
 
@@ -89,7 +92,14 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
     // first start
   }
   state.server_id ||= crypto.randomUUID();
-  state.media ||= {}; // media id -> { id, md5, size, filename, seen }
+  // The files TVs here may ask for, by what they ask for: "5" (the original) or
+  // "5?rendition=h264_1080" (a playback copy). Before 0.9.2 the list was by number only,
+  // which mixed a copy up with its original, so an older list is started afresh.
+  if (state.media_version !== 2) {
+    state.media = {};
+    state.media_version = 2;
+  }
+  state.media ||= {}; // key -> { id, rendition, md5, size, filename, seen }
   const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
   save();
 
@@ -286,9 +296,12 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
       return;
     }
     const now = Date.now();
-    for (const item of playlist.items || []) {
+    for (const item of [...(playlist.items || []), ...(playlist.upcoming || [])]) {
       if (!item.id || !item.md5) continue;
-      state.media[item.id] = { id: item.id, md5: item.md5, size: item.size, filename: item.filename, seen: now };
+      const rendition = typeof item.rendition === 'string' && RENDITION.test(item.rendition) ? item.rendition : null;
+      state.media[mediaKey(item.id, rendition)] = {
+        id: item.id, rendition, md5: item.md5, size: item.size, filename: item.filename, seen: now,
+      };
     }
     save();
   }
@@ -321,7 +334,7 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
     const key = `${media.id}-${media.md5}`;
     if (backgroundDownloads.has(key)) return backgroundDownloads.get(key);
     const job = (async () => {
-      const reply = await fetch(`${main}/media/${media.id}`, { headers: { authorization, ...siteHeaders() } });
+      const reply = await fetch(`${main}/media/${mediaKey(media.id, media.rendition)}`, { headers: { authorization, ...siteHeaders() } });
       if (reply.status !== 200) throw new Error(`main server answered ${reply.status}`);
       const recorder = cache.startRecording(media);
       try {
@@ -347,8 +360,17 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
     if (ok === false) return res.status(401).json({ error: 'Unknown device' });
     if (ok === null) return res.status(502).json({ error: `Can't reach the main Kiosk server (${main})` });
 
-    const media = state.media[req.params.id];
-    const mime = media && MIME_BY_EXT[path.extname(media.filename || '').toLowerCase()];
+    // The original (/media/5) or a playback copy (/media/5?rendition=h264_1080): both are
+    // asked of the main server exactly as the TV asked, and kept apart here.
+    if (!/^\d+$/.test(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    let rendition = null;
+    if (req.query.rendition !== undefined) {
+      if (typeof req.query.rendition !== 'string' || !RENDITION.test(req.query.rendition)) return res.status(404).json({ error: 'Unknown rendition' });
+      rendition = req.query.rendition;
+    }
+    const key = mediaKey(req.params.id, rendition);
+    const media = state.media[key];
+    const mime = rendition ? 'video/mp4' : media && MIME_BY_EXT[path.extname(media.filename || '').toLowerCase()];
     if (media && cache.has(media)) {
       return res.sendFile(cache.pathFor(media), { headers: mime ? { 'Content-Type': mime } : {} });
     }
@@ -356,7 +378,7 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
     let reply;
     const range = req.get('range');
     try {
-      reply = await fetch(`${main}/media/${req.params.id}`, {
+      reply = await fetch(`${main}/media/${key}`, {
         headers: { authorization: req.get('authorization'), ...siteHeaders(), ...(range ? { range } : {}) },
       });
     } catch (err) {
@@ -386,7 +408,7 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
   // Copies that no TV has needed for a week are deleted.
   function prune() {
     const now = Date.now();
-    for (const [id, m] of Object.entries(state.media)) if (now - m.seen > KEEP_UNUSED_MS) delete state.media[id];
+    for (const [key, m] of Object.entries(state.media)) if (now - m.seen > KEEP_UNUSED_MS) delete state.media[key];
     save();
     cache.prune(Object.values(state.media));
   }

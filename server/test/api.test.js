@@ -752,6 +752,77 @@ test('new TVs wait on a list, so they can be added without typing their code', a
   assert.equal((await call('GET', '/api/player/status', { token: old.token })).status, 401);
 });
 
+// A TV behind a relay asked for a playback copy (/media/5?rendition=…) and got the original:
+// the relay passed on /media/5 only. Wrong size and fingerprint, so the TV threw it away and
+// tried again forever ("Download problem, retrying…").
+test('playback copies reach TVs behind a relay, and the relay keeps the copy apart from the original', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-renditions-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const probe = {
+    video: { codec: 'hevc', profile: 'Main 10', level: 153, width: 3840, height: 2160, pixFmt: 'yuv420p10le', fps: 60, variableFrameRate: false },
+    audio: { codec: 'ac3', channels: 6, profile: null },
+  };
+  const { call, signIn, upload, google, base } = await startServer(t, {
+    siteName: 'Head office',
+    transcode: {
+      enabled: true, hevc4k: false, inline: true, dir, probe: async () => probe,
+      run: async (args) => {
+        const output = args[args.length - 1];
+        const profile = output.includes('h264_720') ? 'h264_720' : 'h264_1080';
+        fs.writeFileSync(output, Buffer.from(`rendition:${profile}:`.padEnd(3000, 'x')));
+      },
+    },
+  });
+  const boss = await signIn(BOSS);
+  const bytes = crypto.randomBytes(4000);
+  const video = await (await upload(boss, 'Branch promo.mp4', bytes, 'video/mp4')).json();
+
+  const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-relay-'));
+  const relayApp = createRelay({ mainUrl: base, siteName: 'Orchard branch', dataDir: relayDir, log: () => {}, pruneIntervalMs: 0, heartbeatMs: 0 });
+  const relayServer = await new Promise((resolve) => { const s = relayApp.listen(0, () => resolve(s)); });
+  t.after(async () => {
+    await new Promise((resolve) => relayServer.close(resolve));
+    fs.rmSync(relayDir, { recursive: true, force: true });
+  });
+  const relay = `http://127.0.0.1:${relayServer.address().port}`;
+  const viaRelay = (url, { token, json, headers = {} } = {}) => {
+    if (token) headers.authorization = `Bearer ${token}`;
+    if (json !== undefined) headers['content-type'] = 'application/json';
+    return fetch(relay + url, { method: json !== undefined ? 'POST' : 'GET', headers, body: json !== undefined ? JSON.stringify(json) : undefined });
+  };
+  const md5 = (buf) => crypto.createHash('md5').update(buf).digest('hex');
+
+  const playlist = await (await call('POST', '/api/playlists', { token: boss, json: { name: 'Branch', orientation: 'landscape', location_id: await lobbyId(call, boss) } })).json();
+  await call('PUT', `/api/playlists/${playlist.id}/items`, { token: boss, json: { items: [{ media_id: video.id }] } });
+  const tv = await (await viaRelay('/api/player/register', { json: { model: 'Branch box' } })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'Branch TV', playlist_id: playlist.id } });
+
+  const list = await (await viaRelay('/api/player/playlist', { token: tv.token })).json();
+  const item = list.items[0];
+  assert.equal(item.rendition, 'h264_1080');
+  // Through the relay, the TV gets exactly what the playlist promised: the copy.
+  const first = Buffer.from(await (await viaRelay(item.url, { token: tv.token })).arrayBuffer());
+  assert.equal(first.length, item.size);
+  assert.equal(md5(first), item.md5);
+  assert.ok(first.toString().startsWith('rendition:h264_1080'));
+  // A resumed download (Range) gets the rest of the copy, too.
+  const rest = await viaRelay(item.url, { token: tv.token, headers: { range: 'bytes=1000-' } });
+  const tail = Buffer.from(await rest.arrayBuffer());
+  assert.ok(tail.equals(first.subarray(1000)));
+  // Once the relay has its own copy, it serves the copy from there, and the original is still
+  // the original (not mixed up with the copy).
+  await relayApp.locals.waitForCopies();
+  const downloads = google.downloadCount();
+  const again = Buffer.from(await (await viaRelay(item.url, { token: tv.token })).arrayBuffer());
+  assert.equal(md5(again), item.md5);
+  const original = Buffer.from(await (await viaRelay(`/media/${video.id}`, { token: tv.token })).arrayBuffer());
+  assert.ok(original.equals(bytes));
+  assert.equal(google.downloadCount(), downloads + 1); // only the original went to Drive
+  // Only a file number and a copy's name are passed on, nothing else.
+  assert.equal((await viaRelay('/media/1%2F..%2F..%2Fapi%2Fme', { token: tv.token })).status, 404);
+  assert.equal((await viaRelay(`/media/${video.id}?rendition=../../x`, { token: tv.token })).status, 404);
+});
+
 test('another site: TVs reach the main server through a relay that keeps copies of files', async (t) => {
   const { call, signIn, upload, google, base } = await startServer(t, { siteName: 'Head office' });
   const boss = await signIn(BOSS);
