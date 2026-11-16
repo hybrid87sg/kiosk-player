@@ -61,13 +61,22 @@ function bearerToken(req) {
 
 // Finds who is calling: a Home Assistant user (through the sidebar page), or
 // a signed-in session (phone app or web page, by token).
+//
+// On the public address (req.viaPublic, the Funnel door in app.js) only sessions that signed
+// in with Google count: a password session, even a real one, is refused there.
 function sessionLookup(db) {
   const stmt = db.prepare(
-    `SELECT users.id, users.email, users.role FROM sessions
+    `SELECT users.id, users.email, users.role, sessions.method FROM sessions
      JOIN users ON users.id = sessions.user_id
      WHERE sessions.token = ? AND sessions.created_at > ?`
   );
-  return (req) => homeAssistantUser(req) || stmt.get(bearerToken(req), Date.now() - SESSION_MAX_AGE_MS);
+  return (req) => {
+    const ha = homeAssistantUser(req);
+    if (ha) return ha;
+    const session = stmt.get(bearerToken(req), Date.now() - SESSION_MAX_AGE_MS);
+    if (session && req.viaPublic && session.method !== 'google') return undefined;
+    return session;
+  };
 }
 
 // Requests through Home Assistant's sidebar ("ingress") are already signed in

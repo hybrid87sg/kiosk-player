@@ -1,7 +1,8 @@
 // Everything that talks to Google Drive lives here, behind a few small functions.
 // app.js only calls these, so the tests can swap in a fake (test/fake-google.js)
-// and run without a real Google account. (Signing in no longer involves Google.)
+// and run without a real Google account.
 //
+//   verifyIdToken(idToken, clientId) -> { email } checks a "Sign in with Google" token (web dashboard, 0.8.0)
 //   listFolder()                    -> [file]      files in the signage Drive folder
 //   uploadFile(stream, name, mime)  -> file        saves a new file into the folder
 //   downloadStream(fileId, range)   -> { status, headers, stream }
@@ -15,6 +16,7 @@
 const fs = require('node:fs');
 const { Readable } = require('node:stream');
 const { drive: makeDrive, auth: googleAuth } = require('@googleapis/drive');
+const { OAuth2Client } = require('google-auth-library');
 
 const FILE_FIELDS = 'id, name, mimeType, size, md5Checksum, imageMediaMetadata(width, height, rotation), videoMediaMetadata(width, height)';
 
@@ -134,7 +136,19 @@ function createGoogle({ serviceAccountFile, serviceAccountKey = null, folderId }
     await drive.files.update({ fileId, requestBody: { trashed: true }, supportsAllDrives: true });
   }
 
+  // "Sign in with Google" on the web dashboard. Checks Google's signature, that the token
+  // hasn't expired, and that it was made for this Kiosk's own web client (clientId).
+  const signInChecker = new OAuth2Client();
+  async function verifyIdToken(idToken, clientId) {
+    if (!clientId) throw new Error('Google sign-in isn\'t set up');
+    const ticket = await signInChecker.verifyIdToken({ idToken, audience: clientId });
+    const payload = ticket.getPayload() || {};
+    if (!payload.email || !payload.email_verified) throw new Error('That Google account has no verified email');
+    return { email: payload.email };
+  }
+
   return {
+    verifyIdToken,
     listFolder,
     uploadFile,
     downloadStream,

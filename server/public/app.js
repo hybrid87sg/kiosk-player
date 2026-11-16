@@ -301,7 +301,51 @@ async function boot() {
   }
 }
 
+// The public address (the add-on's Tailscale Funnel) signs in with Google only. Google's own
+// button comes from accounts.google.com and hands back a signed token, which the server checks.
+function loadGoogleButton() {
+  if (window.google && window.google.accounts) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const script = el('script', { src: 'https://accounts.google.com/gsi/client', async: true });
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Couldn’t load Google’s sign-in button. Check the internet connection and try again.'));
+    document.head.append(script);
+  });
+}
+
+function renderGoogleSignIn() {
+  clearInterval(pageTimer);
+  const problem = el('div', { class: 'error', role: 'alert' });
+  const holder = el('div', { style: 'display:flex;justify-content:center;min-height:44px' });
+  fill(app, el('div', { class: 'signin' },
+    el('div', { class: 'brand-mark' }, icon('screens', 36)),
+    el('h1', {}, 'Kiosk Signage'),
+    el('p', { class: 'sub' }, 'Manage what plays on your screens.'),
+    el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:14px;text-align:left' },
+      config.web_google_client_id
+        ? [holder, problem,
+          el('p', { class: 'meta', style: 'margin:0' }, 'Use the Google account that whoever runs Kiosk linked to your user. Passwords work only at home or over Tailscale.')]
+        : el('p', { class: 'note', style: 'margin:0' }, 'Google sign-in isn’t set up yet. Whoever runs Kiosk can set it up under Settings → Public dashboard.'))));
+  if (!config.web_google_client_id) return;
+  loadGoogleButton().then(() => {
+    window.google.accounts.id.initialize({
+      client_id: config.web_google_client_id,
+      callback: async ({ credential }) => {
+        problem.textContent = '';
+        try {
+          const result = await api('POST', 'api/auth/google', { credential });
+          setToken(result.token);
+          me = { username: result.username, email: result.username, role: result.role };
+          renderShell();
+        } catch (err) { problem.textContent = err.message; }
+      },
+    });
+    window.google.accounts.id.renderButton(holder, { theme: 'outline', size: 'large', text: 'signin_with', shape: 'pill' });
+  }).catch((err) => { problem.textContent = err.message; });
+}
+
 function renderSignIn() {
+  if (config.public) return renderGoogleSignIn();
   clearInterval(pageTimer);
   const username = el('input', { type: 'text', id: 'signin-username', autocomplete: 'username', autocapitalize: 'none', spellcheck: false, required: true });
   const password = el('input', { type: 'password', id: 'signin-password', autocomplete: 'current-password', required: true });
@@ -1349,6 +1393,31 @@ function resetPasswordDialog(user, onDone) {
   });
 }
 
+/** Link (or unlink) the Google account that may sign in as this user on the public dashboard. */
+function googleAccountDialog(user, onDone) {
+  openDialog((dialog) => {
+    const email = el('input', { type: 'email', id: 'google-email', value: user.google_email || '', placeholder: 'e.g. patrick@gmail.com', autocomplete: 'off', spellcheck: false });
+    const problem = el('div', { class: 'error', role: 'alert' });
+    const save = async (value) => {
+      try {
+        await api('PATCH', `api/users/${user.id}`, { google_email: value });
+        dialog.close();
+        toast(value ? `${user.username} can sign in with Google as ${value.toLowerCase()}` : `${user.username}’s Google account is unlinked`);
+        onDone?.();
+      } catch (err) { problem.textContent = err.message; }
+    };
+    return el('form', { method: 'dialog', onsubmit: (e) => { e.preventDefault(); save(email.value.trim() || null); } },
+      el('h2', {}, `Google account for ${user.username}`),
+      el('p', { class: 'meta', style: 'margin:0' }, 'On the public dashboard address, people sign in with Google only. Signing in with this Google account gives this user’s role. Their username and password keep working at home and in the phone app.'),
+      el('label', { class: 'field', for: 'google-email' }, 'Google account (email)', email),
+      problem,
+      el('div', { class: 'dialog-actions' },
+        user.google_email ? el('button', { type: 'button', class: 'btn text danger', onclick: () => save(null) }, 'Unlink') : null,
+        el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
+        el('button', { class: 'btn primary' }, 'Save')));
+  });
+}
+
 /** Change your own password. */
 function changeMyPasswordDialog() {
   openDialog((dialog) => {
@@ -1412,12 +1481,14 @@ async function pageUsers(page) {
           const isMe = !me.via_home_assistant && u.username === me.username;
           return el('div', { class: 'list-row' },
             el('div', { class: 'grow' }, el('div', { class: 'name' }, u.username),
-              el('div', { class: 'meta' }, isMe ? `You · ${ROLES[u.role].label}` : (u.has_password ? '' : 'No password yet: set one so they can sign in'))),
+              el('div', { class: 'meta' }, isMe ? `You · ${ROLES[u.role].label}` : (u.has_password ? '' : 'No password yet: set one so they can sign in')),
+              u.google_email ? el('div', { class: 'meta' }, `Google: ${u.google_email}`) : null),
             isMe ? null : el('select', {
               'aria-label': `Role for ${u.username}`,
               onchange: (e) => attempt(async () => { await api('PATCH', `api/users/${u.id}`, { role: e.target.value }); toast(`${u.username} is now ${ROLES[e.target.value].label}`); }),
             }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === u.role }, r.label))),
             el('button', { class: 'btn text small', onclick: () => (isMe ? changeMyPasswordDialog() : resetPasswordDialog(u, draw)) }, isMe ? 'Change password' : 'New password'),
+            el('button', { class: 'btn text small', onclick: () => googleAccountDialog(u, draw) }, u.google_email ? 'Google…' : 'Link Google'),
             isMe ? null : el('button', {
               class: 'btn icon', 'aria-label': `Remove ${u.username}`,
               onclick: () => confirmDialog(`Remove ${u.username}?`, 'They are signed out and can no longer sign in.', 'Remove',
@@ -1430,6 +1501,47 @@ async function pageUsers(page) {
     );
   }
   await attempt(draw);
+}
+
+// ---------- Settings → Public dashboard (0.8.0) ----------
+
+const PUBLIC_STATES = {
+  off: { chip: 'offline', label: 'Off', text: 'Switch on “Public dashboard” in the Kiosk add-on’s Configuration tab (in Home Assistant), with a Tailscale auth key, then restart the add-on.' },
+  unavailable: { chip: 'offline', label: 'Not available', text: 'Available when Kiosk runs as the Home Assistant add-on.' },
+  starting: { chip: 'attention', label: 'Starting', text: 'Tailscale is starting inside the add-on. This takes up to a minute.' },
+  needs_key: { chip: 'attention', label: 'Needs a key', text: null },
+  login_failed: { chip: 'offline', label: 'Key refused', text: null },
+  https_not_enabled: { chip: 'attention', label: 'Needs HTTPS', text: null },
+  funnel_not_allowed: { chip: 'attention', label: 'Needs Funnel', text: null },
+  error: { chip: 'offline', label: 'Problem', text: null },
+  on: { chip: 'online', label: 'On', text: null },
+};
+
+function publicDashboardCard(s, redraw) {
+  const p = s.public_dashboard || { state: 'unavailable' };
+  const st = PUBLIC_STATES[p.state] || PUBLIC_STATES.error;
+  const clientId = el('input', { type: 'text', id: 'google-client-id', value: p.google_web_client_id || '', placeholder: '1234567890-abc123.apps.googleusercontent.com', style: 'font-family:monospace', spellcheck: false });
+  return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
+    el('div', { class: 'row', style: 'justify-content:space-between;align-items:flex-start' },
+      el('h2', { style: 'margin:0' }, 'Public dashboard'),
+      el('span', { class: `chip ${st.chip}` }, st.label)),
+    el('p', { class: 'meta', style: 'margin:0' }, 'This web page on the internet at its own https address, for people away from home and Tailscale. There, people sign in with a Google account you link to their user; passwords work only at home.'),
+    p.state === 'on' && p.url
+      ? el('p', { style: 'margin:0' }, 'Address: ', el('a', { href: p.url, target: '_blank', rel: 'noopener' }, p.url))
+      : el('p', { class: 'note', style: 'margin:0' }, p.message || st.text || ''),
+    p.link ? el('a', { class: 'btn', href: p.link, target: '_blank', rel: 'noopener', style: 'align-self:flex-start' }, 'Open Tailscale to allow it') : null,
+    el('label', { class: 'field', for: 'google-client-id' }, 'Google web client ID', clientId),
+    el('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
+      el('button', {
+        class: 'btn primary',
+        onclick: () => attempt(async () => {
+          await api('PATCH', 'api/settings', { google_web_client_id: clientId.value.trim() || null });
+          toast(clientId.value.trim() ? 'Google sign-in is set up' : 'Google sign-in is off');
+          redraw();
+        }),
+      }, 'Save'),
+      el('a', { class: 'btn text', href: '#/users' }, `Linked Google accounts: ${p.linked_users || 0}`)),
+    el('p', { class: 'meta', style: 'margin:0' }, 'Step by step (Google client, Tailscale key and Funnel): see “Public dashboard” in the README on GitHub.'));
 }
 
 // ---------- Settings → Home Assistant Relays ----------
@@ -1919,11 +2031,13 @@ async function pageSettings(page) {
             : 'The Home Assistants at your other sites: pair them, see if they’re connected, and choose which screens each one controls.')),
         el('span', { class: 'meta', 'aria-hidden': 'true' }, '›')),
 
+      publicDashboardCard(s, draw),
+
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px;margin-top:16px' },
         el('h2', {}, 'Signing in'),
         el('div', {}, `${s.users} ${s.users === 1 ? 'person has' : 'people have'} a username and password. `,
           el('a', { href: '#/users' }, 'Manage users')),
-        el('div', { class: 'meta' }, 'The phone app and this web address both ask for them. Opened from Home Assistant’s sidebar, this page needs no sign-in.'),
+        el('div', { class: 'meta' }, 'The phone app and this web address (at home or over Tailscale) both ask for them. Opened from Home Assistant’s sidebar, this page needs no sign-in. On the public dashboard address, people sign in with a linked Google account instead.'),
         el('div', {}, '✓ ', el('strong', {}, 'Home Assistant sidebar'), ' · Home Assistant admins')),
 
       el('div', { class: 'card', style: 'margin-top:16px' },

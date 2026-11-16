@@ -8,7 +8,8 @@ COPY app/package.json app/package-lock.json ./
 # compiler tools are removed again to keep the add-on small.
 # ffmpeg stays in the image. It makes the 1080p / 720p playback copies.
 # The compiler tools are only needed to build the database library.
-RUN apk add --no-cache ffmpeg \
+# tailscale is for the optional public dashboard (its own Tailscale Funnel, off by default).
+RUN apk add --no-cache ffmpeg tailscale \
  && apk add --no-cache --virtual .build-tools python3 make g++ \
  && npm ci --omit=dev \
  && apk del .build-tools

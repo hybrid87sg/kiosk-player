@@ -36,9 +36,13 @@ function createFakeGoogle() {
   const offline = () => Object.assign(new Error('Drive is unreachable'), { status: 503 });
 
   return {
-    async verifyIdToken(idToken) {
-      if (!idToken.startsWith('valid:')) throw new Error('bad token');
-      return { email: idToken.slice(6) };
+    // "valid:<email>" is a good token for any client; "valid:<email>@for:<client>" only for that client.
+    async verifyIdToken(idToken, clientId) {
+      if (!clientId) throw new Error('Google sign-in isn\'t set up');
+      if (typeof idToken !== 'string' || !idToken.startsWith('valid:')) throw new Error('bad token');
+      const [email, forClient] = idToken.slice(6).split('@for:');
+      if (forClient && forClient !== clientId) throw new Error('token for another app');
+      return { email };
     },
 
     async listFolder() {

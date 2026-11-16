@@ -84,7 +84,7 @@ test('sign-in: a username and password made on the Users page', async (t) => {
   const config = await (await call('GET', '/api/config')).json();
   assert.match(config.server_id, /^[0-9a-f-]{36}$/);
   assert.deepEqual(config, {
-    sign_in: 'password', google_web_client_id: null, web_code_sign_in: false, version: require('../package.json').version,
+    sign_in: 'password', public: false, web_google_client_id: null, google_web_client_id: null, web_code_sign_in: false, version: require('../package.json').version,
     kind: 'kiosk-signage', role: 'main', server_id: config.server_id, site_name: null,
   });
 
@@ -95,8 +95,11 @@ test('sign-in: a username and password made on the Users page', async (t) => {
   assert.equal(unknown.status, 401);
   assert.deepEqual(await wrong.json(), await unknown.json());
   assert.equal((await login('', '')).status, 400);
-  // The Google sign-in routes are gone.
-  assert.equal((await call('POST', '/api/auth/google', { json: { id_token: 'valid:boss@example.com' } })).status, 404);
+  // Phone apps from before 0.6.0 signed in with Google ({ id_token }); that never gets them in.
+  // (/api/auth/google is now the web dashboard's own Google sign-in, tested in google-signin.test.js.)
+  const oldApp = await call('POST', '/api/auth/google', { json: { id_token: 'valid:boss@example.com' } });
+  assert.equal(oldApp.status, 400);
+  assert.equal((await oldApp.json()).token, undefined);
   assert.equal((await call('POST', '/api/auth/device/start')).status, 404);
 
   // The first admin gets in, typed in any letter case.

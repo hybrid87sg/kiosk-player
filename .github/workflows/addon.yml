@@ -62,6 +62,21 @@ jobs:
           curl -sf localhost:3000/ | grep "Kiosk Signage"
           docker logs kiosk
 
+      - name: Check the public dashboard pieces (Tailscale inside the add-on)
+        run: |
+          docker run --rm --entrypoint tailscale kiosk-addon version
+          docker run --rm --entrypoint tailscaled kiosk-addon --version
+          # Switched on without an auth key: the door answers inside the add-on (Google only),
+          # and the add-on says it needs a key instead of failing.
+          mkdir -p pub-data
+          echo '{"drive_folder_id":"folder","service_account_file":"service-account.json","cache_media":true,"public_dashboard":true}' > pub-data/options.json
+          docker run -d --name kiosk-pub -v "$PWD/pub-data:/data" -v "$PWD/ha-config:/config" kiosk-addon
+          for i in $(seq 1 30); do docker exec kiosk-pub wget -qO- 127.0.0.1:3001/api/config 2>/dev/null | grep '"sign_in":"google"' && break; sleep 1; done
+          docker exec kiosk-pub wget -qO- 127.0.0.1:3001/api/config | grep '"public":true'
+          ! docker exec kiosk-pub wget -qO- 127.0.0.1:3001/api/player/status
+          for i in $(seq 1 30); do docker logs kiosk-pub 2>&1 | grep -q 'Public dashboard: needs_key' && break; sleep 1; done
+          docker logs kiosk-pub 2>&1 | grep 'Public dashboard: needs_key'
+
       - name: Check relay mode (a Home Assistant at another site)
         run: |
           mkdir -p relay-data

@@ -93,6 +93,7 @@ function createApp({
   siteName = null, // this server's own site, e.g. "Head office"; TVs at other sites come through relays
   homeAssistant = null, // notify.js, when running as a Home Assistant add-on
   googleKeyFile = null, // where a Google key added on the Settings page is kept; null = it can't be added there
+  publicAccess = null, // public-access.js: the add-on's own Tailscale Funnel for the public dashboard (0.8.0)
   monitorIntervalMs = 60 * 1000, // how often to look for offline screens (0 = never; tests call checkScreens)
   // Playback copies. Omit it and copies stay off (tests). The real server turns them on.
   transcode = null,
@@ -290,9 +291,14 @@ function createApp({
   // client ID that "Sign in with Google" must use for this server.
   app.get('/api/config', (req, res) =>
     res.json({
-      // People sign in with a username and password made on the Users page.
-      sign_in: 'password',
-      google_web_client_id: null, // apps from before 0.6.0 look for this; they can no longer sign in
+      // People sign in with a username and password made on the Users page. On the public
+      // address (the Funnel door, 0.8.0) the web dashboard signs in with Google only.
+      sign_in: req.viaPublic ? 'google' : 'password',
+      public: Boolean(req.viaPublic),
+      // The web dashboard's "Sign in with Google" (0.8.0). Under a new name: apps from before
+      // 0.6.0 look at google_web_client_id and must keep seeing null.
+      web_google_client_id: getSetting(db, 'google_web_client_id') || null,
+      google_web_client_id: null,
       web_code_sign_in: false,
       version: SERVER_VERSION,
       // TVs search the network for this to find the server by themselves.
@@ -334,7 +340,35 @@ function createApp({
     }
     tries.delete(username);
     const token = auth.newToken();
-    db.prepare(`INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)`).run(token, user.id, now);
+    db.prepare(`INSERT INTO sessions (token, user_id, created_at, method) VALUES (?, ?, ?, 'password')`).run(token, user.id, now);
+    res.json({ token, username: user.email, email: user.email, role: user.role });
+  });
+
+  // "Sign in with Google" on the web dashboard (0.8.0). Only a Google account that Spongebob
+  // linked to a user on the Users page gets in, with that user's role.
+  const googleTries = []; // times of recent attempts, for a simple overall limit
+  app.post('/api/auth/google', async (req, res) => {
+    const now = Date.now();
+    while (googleTries.length && googleTries[0] < now - 60 * 1000) googleTries.shift();
+    if (googleTries.length >= 60) return res.status(429).json({ error: 'Too many sign-in attempts. Wait a minute and try again.' });
+    googleTries.push(now);
+    const clientId = getSetting(db, 'google_web_client_id');
+    if (!clientId) return res.status(400).json({ error: 'Google sign-in isn’t set up on this Kiosk yet (Settings → Public dashboard).' });
+    const credential = (req.body || {}).credential;
+    if (typeof credential !== 'string' || !credential || credential.length > 8192) return res.status(400).json({ error: 'No Google sign-in received' });
+    let email;
+    try {
+      ({ email } = await google.verifyIdToken(credential, clientId));
+    } catch {
+      return res.status(401).json({ error: 'Google didn’t confirm that sign-in. Try again.' });
+    }
+    const user = db.prepare(`SELECT * FROM users WHERE google_email = ?`).get(String(email).toLowerCase());
+    if (!user) {
+      log(`Google sign-in refused: that Google account isn't linked to a Kiosk user`);
+      return res.status(403).json({ error: `${email} isn’t linked to a Kiosk user. Ask whoever runs Kiosk to link it on the Users page.` });
+    }
+    const token = auth.newToken();
+    db.prepare(`INSERT INTO sessions (token, user_id, created_at, method) VALUES (?, ?, ?, 'google')`).run(token, user.id, now);
     res.json({ token, username: user.email, email: user.email, role: user.role });
   });
 
@@ -370,7 +404,20 @@ function createApp({
   // ---------- Users and roles (superadmin) ----------
 
   // "email" is the column the username lives in; both names are sent for older pages.
-  const userView = (u) => ({ id: u.id, username: u.email, email: u.email, role: u.role, created_at: u.created_at, has_password: Boolean(u.password_hash) });
+  const userView = (u) => ({
+    id: u.id, username: u.email, email: u.email, role: u.role, created_at: u.created_at,
+    has_password: Boolean(u.password_hash),
+    google_email: u.google_email || null, // the Google account that may sign in as them on the public dashboard
+  });
+  // A Google account to link: an email address, or "" / null to unlink. Returns { value } or { error }.
+  const checkGoogleEmail = (raw, userId) => {
+    if (raw === null || raw === '') return { value: null };
+    const value = String(raw).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) || value.length > 254) return { error: 'That isn’t an email address' };
+    const other = db.prepare(`SELECT email FROM users WHERE google_email = ? AND id != ?`).get(value, userId ?? -1);
+    if (other) return { error: `That Google account is already linked to ${other.email}` };
+    return { value };
+  };
   const findUser = (id) => db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
 
   app.get('/api/users', requireUsers, (req, res) => {
@@ -387,8 +434,14 @@ function createApp({
     const problem = auth.checkNewPassword(body.password);
     if (problem) return res.status(400).json({ error: problem });
     if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) return res.status(409).json({ error: 'That username is taken' });
-    const result = db.prepare(`INSERT INTO users (email, role, password_hash, created_at) VALUES (?, ?, ?, ?)`)
-      .run(username, body.role, await auth.hashPassword(body.password), Date.now());
+    let googleEmail = null;
+    if (body.google_email !== undefined) {
+      const checked = checkGoogleEmail(body.google_email, null);
+      if (checked.error) return res.status(400).json({ error: checked.error });
+      googleEmail = checked.value;
+    }
+    const result = db.prepare(`INSERT INTO users (email, role, password_hash, created_at, google_email) VALUES (?, ?, ?, ?, ?)`)
+      .run(username, body.role, await auth.hashPassword(body.password), Date.now(), googleEmail);
     res.status(201).json(userView(findUser(result.lastInsertRowid)));
   });
 
@@ -398,7 +451,15 @@ function createApp({
     const body = req.body || {};
     const user = findUser(req.params.id);
     if (!user) return res.status(404).json({ error: 'Not found' });
-    if (body.role === undefined && body.password === undefined) return res.status(400).json({ error: 'Send a role or a password' });
+    if (body.role === undefined && body.password === undefined && body.google_email === undefined) {
+      return res.status(400).json({ error: 'Send a role, a password or a Google account' });
+    }
+    let googleEmail;
+    if (body.google_email !== undefined) {
+      const checked = checkGoogleEmail(body.google_email, user.id);
+      if (checked.error) return res.status(400).json({ error: checked.error });
+      googleEmail = checked.value;
+    }
     if (body.role !== undefined) {
       if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
       if (user.id === req.user.id) return res.status(400).json({ error: "You can't change your own role" });
@@ -408,6 +469,11 @@ function createApp({
       if (problem) return res.status(400).json({ error: problem });
     }
     if (body.role !== undefined) db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(body.role, user.id);
+    if (googleEmail !== undefined && googleEmail !== (user.google_email || null)) {
+      db.prepare(`UPDATE users SET google_email = ? WHERE id = ?`).run(googleEmail, user.id);
+      // Whoever signed in with the old Google account is signed out.
+      db.prepare(`DELETE FROM sessions WHERE user_id = ? AND method = 'google' AND token != ?`).run(user.id, auth.bearerToken(req) || '');
+    }
     if (body.password !== undefined) {
       db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(await auth.hashPassword(body.password), user.id);
       db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.bearerToken(req) || '');
@@ -1324,6 +1390,12 @@ function createApp({
       users: db.prepare(`SELECT COUNT(*) AS n FROM users WHERE password_hash IS NOT NULL`).get().n,
       // Refuse TVs coming through relays that haven't paired (see relayGate).
       relays_require_credentials: Boolean(getSetting(db, 'relays_require_credentials')),
+      // The public web dashboard (0.8.0): Google sign-in, through the add-on's own Tailscale Funnel.
+      public_dashboard: {
+        google_web_client_id: getSetting(db, 'google_web_client_id') || null,
+        linked_users: db.prepare(`SELECT COUNT(*) AS n FROM users WHERE google_email IS NOT NULL`).get().n,
+        ...(publicAccess ? publicAccess.status() : { state: 'unavailable' }),
+      },
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
       notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
       transcode: {
@@ -1349,6 +1421,13 @@ function createApp({
     if (body.cache_media !== undefined) {
       if (typeof body.cache_media !== 'boolean') return res.status(400).json({ error: 'cache_media must be true or false' });
       setSetting(db, 'cache_media', body.cache_media);
+    }
+    if (body.google_web_client_id !== undefined) {
+      const id = body.google_web_client_id === null ? '' : String(body.google_web_client_id).trim();
+      if (id && !/^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(id)) {
+        return res.status(400).json({ error: 'That isn’t a Google web client ID. It looks like 1234567890-abc123.apps.googleusercontent.com' });
+      }
+      setSetting(db, 'google_web_client_id', id || null);
     }
     if (body.relays_require_credentials !== undefined) {
       if (typeof body.relays_require_credentials !== 'boolean') return res.status(400).json({ error: 'relays_require_credentials must be true or false' });
@@ -2009,6 +2088,42 @@ function createIngressServer(app, trustedAddress = '172.30.32.2') {
   });
 }
 
+// The public dashboard's door (0.8.0). The add-on's own Tailscale Funnel sends internet traffic
+// here, on a port only reachable from inside the add-on. Through it:
+//  - the web dashboard and the API calls it makes, signed in with Google only (auth.js);
+//  - never the TVs' or relays' paths, files, the password sign-in, or Home Assistant's headers.
+const PUBLIC_BLOCKED = ['/api/player', '/api/relay', '/api/auth/login', '/api/auth/password', '/media', '/relay'];
+function publicPathAllowed(method, rawUrl) {
+  let path;
+  try {
+    path = decodeURIComponent(new URL(rawUrl, 'http://x').pathname);
+  } catch {
+    return false;
+  }
+  // Express matches paths without regard to case or repeated slashes, so neither may sneak past.
+  path = path.toLowerCase().replace(/\/{2,}/g, '/');
+  if (path.includes('\\') || path.includes('/..')) return false;
+  if (PUBLIC_BLOCKED.some((p) => path === p || path.startsWith(`${p}/`) || path.startsWith(`${p}.`))) return false;
+  if (path.startsWith('/api/')) return true;
+  return method === 'GET' || method === 'HEAD'; // the dashboard's own files
+}
+
+function createPublicServer(app) {
+  return http.createServer((req, res) => {
+    if (!publicPathAllowed(req.method, req.url)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Not found' }));
+    }
+    for (const name of Object.keys(req.headers)) if (name.startsWith('x-remote-user')) delete req.headers[name];
+    // On the internet: never shown inside another site's frame, never guessed as another file type.
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    req.viaPublic = true;
+    app(req, res);
+  });
+}
+
 function randomPairingCode() {
   let code = '';
   for (let i = 0; i < 6; i++) code += PAIRING_ALPHABET[crypto.randomInt(PAIRING_ALPHABET.length)];
@@ -2016,4 +2131,4 @@ function randomPairingCode() {
 }
 
 // The SUPERADMIN_EMAIL setting is always a superadmin, so you can't lock yourself out.
-module.exports = { createApp, createIngressServer };
+module.exports = { createApp, createIngressServer, createPublicServer, publicPathAllowed };

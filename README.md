@@ -384,6 +384,52 @@ On the main server, **Settings → Home Assistant Relays**, on that relay:
 
 To stop a site entirely, **Disable** the relay instead; **Enable** brings it back.
 
+### Public dashboard: the web page on the internet, with Google sign-in (optional)
+
+At home or over Tailscale the web page asks for a username and password. If you also want it on
+the internet, for people without Tailscale, Kiosk can put it at its own https address such as
+`https://kiosk.your-tailnet.ts.net`. There, people sign in **only with a Google account you link to
+their user**; passwords don't work there. Screens, relays and files are never reachable that way:
+only this web page.
+
+It works through **Tailscale Funnel**, run by the Kiosk add-on itself (Home Assistant's own
+Tailscale add-on can only put Home Assistant on the internet, not Kiosk). About 20 minutes, once.
+
+**A. Tailscale (admin console: <https://login.tailscale.com/admin>)**
+
+1. **DNS** page: make sure **MagicDNS** is on, and turn on **HTTPS Certificates**.
+2. **Settings → Keys → Generate auth key**. Leave it single-use. Copy the key (`tskey-auth-…`).
+   Keep it private, like a password.
+3. In Home Assistant, the Kiosk add-on's **Configuration** tab:
+   - **Public dashboard**: on
+   - **Public dashboard name**: `kiosk` (the address becomes `https://kiosk.<your-tailnet>.ts.net`)
+   - **Tailscale auth key**: paste the key
+
+   Then **Save** and restart the add-on. A machine called `kiosk` appears in your Tailscale admin console.
+4. Open Kiosk Signage → **Settings → Public dashboard**. It either shows the address, or says what's
+   missing, with a button: usually **Open Tailscale to allow it**, which lets you allow Funnel for
+   this machine (sign in as the Tailscale account owner). Kiosk tries again every minute. The key
+   is only needed once; you can delete it from the add-on's options afterwards.
+
+**B. Google (the same Google Cloud project as Part 1)**
+
+1. <https://console.cloud.google.com/apis/credentials/consent>: **OAuth consent screen**. Choose
+   **External**, give the app a name (e.g. `Kiosk Signage`) and your email, save. Under **Audience**
+   (or **Test users**), either add the Google accounts that will sign in, or **Publish app** (signing
+   in only asks for name and email, which needs no review by Google).
+2. **Credentials → Create credentials → OAuth client ID → Web application**. Name: `Kiosk dashboard`.
+   Under **Authorized JavaScript origins**, add the address from A4, e.g.
+   `https://kiosk.your-tailnet.ts.net` (no slash at the end). **Create**, and copy the **Client ID**
+   (`…apps.googleusercontent.com`).
+3. Kiosk Signage → **Settings → Public dashboard → Google web client ID**: paste, **Save**.
+
+**C. Who may sign in**
+
+On **Users**, press **Link Google** next to each person and enter their Google account (e.g.
+`patrick@gmail.com`). Signing in with it gives that user's role. **Unlink** stops it at once. A
+Google account that isn't linked is refused. Their username and password keep working at home and
+in the phone app.
+
 ### Adding other people
 
 In the web interface or Kiosk Admin, go to **Users → Add someone**. Give them a **username**, a
@@ -436,6 +482,12 @@ same way, connect with Tailscale, and sign in.
 | TVs at a site say "Can't reach the server" after switching on **Only accept relays that have paired** | That site's relay isn't paired yet. Pair it, or switch the setting off until it is. |
 | Kiosk Player integration asks to **Reconfigure** | The main server revoked its credential or the relay is disabled. Enter a new pairing code. |
 | Kiosk Player: **Main server connected** is off | The site can't reach the main server: same checks as "Relay page says it can't reach the main server". It reconnects by itself. |
+| Public dashboard: **Needs a key** / **Key refused** | Make a new auth key in Tailscale (**Settings → Keys**), put it in the add-on's **Tailscale auth key** option, restart the add-on. |
+| Public dashboard: **Needs Funnel** or **Needs HTTPS** | Press **Open Tailscale to allow it** on that card, signed in as the Tailscale account owner. Kiosk tries again every minute. |
+| Public address: "Google sign-in isn't set up yet" | Paste the Google web client ID under **Settings → Public dashboard** (part B). |
+| Public address: Google says the **origin isn't allowed** (error 400) | In Google Cloud, the client's **Authorized JavaScript origins** must be exactly the address shown under Settings, starting `https://`, with no slash at the end. Changes there can take a few minutes. |
+| Public address: "… isn't linked to a Kiosk user" | On **Users**, press **Link Google** for that person and enter exactly that Google account. |
+| Public address: Google says "access blocked" or "app not verified" | In Google Cloud's consent screen, add that account as a test user, or **Publish app**. |
 | HACS: "Repository not found" for kiosk-player-ha | Type it exactly: `https://github.com/hybrid87sg/kiosk-player-ha`, category **Integration**. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
