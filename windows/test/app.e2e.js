@@ -33,7 +33,7 @@ async function main() {
     const serverDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-e2e-server-'));
     const kiosk = createApp({ dataDir: serverDir, google, firstAdmin: { username: 'boss', password: PASSWORD }, siteName: 'Main Centre', syncIntervalMs: 0, monitorIntervalMs: 0, log: () => {} });
     const server = await new Promise((r) => { const s = kiosk.listen(0, '127.0.0.1', () => r(s)); });
-    cleanup.push(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }), () => kiosk.locals.db.close(), () => fs.rmSync(serverDir, { recursive: true, force: true }));
+    cleanup.push(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }), () => kiosk.locals.db.close(), () => fs.rmSync(serverDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
     const base = `http://127.0.0.1:${server.address().port}`;
     const call = (method, p, { token, json } = {}) => fetch(base + p, {
       method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(json ? { 'content-type': 'application/json' } : {}) }, body: json ? JSON.stringify(json) : undefined,
@@ -55,7 +55,7 @@ async function main() {
 
     // The app, with its own data folder.
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-e2e-app-'));
-    cleanup.push(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    cleanup.push(() => fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
     const env = { ...process.env, KIOSK_BROWSER_DATA: dataDir };
     delete env.NODE_OPTIONS; // Electron refuses some Node options
     const app = await electron.launch({ executablePath: require('electron'), args: [path.join(__dirname, '..'), '--no-sandbox'], env });

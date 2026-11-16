@@ -16,9 +16,14 @@ const { normaliseServerUrl } = require('../src/core/api');
 const { ask } = require('../src/core/finder');
 
 const PASSWORD = 'correct-horse-9';
+// Windows won't delete a file that's still open, so folders are removed last, with retries,
+// and a folder that can't be removed never fails a test.
+const removeDir = (dir) => {
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* left for the system */ }
+};
 const tmp = (t, name) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), name));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => removeDir(dir));
   return dir;
 };
 
@@ -26,8 +31,9 @@ async function startServer(t) {
   const google = createFakeGoogle();
   const picture = crypto.randomBytes(150 * 1024);
   google.addFile('welcome.png', 'image/png', picture, { width: 1920, height: 1080 });
+  const serverDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-'));
   const app = createApp({
-    dataDir: tmp(t, 'kb-server-'), google, firstAdmin: { username: 'boss', password: PASSWORD }, siteName: 'Main Centre',
+    dataDir: serverDir, google, firstAdmin: { username: 'boss', password: PASSWORD }, siteName: 'Main Centre',
     syncIntervalMs: 0, monitorIntervalMs: 0, log: () => {},
   });
   let server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
@@ -41,7 +47,13 @@ async function startServer(t) {
   const boss = (await (await call('POST', '/api/auth/login', { json: { username: 'boss', password: PASSWORD } })).json()).token;
   const stop = () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
   const restart = async () => { server = await new Promise((r) => { const s = app.listen(port, '127.0.0.1', () => r(s)); }); };
-  t.after(async () => { await stop().catch(() => {}); app.locals.db.close(); });
+  // Stop the server and close its database before its folder is removed (Windows locks open files).
+  t.after(async () => {
+    await stop().catch(() => {});
+    app.locals.relayHub.close();
+    app.locals.db.close();
+    removeDir(serverDir);
+  });
   return { url, call, boss, picture, stop, restart };
 }
 

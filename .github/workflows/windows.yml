@@ -36,12 +36,15 @@ jobs:
         run: npm ci
       - name: Core tests
         working-directory: windows
+        timeout-minutes: 5
         run: npm test
       - name: The whole app on Windows, as a customer and staff would use it
         working-directory: windows
+        timeout-minutes: 10
         run: npm run e2e
       - name: Build the installer
         working-directory: windows
+        timeout-minutes: 10
         run: npm run dist
       - uses: actions/upload-artifact@v4
         continue-on-error: true # a full artifact store must not stop the build
