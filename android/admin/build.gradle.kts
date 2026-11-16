@@ -13,8 +13,8 @@ android {
         applicationId = "com.kiosk.admin"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.9.1"
+        versionCode = 9
+        versionName = "0.9.2"
     }
 
     // The shared test key (see keystore/README.md), so Google sign-in sees the
