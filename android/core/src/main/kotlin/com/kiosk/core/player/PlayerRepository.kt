@@ -1,6 +1,7 @@
 package com.kiosk.core.player
 
 import com.kiosk.core.model.DeviceCapabilities
+import com.kiosk.core.model.DeviceReport
 import com.kiosk.core.model.PlayerPlaylist
 import com.kiosk.core.model.PlayerStatus
 import com.kiosk.core.model.Registration
@@ -19,7 +20,8 @@ interface PlayerRepository {
      * [decoders] is what it can play, so it gets playback copies that suit it.
      */
     suspend fun register(appVersion: String, model: String? = null, decoders: DeviceCapabilities? = null): Registration
-    suspend fun status(): PlayerStatus
+    /** [mounting]: how staff turned the picture while it waits to be added (e.g. "portrait_right"). */
+    suspend fun status(mounting: String? = null): PlayerStatus
     suspend fun playlist(): PlayerPlaylist
     /**
      * Reports "I'm alive"; returns the server's current playlist version.
@@ -36,6 +38,7 @@ interface PlayerRepository {
         decoders: DeviceCapabilities? = null,
         playbackError: String? = null,
         lastRestart: Pair<String, Long>? = null,
+        report: DeviceReport? = null,
     ): String?
 }
 
@@ -54,7 +57,7 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     /** Which server this is (its ID lets the TV find it again if its address changes). */
     suspend fun config(): ServerConfig = apiCall { api.config() }
 
-    override suspend fun status(): PlayerStatus = apiCall { api.status() }
+    override suspend fun status(mounting: String?): PlayerStatus = apiCall { api.status(mounting) }
     override suspend fun playlist(): PlayerPlaylist = apiCall { api.playlist() }
 
     override suspend fun heartbeat(
@@ -67,11 +70,14 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
         decoders: DeviceCapabilities?,
         playbackError: String?,
         lastRestart: Pair<String, Long>?,
+        report: DeviceReport?,
     ): String? = apiCall {
         api.heartbeat(HeartbeatBody(
             currentMediaId, freeBytes, appVersion, download?.first, download?.second,
             timeZone = timeZone, afterHours = afterHours, decoders = decoders, playbackError = playbackError,
             lastRestartReason = lastRestart?.first, lastRestartAt = lastRestart?.second,
+            androidSdk = report?.androidSdk, versionCode = report?.versionCode, canInstallApps = report?.canInstallApps,
+            resync = report?.resync, update = report?.update,
         ))
     }.version
 }

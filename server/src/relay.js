@@ -272,6 +272,29 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
     });
   }
 
+  // The TV app, for a screen updating itself (0.11.0): streamed from the main server
+  // as it comes, since it's a binary file, not JSON like the rest.
+  app.get('/api/player/app.apk', async (req, res) => {
+    remember(req);
+    let reply;
+    try {
+      const headers = { ...siteHeaders() };
+      if (req.get('authorization')) headers.authorization = req.get('authorization');
+      reply = await fetch(`${main}/api/player/app.apk`, { headers, signal: AbortSignal.timeout(10 * 60_000) });
+    } catch (err) {
+      return res.status(502).json({ error: `Can't reach the main Kiosk server (${main})` });
+    }
+    if (!reply.ok || !reply.body) return res.status(reply.status).type('application/json').send(await reply.text());
+    res.status(200).type('application/vnd.android.package-archive');
+    const length = reply.headers.get('content-length');
+    if (length) res.set('Content-Length', length);
+    try {
+      await pipeline(Readable.fromWeb(reply.body), res);
+    } catch {
+      res.destroy();
+    }
+  });
+
   // Everything a TV asks about itself and its playlist goes to the main server.
   app.all(/^\/api\/player\//, async (req, res) => {
     remember(req);

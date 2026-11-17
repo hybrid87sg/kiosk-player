@@ -4,6 +4,7 @@ package com.kiosk.core.network
 
 import com.kiosk.core.model.Device
 import com.kiosk.core.model.DeviceCapabilities
+import com.kiosk.core.model.JobReport
 import com.kiosk.core.model.Library
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.Mounting
@@ -75,7 +76,7 @@ internal interface AdminApi {
 internal interface PlayerApi {
     @GET("api/config") suspend fun config(): ServerConfig
     @POST("api/player/register") suspend fun register(@Body body: AppVersionBody): Registration
-    @GET("api/player/status") suspend fun status(): PlayerStatus
+    @GET("api/player/status") suspend fun status(@retrofit2.http.Query("mounting") mounting: String? = null): PlayerStatus
     @GET("api/player/playlist") suspend fun playlist(): PlayerPlaylist
     @POST("api/player/heartbeat") suspend fun heartbeat(@Body body: HeartbeatBody): HeartbeatReply
 }
@@ -158,6 +159,11 @@ internal data class HeartbeatBody(
     /** Why the app last closed without being asked to (crash, out of memory…), and when (unix ms). */
     @SerialName("last_restart_reason") val lastRestartReason: String? = null,
     @SerialName("last_restart_at") val lastRestartAt: Long? = null,
+    @SerialName("android_sdk") val androidSdk: Int? = null,
+    @SerialName("version_code") val versionCode: Int? = null,
+    @SerialName("can_install_apps") val canInstallApps: Boolean? = null,
+    val resync: JobReport? = null,
+    val update: JobReport? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

@@ -24,6 +24,7 @@ const { createRelayHub } = require('./relay-ws');
 const { MediaCache } = require('./media-cache');
 const { checkHours, summarizeHours, isOpenAt } = require('./hours');
 const { createTranscoder } = require('./transcode');
+const { loadPlayerApp } = require('./player-app');
 const { LOCAL_PANEL } = require('./notify');
 const { parseServiceAccountKey, explainDriveError } = require('./google');
 const { chooseRendition, playbackWarning, normalizeDecoderCaps, PROFILE_IDS } = require('./renditions');
@@ -99,6 +100,8 @@ function createApp({
   monitorIntervalMs = 60 * 1000, // how often to look for offline screens (0 = never; tests call checkScreens)
   // Playback copies. Omit it and copies stay off (tests). The real server turns them on.
   transcode = null,
+  // The folder with the TV app to send to screens (player-app.js); null = no updates from here.
+  playerAppDir = null,
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
@@ -152,6 +155,8 @@ function createApp({
   const serverTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
   const cacheOn = () => Boolean(cacheStore) && (getSetting(db, 'cache_media') ?? cacheMedia);
+  const soundOn = () => getSetting(db, 'play_sound') === true;
+  const playerApp = loadPlayerApp(playerAppDir, log);
   const pruneCache = () => {
     if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media WHERE removed_at IS NULL`).all());
   };
@@ -426,24 +431,44 @@ function createApp({
     res.json(db.prepare(`SELECT * FROM users ORDER BY email`).all().map(userView));
   });
 
+  // A free username for someone added by their Google account: the address itself
+  // when it fits, otherwise the part before the @ (patrick, patrick-2, …).
+  const usernameFor = (googleEmail) => {
+    const taken = (name) => Boolean(db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(name));
+    if (auth.USERNAME.test(googleEmail) && !taken(googleEmail)) return googleEmail;
+    let base = googleEmail.split('@')[0].replace(/[^a-z0-9._-]/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 34);
+    if (base.length < 3) base = `${base}user`.slice(0, 34).replace(/^[^a-z0-9]+/, '') || 'user';
+    if (!taken(base)) return base;
+    for (let n = 2; ; n += 1) if (!taken(`${base}-${n}`)) return `${base}-${n}`;
+  };
+
+  // Add someone. Either a username and password (home, Tailscale and the phone app),
+  // or just a Google account (the public dashboard), or both. With only a Google
+  // account the username is made from it, and they can be given a password later.
   app.post('/api/users', requireUsers, async (req, res) => {
     const body = req.body || {};
-    const username = String(body.username || '').trim().toLowerCase();
-    if (!auth.USERNAME.test(username)) {
-      return res.status(400).json({ error: 'A username is 3 to 40 letters or digits (and . _ - @), starting with a letter or digit' });
-    }
     if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
-    const problem = auth.checkNewPassword(body.password);
-    if (problem) return res.status(400).json({ error: problem });
-    if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) return res.status(409).json({ error: 'That username is taken' });
     let googleEmail = null;
     if (body.google_email !== undefined) {
       const checked = checkGoogleEmail(body.google_email, null);
       if (checked.error) return res.status(400).json({ error: checked.error });
       googleEmail = checked.value;
     }
+    const hasPassword = body.password !== undefined && body.password !== null && body.password !== '';
+    if (!hasPassword && !googleEmail) return res.status(400).json({ error: 'Give them a Google account, or a password' });
+    if (hasPassword) {
+      const problem = auth.checkNewPassword(body.password);
+      if (problem) return res.status(400).json({ error: problem });
+    }
+    const typed = String(body.username || '').trim().toLowerCase();
+    if (!typed && !googleEmail) return res.status(400).json({ error: 'Give them a username' });
+    const username = typed || usernameFor(googleEmail);
+    if (!auth.USERNAME.test(username)) {
+      return res.status(400).json({ error: 'A username is 3 to 40 letters or digits (and . _ - @), starting with a letter or digit' });
+    }
+    if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) return res.status(409).json({ error: 'That username is taken' });
     const result = db.prepare(`INSERT INTO users (email, role, password_hash, created_at, google_email) VALUES (?, ?, ?, ?, ?)`)
-      .run(username, body.role, await auth.hashPassword(body.password), Date.now(), googleEmail);
+      .run(username, body.role, hasPassword ? await auth.hashPassword(body.password) : null, Date.now(), googleEmail);
     res.status(201).json(userView(findUser(result.lastInsertRowid)));
   });
 
@@ -465,6 +490,10 @@ function createApp({
     if (body.role !== undefined) {
       if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
       if (user.id === req.user.id) return res.status(400).json({ error: "You can't change your own role" });
+    }
+    // Someone added by Google account only would have no way left to sign in.
+    if (googleEmail === null && !user.password_hash && body.password === undefined) {
+      return res.status(400).json({ error: `${user.email} signs in with Google only. Give them a password first, or remove them.` });
     }
     if (body.password !== undefined) {
       const problem = auth.checkNewPassword(body.password);
@@ -1085,9 +1114,70 @@ function createApp({
       last_restart: d.restart_reason && d.restart_at && Date.now() - d.restart_at < RESTART_SHOWN_MS
         ? { reason: d.restart_reason, at: d.restart_at } : null,
       decoders: deviceCaps(d),
+      // Reset sync and the TV app (0.11.0).
+      resync: resyncView(d),
+      app: appView(d),
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
+  }
+
+  const WAITING_MOUNTINGS = ['landscape', 'portrait_right', 'portrait_left', 'landscape_flipped'];
+
+  // ----- Reset sync and app updates (0.11.0) -----
+
+  const readJob = (text) => {
+    try { return text ? JSON.parse(text) : null; } catch { return null; }
+  };
+  // A request the TV never picked up is shown as failed after this long.
+  const JOB_STALE_MS = 30 * 60 * 1000;
+  // A finished or failed one stays on the card this long.
+  const JOB_SHOWN_MS = 30 * 60 * 1000;
+
+  function jobView(id, stateText, at) {
+    if (!at) return null;
+    const state = readJob(stateText) || { step: 'waiting' };
+    const now = Date.now();
+    if (state.step === 'done' || state.step === 'failed') {
+      return now - (state.at || at) < JOB_SHOWN_MS ? { ...state, requested_at: at } : null;
+    }
+    if (!id) return null;
+    if (now - (state.at || at) > JOB_STALE_MS) {
+      return { step: 'failed', error: 'The screen didn’t answer. Is it switched on and online?', requested_at: at };
+    }
+    return { ...state, requested_at: at };
+  }
+
+  const resyncView = (d) => jobView(d.resync_id, d.resync_state, d.resync_at);
+
+  function appView(d) {
+    const latest = playerApp ? { version: playerApp.version, version_code: playerApp.version_code } : null;
+    return {
+      android_sdk: d.android_sdk ?? null,
+      version_code: d.version_code ?? null,
+      can_install_apps: d.can_install_apps == null ? null : Boolean(d.can_install_apps),
+      latest,
+      // Apps from before 0.11.0 don't send their build number: they're updated by hand once.
+      update_available: Boolean(latest && d.version_code != null && d.version_code < latest.version_code),
+      update: jobView(d.update_id, d.update_state, d.update_at),
+    };
+  }
+
+  const newJobId = () => crypto.randomBytes(8).toString('hex');
+
+  // Why this screen can't take a Reset sync or an app update right now (null = it can).
+  function cannotResync(d) {
+    if (d.kind === 'browser') return 'Reset sync is for TVs.';
+    if (d.version_code == null) return `${d.name || 'This screen'} has an older Kiosk Player. Install 0.11.0 or newer on it by hand first.`;
+    return null;
+  }
+  function cannotUpdate(d) {
+    if (d.kind === 'browser') return 'App updates are for TVs.';
+    if (!playerApp) return 'This server has no TV app to send. It comes with the Home Assistant add-on.';
+    if (d.version_code == null) return `${d.name || 'This screen'} has an older Kiosk Player. Install 0.11.0 or newer on it by hand once; later updates come from here.`;
+    if (d.version_code >= playerApp.version_code) return `${d.name || 'This screen'} already has the newest app.`;
+    if (d.can_install_apps === 0) return `On the TV, allow Kiosk Player under Settings → Apps → Special app access → Install unknown apps first.`;
+    return null;
   }
 
   // Checks name / location / orientation / playlist_id from the admin app.
@@ -1191,6 +1281,7 @@ function createApp({
       kind: d.kind === 'browser' ? 'browser' : 'tv',
       pairing_code: d.pairing_code,
       last_seen: d.last_seen,
+      mounting: d.requested_mounting || null,
     })));
   });
 
@@ -1233,6 +1324,40 @@ function createApp({
     if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
     if (owner && relayHub) relayHub.relayChanged(owner.id);
     res.json({ ok: true });
+  });
+
+  // Reset sync (Spongebob): the TV downloads every file again from scratch, playing
+  // what it has meanwhile, then switches over and deletes the old files.
+  app.post('/api/devices/:id/resync', requireUsers, (req, res) => {
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Not found' });
+    const problem = cannotResync(device);
+    if (problem) return res.status(409).json({ error: problem });
+    db.prepare(`UPDATE devices SET resync_id = ?, resync_state = ?, resync_at = ? WHERE id = ?`)
+      .run(newJobId(), JSON.stringify({ step: 'waiting', at: Date.now() }), Date.now(), device.id);
+    res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
+  });
+
+  // App update (Spongebob): the TV downloads the app that came with this server and installs it.
+  function startUpdate(device) {
+    db.prepare(`UPDATE devices SET update_id = ?, update_target = ?, update_state = ?, update_at = ? WHERE id = ?`)
+      .run(newJobId(), playerApp.version_code, JSON.stringify({ step: 'waiting', at: Date.now() }), Date.now(), device.id);
+  }
+
+  app.post('/api/devices/:id/update', requireUsers, (req, res) => {
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Not found' });
+    const problem = cannotUpdate(device);
+    if (problem) return res.status(409).json({ error: problem });
+    startUpdate(device);
+    res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
+  });
+
+  app.post('/api/devices/update-all', requireUsers, (req, res) => {
+    const devices = db.prepare(`SELECT * FROM devices WHERE claimed = 1 AND update_id IS NULL`).all()
+      .filter((d) => !cannotUpdate(d));
+    for (const d of devices) startUpdate(d);
+    res.json({ started: devices.length });
   });
 
   // ---------- Locations and their working hours (superadmin, system manager) ----------
@@ -1442,6 +1567,8 @@ function createApp({
       },
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
       notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
+      // Settings → Sound: off (the default) plays every video silently on every screen.
+      sound: { on: soundOn(), copies: transcoder.progress() },
       transcode: {
         ffmpeg: transcoder.ffmpegAvailable(),
         enabled: transcoder.requested(),
@@ -1492,8 +1619,12 @@ function createApp({
       if (typeof body.transcode_4k_hevc !== 'boolean') return res.status(400).json({ error: 'transcode_4k_hevc must be true or false' });
       setSetting(db, 'transcode_4k_hevc', body.transcode_4k_hevc);
     }
+    if (body.play_sound !== undefined) {
+      if (typeof body.play_sound !== 'boolean') return res.status(400).json({ error: 'play_sound must be true or false' });
+      setSetting(db, 'play_sound', body.play_sound);
+    }
     if (body.transcode_videos === false) transcoder.shutdown();
-    else if (body.transcode_videos === true || body.transcode_4k_hevc === true) await transcoder.resume();
+    else if (body.transcode_videos === true || body.transcode_4k_hevc === true || body.play_sound !== undefined) await transcoder.resume();
     res.json(settingsView());
   });
 
@@ -1590,6 +1721,10 @@ function createApp({
     const d = req.device;
     // A TV waiting to be added asks every few seconds; that keeps it on the "waiting" list.
     if (!d.claimed) db.prepare(`UPDATE devices SET last_seen = ?, site = ? WHERE id = ?`).run(Date.now(), siteOf(req), d.id);
+    // How staff turned the picture on the TV, so the Add dialog starts with it (0.11.0).
+    if (!d.claimed && WAITING_MOUNTINGS.includes(req.query.mounting)) {
+      db.prepare(`UPDATE devices SET requested_mounting = ? WHERE id = ?`).run(req.query.mounting, d.id);
+    }
     noteRelayOf(req, d.id);
     res.json({
       claimed: !!d.claimed,
@@ -1671,6 +1806,20 @@ function createApp({
       upcoming: ahead,
       // The location's working hours; the TV goes dark outside them (null = always on).
       hours: hoursOf(locationOf(device)),
+      // Settings → Sound. TVs skip the sound track when false.
+      sound: soundOn(),
+      // Asked for on the dashboard (0.11.0). The TV reports progress in its heartbeat.
+      actions: {
+        resync: device.resync_id || null,
+        update: device.update_id && playerApp ? {
+          id: device.update_id,
+          version: playerApp.version,
+          version_code: playerApp.version_code,
+          size: playerApp.size,
+          sha256: playerApp.sha256,
+          url: '/api/player/app.apk',
+        } : null,
+      },
       // A Windows Kiosk Browser's page and rules (null for TVs).
       browser: device.kind === 'browser' ? browserSettings(device) : null,
     };
@@ -1697,6 +1846,42 @@ function createApp({
     acknowledgeCommands(req.device.id);
     res.json(playlist);
   });
+
+  // The TV app that came with this server, for a screen updating itself.
+  app.get('/api/player/app.apk', auth.requireDevice(db), (req, res) => {
+    if (!playerApp) return res.status(404).json({ error: 'No TV app here' });
+    res.sendFile(playerApp.file, { headers: { 'Content-Type': 'application/vnd.android.package-archive' } });
+  });
+
+  // What the TV says about a Reset sync or an app update it's working on.
+  function noteJobReports(device, body, sets, params) {
+    const now = Date.now();
+    const r = body.resync;
+    if (r && typeof r === 'object' && device.resync_id && r.id === device.resync_id
+      && ['downloading', 'switching', 'done', 'failed'].includes(r.step)) {
+      const state = { step: r.step, at: now };
+      if (Number.isInteger(r.done) && Number.isInteger(r.total)) Object.assign(state, { done: r.done, total: r.total });
+      if (typeof r.error === 'string' && r.error) state.error = r.error.slice(0, 300);
+      if (typeof r.note === 'string' && r.note) state.note = r.note.slice(0, 200);
+      sets.push('resync_state = ?');
+      params.push(JSON.stringify(state));
+      if (r.step === 'done' || r.step === 'failed') sets.push('resync_id = NULL');
+    }
+    const u = body.update;
+    if (u && typeof u === 'object' && device.update_id && u.id === device.update_id
+      && ['downloading', 'waiting_for_install', 'installing', 'failed'].includes(u.step)) {
+      const state = { step: u.step, at: now };
+      if (typeof u.error === 'string' && u.error) state.error = u.error.slice(0, 300);
+      sets.push('update_state = ?');
+      params.push(JSON.stringify(state));
+      if (u.step === 'failed') sets.push('update_id = NULL');
+    }
+    // The new app doesn't know the request: reaching the build number is what finishes it.
+    if (device.update_id && Number.isInteger(body.version_code) && body.version_code >= (device.update_target || 0)) {
+      sets.push('update_id = NULL', 'update_state = ?');
+      params.push(JSON.stringify({ step: 'done', at: now, version: body.app_version || null }));
+    }
+  }
 
   app.post('/api/player/heartbeat', auth.requireDevice(db), (req, res) => {
     expireDue(); // so the version below already leaves out files that just expired
@@ -1730,6 +1915,19 @@ function createApp({
       sets.push('playback_error = ?');
       params.push(playbackError);
     }
+    if (Number.isInteger(body.android_sdk) && body.android_sdk > 0 && body.android_sdk < 100) {
+      sets.push('android_sdk = ?');
+      params.push(body.android_sdk);
+    }
+    if (Number.isInteger(body.version_code) && body.version_code > 0) {
+      sets.push('version_code = ?');
+      params.push(body.version_code);
+    }
+    if (typeof body.can_install_apps === 'boolean') {
+      sets.push('can_install_apps = ?');
+      params.push(body.can_install_apps ? 1 : 0);
+    }
+    noteJobReports(req.device, body, sets, params);
     if (typeof body.last_restart_reason === 'string' && body.last_restart_reason.trim()
       && Number.isSafeInteger(body.last_restart_at) && body.last_restart_at > 0) {
       sets.push('restart_reason = ?', 'restart_at = ?');

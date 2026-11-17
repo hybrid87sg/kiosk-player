@@ -7,9 +7,13 @@ import android.os.Build
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.kiosk.core.model.AppUpdate
 import com.kiosk.core.model.DeviceCapabilities
+import com.kiosk.core.model.DeviceReport
+import com.kiosk.core.model.JobReport
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.Mounting
+import com.kiosk.core.model.wireName
 import com.kiosk.core.model.PlayerPlaylist
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.network.ApiException
@@ -57,7 +61,7 @@ sealed interface PlayerUi {
     data class Finding(val found: List<FoundServer>?, val problem: String? = null) : PlayerUi
     data class Pairing(val code: String, val qrPayload: String, val demo: Boolean, val problem: String? = null) : PlayerUi
     data class Waiting(val name: String?, val title: String, val detail: String, val progress: Float? = null) : PlayerUi
-    data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null) : PlayerUi
+    data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null, val sound: Boolean = true) : PlayerUi
     /** Outside the location's working hours: a black screen (and standby where allowed). */
     data class Closed(val opens: String?) : PlayerUi
 }
@@ -70,6 +74,25 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val mediaDir = File(app.filesDir, "media")
     private val _ui = MutableStateFlow<PlayerUi>(PlayerUi.Loading)
     val ui: StateFlow<PlayerUi> = _ui
+
+    /** How every screen of the app is turned (playback has its own, from the playlist). */
+    private val _mounting = MutableStateFlow(
+        if (settings.mode == PlayerMode.DEMO) settings.demoMounting else settings.cachedPlaylist?.mounting ?: settings.mounting,
+    )
+    val mounting: StateFlow<Mounting> = _mounting
+
+    /** Turn picture: the next way round, for a TV whose dashboard setting isn't known yet. */
+    fun turnPicture() {
+        val order = listOf(Mounting.LANDSCAPE, Mounting.PORTRAIT_RIGHT, Mounting.PORTRAIT_LEFT, Mounting.LANDSCAPE_FLIPPED)
+        val next = order[(order.indexOf(_mounting.value) + 1) % order.size]
+        useMounting(next)
+        if (settings.mode == PlayerMode.DEMO) setDemoMounting(next)
+    }
+
+    private fun useMounting(mounting: Mounting) {
+        if (settings.mounting != mounting) settings.mounting = mounting
+        _mounting.value = mounting
+    }
 
     /** Set by the playback screen, reported in the heartbeat ("Now playing"). */
     @Volatile var currentMediaId: Long? = null
@@ -103,6 +126,22 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 // The TV keeps playing if the report doesn't get through.
             }
         }
+    }
+
+    /** Reset sync in progress (or just finished), reported with each heartbeat. */
+    @Volatile private var resyncReport: JobReport? = null
+    private var updateJob: Job? = null
+
+    /** What the app says about itself and its Reset sync / app update, in each heartbeat. */
+    private fun deviceReport(): DeviceReport {
+        val app = getApplication<Application>()
+        return DeviceReport(
+            androidSdk = Build.VERSION.SDK_INT,
+            versionCode = BuildConfig.VERSION_CODE,
+            canInstallApps = runCatching { AppUpdater.canInstall(app) }.getOrNull(),
+            resync = resyncReport,
+            update = settings.updateReport,
+        )
     }
 
     /** Why the app last closed by itself (see Watchdog), for the dashboard. */
@@ -148,6 +187,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun chooseDemo() {
         settings.mode = PlayerMode.DEMO
+        _mounting.value = settings.demoMounting
         start()
     }
 
@@ -200,7 +240,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Forget everything (server, pairing, downloaded files) and go back to setup. */
     fun resetEverything() {
         job?.cancel()
+        val mounted = _mounting.value // the screen is still on the wall the same way
         settings.clear()
+        settings.mounting = mounted
         mediaDir.deleteRecursively()
         start()
     }
@@ -211,6 +253,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setDemoMounting(mounting: Mounting) {
         settings.demoMounting = mounting
+        _mounting.value = mounting
         _ui.update { if (it is PlayerUi.Playing) it.copy(mounting = mounting) else it }
     }
 
@@ -223,7 +266,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         reportStatus = {
             repo.heartbeat(
                 currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
-                decoders = deviceCapabilities(), playbackError = playbackError.orEmpty(), lastRestart = lastRestart(),
+                decoders = deviceCapabilities(), playbackError = playbackError.orEmpty(), lastRestart = lastRestart(), report = deviceReport(),
             )
         }
 
@@ -258,11 +301,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     version = playlist.version
                 }
                 show(playlist, sync)
+                // Asked for on the dashboard (0.11.0).
+                playlist.actions.update?.let { startUpdate(it, repo) }
+                playlist.actions.resync?.let { resync(it, playlist, sync) } ?: run { resyncReport = null }
                 val latestCaps = deviceCapabilities()
                 repo.heartbeat(
                     currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,
                     timeZone = ZoneId.systemDefault().id, afterHours = AfterHours.mode(getApplication()),
-                    decoders = latestCaps, playbackError = playbackError.orEmpty(), lastRestart = lastRestart(),
+                    decoders = latestCaps, playbackError = playbackError.orEmpty(), lastRestart = lastRestart(), report = deviceReport(),
                 )
                 unreachableSince = null
             } catch (e: ApiException) {
@@ -316,6 +362,79 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Reset sync: every file is downloaded again into a fresh folder while the
+     * screen keeps playing, then the fresh copy takes over and the old files go.
+     * A cut-off download throws to the loop, which tries again (it resumes).
+     */
+    private suspend fun resync(id: String, playlist: PlayerPlaylist, sync: ContentSync) {
+        if (settings.resyncDoneId == id) { // done, but the server hasn't heard yet
+            if (resyncReport?.id != id) resyncReport = JobReport(id, "done")
+            return
+        }
+        resyncReport = JobReport(id, "downloading", 0, (playlist.items + playlist.upcoming).distinctBy { it.id to it.md5 }.size)
+        pushStatus()
+        var lastPush = 0L
+        val fresh = sync.freshCopy(
+            playlist,
+            onProgress = { done, total ->
+                resyncReport = JobReport(id, "downloading", done, total)
+                if (done < total) setBadge("Refreshing files: ${minOf(done + 1, total)} of $total")
+                val now = System.currentTimeMillis()
+                if (now - lastPush > 3_000 || done == total) { lastPush = now; pushStatus() }
+            },
+            onSwitching = {
+                resyncReport = JobReport(id, "switching")
+                pushStatus()
+            },
+            onDeletingFirst = {
+                if (_ui.value is PlayerUi.Playing) {
+                    _ui.value = PlayerUi.Waiting(playlist.name, "Getting content ready", "Downloading every file again…")
+                }
+            },
+        )
+        settings.resyncDoneId = id
+        resyncReport = JobReport(
+            id, "done",
+            note = if (fresh) null else "There wasn’t room for two copies, so the old files were deleted first",
+        )
+        // The files are the same ones (same fingerprints): show() keeps playing without a restart.
+        setBadge("")
+        show(playlist, sync)
+        pushStatus()
+    }
+
+    /** App update: download, check, and hand to Android's installer (see AppUpdater). */
+    private fun startUpdate(update: AppUpdate, repo: RemotePlayerRepository) {
+        if (update.versionCode <= BuildConfig.VERSION_CODE) return // already this one: the heartbeat finishes it
+        if (updateJob?.isActive == true) return
+        val app = getApplication<Application>()
+        val last = settings.updateReport
+        // Waiting for someone to press Install, or installing: don't start again for a while.
+        if (last?.id == update.id && last.step in setOf("waiting_for_install", "installing") &&
+            System.currentTimeMillis() - settings.updateReportAt < 15 * 60_000L
+        ) return
+        if (last?.id == update.id && last.step == "failed") return // the server stops asking
+        updateJob = viewModelScope.launch {
+            try {
+                if (!AppUpdater.canInstall(app)) {
+                    throw UpdateException("On the TV, allow Kiosk Player under Settings → Apps → Special app access → Install unknown apps")
+                }
+                settings.updateReport = JobReport(update.id, "downloading")
+                pushStatus()
+                val apk = AppUpdater.download(app, repo.httpClient, repo.baseUrl, update)
+                settings.updateReport = JobReport(update.id, "installing")
+                pushStatus()
+                withContext(Dispatchers.IO) { AppUpdater.install(app, apk, update.id) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                settings.updateReport = JobReport(update.id, "failed", error = (e.message ?: "Update failed").take(300))
+                pushStatus()
+            }
+        }
+    }
+
     /** Registers if needed, then shows the pairing code until an admin claims this TV. */
     private suspend fun waitUntilPaired(repo: RemotePlayerRepository, caps: DeviceCapabilities) {
         var lastCode: PlayerUi.Pairing? = null
@@ -324,7 +443,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (repo.token == null) {
                     settings.token = repo.register(BuildConfig.VERSION_NAME, deviceModel(), caps).token
                 }
-                val status = repo.status()
+                val status = repo.status(_mounting.value.wireName)
                 if (status.claimed) return
                 lastCode = PlayerUi.Pairing(status.pairingCode.orEmpty(), status.qrPayload.orEmpty(), demo = false)
                 _ui.value = lastCode
@@ -361,7 +480,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     try {
                         repo.heartbeat(
                             currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME, done to total,
-                            decoders = caps, playbackError = playbackError.orEmpty(), lastRestart = lastRestart(),
+                            decoders = caps, playbackError = playbackError.orEmpty(), lastRestart = lastRestart(), report = deviceReport(),
                         )
                     } catch (e: CancellationException) {
                         throw e
@@ -410,6 +529,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private fun show(playlist: PlayerPlaylist, sync: ContentSync) {
         // Stay dark after hours (the loop refreshes every minute, also at night).
         if (_ui.value is PlayerUi.Closed && !OpeningHours.isOpen(playlist.hours, ZonedDateTime.now())) return
+        useMounting(playlist.mounting)
         val items = playlist.items.filter { sync.isReady(it) }.map {
             PlayItem(it.id, it.filename, it.type, sync.fileFor(it), it.durationSeconds ?: 10, it.orientation)
         }
@@ -418,8 +538,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             val current = _ui.value
             // Same content: keep playing without restarting, just clear the badge.
-            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) current.copy(badge = null)
-            else PlayerUi.Playing(items, playlist.mounting)
+            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) current.copy(badge = null, sound = playlist.sound)
+            else PlayerUi.Playing(items, playlist.mounting, sound = playlist.sound)
         }
     }
 
@@ -446,6 +566,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             ?.hostAddress
     }
 
+    /** e.g. "Xiaomi MIBOX4", on the pairing screen. */
+    val deviceModelName: String get() = deviceModel()
+
     /** e.g. "Xiaomi MIBOX4", shown in Kiosk Signage while this TV waits to be added. */
     private fun deviceModel(): String {
         val maker = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
@@ -458,7 +581,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         else if (current !is PlayerUi.Pairing && current !is PlayerUi.Closed) _ui.value = PlayerUi.Waiting(null, "Can't reach the server", message.orEmpty())
     }
 
-    private fun setBadge(text: String) = _ui.update { if (it is PlayerUi.Playing) it.copy(badge = text) else it }
+    private fun setBadge(text: String) = _ui.update { if (it is PlayerUi.Playing) it.copy(badge = text.ifEmpty { null }) else it }
 
     // ---------- Demo mode ----------
 

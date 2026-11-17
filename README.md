@@ -220,7 +220,15 @@ flowchart TB
    the TV into standby where it can, and wakes it at opening time (see
    [Working hours](#working-hours-and-after-hours)). If the TV hides that screen, run from a computer:
    `adb shell dpm set-active-admin com.kiosk.player/.ScreenOffAdmin`
-3. Choose **Find my server automatically**. After a few seconds the TV shows a big **QR code** and a
+
+   **Let the dashboard update the app (recommended).** In Kiosk Player's **Settings**, choose **Allow
+   installing updates** and switch on **Install unknown apps** for Kiosk Player. From then on, new versions
+   come from the dashboard (**Update app** on the screen's card), so this is the last time you install it
+   by hand. If the TV hides that screen, run from a computer:
+   `adb shell appops set com.kiosk.player REQUEST_INSTALL_PACKAGES allow`
+3. **Portrait TV?** Press **Turn picture** until the text is upright. The TV remembers it, and the dashboard's
+   **Add** dialog starts with it.
+   Choose **Find my server automatically**. After a few seconds the TV shows a big **QR code** and a
    **code**. (If it finds nothing, choose **Type the address** and enter the home-network address from
    Part 4, e.g. `192.168.1.20:3000`.)
 4. On the web interface (**Kiosk Signage** in Home Assistant's sidebar), the TV appears under
@@ -252,9 +260,17 @@ the **Tailscale** app on their computer, then in the
 can't get into Home Assistant itself without a Home Assistant login.
 
 What's on it:
-- **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage),
-  updated every 10 seconds and grouped by location, with each location's working hours. New TVs
-  appear under **New screens waiting**; click **Add**. **Add by code** is there too.
+- **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage,
+  app and Android version), updated every 10 seconds and grouped by location, with each location's working
+  hours. New TVs appear under **New screens waiting**; click **Add**. **Add by code** is there too.
+  For Spongebob only:
+  - **Reset sync** makes the TV download every file in its playlist again, from scratch. It keeps playing
+    what it has meanwhile, then switches to the fresh copy and deletes the old files. (Without room for
+    both, it deletes first and shows **Getting content ready** until the files are back.)
+  - **Update app** installs the Kiosk Player that came with the add-on, and **Update all screens** does every
+    screen that can take it. On Android 12 and newer the TV installs it by itself (after the first time);
+    on older TVs someone presses **Install** on the TV. The card shows each step. A TV with an app from
+    before 0.11.0 needs 0.11.0 installed by hand once.
 - **Locations:** one block per location, with its **playlists**, its **working hours** and its screens.
   Every location is also listed in the side menu; open one to rename it or **move a screen here**.
   **+ Add location** makes a new one.
@@ -278,6 +294,9 @@ What's on it:
 - **Settings** (Spongebob): pick who gets **notifications** when a screen goes offline, change the Drive
   folder and test the connection, switch local copies on or off and clear them, and check which sign-in
   methods are set up.
+  - **Sound:** **Play videos with sound** is off by default, for every screen: videos play silently whatever
+    the TV's volume is, and the playback copies are made without sound. Your files in Google Drive keep
+    their sound. Turn it on and the copies are made again with sound; screens keep the silent ones until then.
 
 The **‹** button next to the name folds the side menu down to icons; it's remembered in that browser.
 
@@ -487,8 +506,16 @@ or *Quit*. The PIN keeps curious customers out; it isn't strong security, so don
 
 ### Adding other people
 
-In the web interface or Kiosk Admin, go to **Users → Add someone**. Give them a **username**, a
-**password** of at least 8 characters, and a role:
+In the web interface, go to **Users → Add someone** and choose how they sign in:
+
+- **Google account:** type their Gmail address and pick a role. They can sign in with **Sign in with Google**
+  on the [public dashboard](#public-dashboard-the-web-page-on-the-internet-with-google-sign-in-optional)
+  straight away, with no password. Their username is made from the address. Give them a password later
+  (**Set password**) if they also need the phone app or the home address.
+- **Username and password:** a **username**, a **password** of at least 8 characters, and a role. Kiosk
+  Admin on the phone can add people this way too.
+
+The roles:
 
 | Role | Can do |
 |---|---|
@@ -550,6 +577,8 @@ same way, connect with Tailscale, and sign in.
 | Kiosk Browser: forgot the staff PIN | Set a new one on the dashboard (Screens → Edit); the PC picks it up within a minute. |
 | HACS: "Repository not found" for kiosk-player-ha | Type it exactly: `https://github.com/hybrid87sg/kiosk-player-ha`, category **Integration**. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
+| Pairing screen sideways on a portrait TV | Press **Turn picture** (with the remote) until the text is upright. |
+| **Update app** fails | The card says why. *Install unknown apps*: allow it in Kiosk Player's **Settings** on the TV. *Cancelled on the TV*: someone pressed Cancel, or nobody pressed **Install** in time; press **Update app** again. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
 | Screen card says **Closed by itself … and reopened** | The reason is shown with it. *Free memory* or *ran out of memory*: the box is short of memory, so close other apps on it or use smaller videos. *Force-stopped*: a cleaner app on the box closed it; switch that off, or make Kiosk Player the home screen (Part 6, step 2). *Crashed*: send us the text. |
 

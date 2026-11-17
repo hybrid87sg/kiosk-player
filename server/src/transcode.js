@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const {
-  PROFILE_IDS, planRenditions, ffmpegArgs, summarizeProbe, PROFILES,
+  PROFILE_IDS, planRenditions, ffmpegArgs, summarizeProbe, PROFILES, silenceArgs,
 } = require('./renditions');
 
 function commandWorks(name) {
@@ -123,8 +123,8 @@ function createTranscoder({
   const threadCount = Math.max(1, Number(threads) || 1);
 
   const upsertRow = db.prepare(`
-    INSERT INTO renditions (media_id, profile, status, width, height, fps, size, md5, source_md5, error, updated_at)
-    VALUES (@media_id, @profile, @status, @width, @height, @fps, @size, @md5, @source_md5, @error, @updated_at)
+    INSERT INTO renditions (media_id, profile, status, width, height, fps, size, md5, source_md5, error, updated_at, silent)
+    VALUES (@media_id, @profile, @status, @width, @height, @fps, @size, @md5, @source_md5, @error, @updated_at, @silent)
     ON CONFLICT(media_id, profile) DO UPDATE SET
       status = excluded.status,
       width = excluded.width,
@@ -134,7 +134,8 @@ function createTranscoder({
       md5 = excluded.md5,
       source_md5 = excluded.source_md5,
       error = excluded.error,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      silent = excluded.silent
   `);
 
   function requested() {
@@ -151,9 +152,19 @@ function createTranscoder({
     return requested() && ffmpegAvailable;
   }
 
+  // Settings → Sound. Off (the default) makes every copy without sound.
+  function soundOn() {
+    return getSetting('play_sound') === true;
+  }
+
+  // Copies from before 0.11.0 (silent empty) were made with sound.
+  function soundMatches(row) {
+    return Boolean(row.silent) === !soundOn();
+  }
+
   function list(mediaId) {
     return db.prepare(
-      `SELECT profile, status, width, height, fps, size, md5, source_md5, error FROM renditions WHERE media_id = ?`
+      `SELECT profile, status, width, height, fps, size, md5, source_md5, error, silent FROM renditions WHERE media_id = ?`
     ).all(mediaId);
   }
 
@@ -179,6 +190,7 @@ function createTranscoder({
       source_md5: fields.source_md5 !== undefined ? fields.source_md5 : current.source_md5 || null,
       error: fields.error !== undefined ? fields.error : null,
       updated_at: Date.now(),
+      silent: fields.silent !== undefined ? fields.silent : (current.silent ?? null),
     });
   }
 
@@ -221,7 +233,7 @@ function createTranscoder({
     const rows = list(media.id);
     return desiredProfiles(media).every((profile) => rows.some((row) =>
       row.profile === profile && (row.status === 'ready' || row.status === 'failed') && row.source_md5 === media.md5
-      && (row.status !== 'ready' || (row.size > 0 && fs.existsSync(pathFor(media.id, profile))))
+      && (row.status !== 'ready' || (row.size > 0 && soundMatches(row) && fs.existsSync(pathFor(media.id, profile))))
     ));
   }
 
@@ -336,6 +348,30 @@ function createTranscoder({
       markUnsettled(fresh.id, 'skipped', requested() ? 'ffmpeg is not installed' : 'Playback copies are turned off');
       return;
     }
+    // Sound turned off: take the sound out of finished copies, without encoding again.
+    if (!soundOn()) {
+      for (const profile of desiredProfiles(fresh)) {
+        const row = get(fresh.id, profile);
+        const file = pathFor(fresh.id, profile);
+        if (!row || row.status !== 'ready' || row.source_md5 !== fresh.md5 || soundMatches(row) || !fs.existsSync(file)) continue;
+        if ((signal && signal.aborted) || !mediaStillThere(fresh.id)) return;
+        const part = path.join(dir, `.part-${fresh.id}-${profile}.mp4`);
+        try {
+          log(`Taking the sound out of the ${profile} copy of ${fresh.filename}`);
+          await encode(silenceArgs(file, part), signal);
+          const size = fs.statSync(part).size;
+          if (size <= 0) throw new Error('empty output');
+          const md5 = await md5File(part);
+          fs.renameSync(part, file);
+          saveQuietly(fresh.id, profile, { status: 'ready', size, md5, source_md5: fresh.md5, silent: 1 });
+        } catch (err) {
+          fs.rmSync(part, { force: true });
+          if ((signal && signal.aborted) || err.cancelled) return;
+          log(`Could not take the sound out of ${fresh.filename} (${profile}): ${String(err.message || err).slice(0, 200)}`);
+        }
+      }
+      if (isSettled(fresh)) return;
+    }
     let source = null;
     try {
       source = await downloadOriginal(fresh);
@@ -353,7 +389,8 @@ function createTranscoder({
         video && video.variableFrameRate ? 1 : 0,
         fresh.id,
       );
-      const jobs = planRenditions(info, { hevc4k: hevc4k() });
+      const sound = soundOn();
+      const jobs = planRenditions(info, { hevc4k: hevc4k(), sound });
       const wanted = new Set(jobs.map((job) => job.profile));
       for (const profile of PROFILE_IDS) {
         if (!wanted.has(profile)) save(fresh.id, profile, { status: 'skipped', error: null, source_md5: fresh.md5 });
@@ -369,12 +406,14 @@ function createTranscoder({
           continue;
         }
         const existing = get(fresh.id, job.profile);
-        if (
-          existing && existing.status === 'ready' && existing.source_md5 === fresh.md5
-          && existing.size > 0 && fs.existsSync(pathFor(fresh.id, job.profile))
-        ) continue;
+        const goodCopy = existing && existing.status === 'ready' && existing.source_md5 === fresh.md5
+          && existing.size > 0 && fs.existsSync(pathFor(fresh.id, job.profile));
+        if (goodCopy && soundMatches(existing)) continue;
         const part = path.join(dir, `.part-${fresh.id}-${job.profile}.mp4`);
-        saveQuietly(fresh.id, job.profile, { status: 'running', error: null, source_md5: fresh.md5, width: job.width, height: job.height, fps: job.fps });
+        // Only the sound differs: screens keep the current copy until the new one is ready.
+        if (!goodCopy) {
+          saveQuietly(fresh.id, job.profile, { status: 'running', error: null, source_md5: fresh.md5, width: job.width, height: job.height, fps: job.fps });
+        }
         try {
           log(`Making a ${job.profile} copy of ${fresh.filename}`);
           await encode(ffmpegArgs(job, source.path, part, { threads: threadCount }), signal);
@@ -389,7 +428,7 @@ function createTranscoder({
           fs.renameSync(part, finalPath);
           const saved = saveQuietly(fresh.id, job.profile, {
             status: 'ready', width: job.width, height: job.height, fps: job.fps,
-            size, md5, source_md5: fresh.md5, error: null,
+            size, md5, source_md5: fresh.md5, error: null, silent: sound ? 0 : 1,
           });
           if (!saved) fs.rmSync(finalPath, { force: true });
           else log(`Ready ${job.profile} copy of ${fresh.filename}`);
@@ -402,7 +441,8 @@ function createTranscoder({
           }
           const message = String(err.message || err).slice(0, 300);
           log(`Could not make a ${job.profile} copy of ${fresh.filename}: ${message}`);
-          saveQuietly(fresh.id, job.profile, { status: 'failed', error: message, source_md5: fresh.md5 });
+          // A working copy with the other sound setting is better than none.
+          if (!goodCopy) saveQuietly(fresh.id, job.profile, { status: 'failed', error: message, source_md5: fresh.md5 });
         }
       }
     } catch (err) {
@@ -482,6 +522,15 @@ function createTranscoder({
     return inline ? tail : Promise.resolve();
   }
 
+  // How many videos have all their copies made the current way (for Settings → Sound).
+  function progress() {
+    if (!enabled()) return { done: 0, total: 0 };
+    const videos = db.prepare(
+      `SELECT * FROM media WHERE type = 'video' AND width IS NOT NULL AND height IS NOT NULL AND removed_at IS NULL`
+    ).all();
+    return { done: videos.filter(isSettled).length, total: videos.length };
+  }
+
   sweepOrphans();
 
   return {
@@ -495,6 +544,8 @@ function createTranscoder({
     shutdown,
     requested,
     hevc4k,
+    soundOn,
+    progress,
     enabled,
     ffmpegAvailable: () => ffmpegAvailable,
   };

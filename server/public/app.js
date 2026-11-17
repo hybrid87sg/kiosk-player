@@ -63,6 +63,12 @@ const ICONS = {
   expand: '<path d="M9 18l6-6-6-6"/>',
   bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
   relay: '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 11l10-5M7 13l10 5"/>',
+  volume: '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
+  'volume-off': '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+  resync: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
 };
 
 /** An icon from the fixed set above (our own markup, never server text). */
@@ -484,6 +490,8 @@ async function pageScreens(page) {
       api('GET', 'api/devices'), api('GET', 'api/playlists'), api('GET', 'api/devices/waiting'),
     ]);
     const online = devices.filter((d) => d.online).length;
+    // Screens Spongebob can update from here right now.
+    const updatable = isSpongebob() ? devices.filter((d) => d.app && d.app.update_available && d.app.can_install_apps !== false && !jobRunning(d.app.update)) : [];
     // With TVs at more than one site, group by site first, then location.
     const sites = new Set([...devices, ...waiting].map((d) => d.site || ''));
     const manySites = sites.size > 1;
@@ -504,7 +512,18 @@ async function pageScreens(page) {
       el('div', { class: 'page-head' },
         el('div', {}, el('h1', {}, 'Screens'),
           el('p', { class: 'sub' }, `${devices.length} screen${devices.length === 1 ? '' : 's'} · ${online} online · updates every 10 seconds`)),
-        el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add by code')),
+        el('div', { class: 'row' },
+          updatable.length ? el('button', {
+            class: 'btn',
+            onclick: () => confirmDialog(`Update ${updatable.length} screen${updatable.length === 1 ? '' : 's'}?`,
+              `They get Kiosk Player ${updatable[0].app.latest.version} at their next check-in. Each closes for a few seconds while it installs.`, 'Update',
+              () => attempt(async () => {
+                const { started } = await api('POST', 'api/devices/update-all');
+                toast(`${started} screen${started === 1 ? '' : 's'} updating`);
+                draw();
+              })),
+          }, icon('download', 18), `Update all screens (${updatable.length})`) : null,
+          el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add by code'))),
       waiting.length ? waitingCard(waiting, manySites, playlists, devices, draw) : null,
       devices.length === 0
         ? el('div', { class: 'empty' }, 'No screens yet. Open Kiosk Player on a TV and choose “Find my server automatically”; it then appears here under “New screens waiting”.')
@@ -531,7 +550,7 @@ function waitingCard(waiting, manySites, playlists, devices, redraw) {
             el('strong', {}, pretty(w.pairing_code)), ' on its screen')),
         el('button', {
           class: 'btn primary small',
-          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, playlists, devices, onDone: redraw }),
+          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, mounting: w.mounting, playlists, devices, onDone: redraw }),
         }, 'Add')))),
   );
 }
@@ -559,15 +578,105 @@ function screenCard(d, playlists, devices, redraw) {
     d.download ? el('div', {},
       el('div', { class: 'warn' }, `Downloading ${Math.min(d.download.done + 1, d.download.total)} of ${d.download.total} new files`),
       el('div', { class: 'progress', style: 'margin-top:6px' }, el('div', { style: `width:${Math.round((d.download.done / d.download.total) * 100)}%` }))) : null,
-    el('div', { class: 'meta' }, d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : '', d.app_version ? ` · App ${d.app_version}` : ''),
+    el('div', { class: 'meta' }, [
+      d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : null,
+      d.app_version ? `App ${d.app_version}` : null,
+      d.app && d.app.android_sdk ? androidName(d.app.android_sdk) : null,
+    ].filter(Boolean).join(' · ')),
+    isSpongebob() ? appUpdateHint(d) : null,
+    jobBox('Reset sync', d.resync, resyncText),
+    jobBox(`App update${d.app && d.app.latest ? ` to ${d.app.latest.version}` : ''}`, d.app && d.app.update, (job) => updateText(job, d)),
     el('div', { class: 'row' },
       el('button', { class: 'btn text small', onclick: () => screenForm({ device: d, site: d.site, playlists, devices, onDone: redraw }) }, 'Edit'),
+      isSpongebob() && d.kind !== 'browser' ? el('button', {
+        class: 'btn text small',
+        disabled: jobRunning(d.resync),
+        onclick: () => resyncDialog(d, redraw),
+      }, icon('resync', 16), 'Reset sync') : null,
+      isSpongebob() && d.app && d.app.update_available ? el('button', {
+        class: 'btn text small',
+        disabled: jobRunning(d.app.update) || d.app.can_install_apps === false,
+        onclick: () => attempt(async () => {
+          await api('POST', `api/devices/${d.id}/update`);
+          toast(`${d.name} gets the new app at its next check-in`);
+          redraw();
+        }),
+      }, icon('download', 16), 'Update app') : null,
       el('button', {
         class: 'btn danger small',
         onclick: () => confirmDialog(`Remove ${d.name}?`, 'The TV stops getting updates and shows a new pairing code, so it can be added again later.', 'Remove',
           () => attempt(async () => { await api('DELETE', `api/devices/${d.id}`); toast(`${d.name} removed`); redraw(); })),
       }, 'Remove')),
   );
+}
+
+// ---------- Reset sync and app updates (0.11.0, Spongebob only) ----------
+
+const isSpongebob = () => Boolean(me && me.role === 'superadmin');
+const jobRunning = (job) => Boolean(job && job.step !== 'done' && job.step !== 'failed');
+const ANDROID_NAMES = { 26: '8', 27: '8.1', 28: '9', 29: '10', 30: '11', 31: '12', 32: '12L', 33: '13', 34: '14', 35: '15', 36: '16' };
+const androidName = (sdk) => `Android ${ANDROID_NAMES[sdk] || `(API ${sdk})`}`;
+
+/** A Reset sync or app update in progress, or how it ended. */
+function jobBox(title, job, describe) {
+  if (!job) return null;
+  const failed = job.step === 'failed';
+  const progress = job.step === 'downloading' && job.total ? job.done / job.total : null;
+  return el('div', { role: 'status', class: 'job-box' },
+    el('div', { class: failed ? 'error' : 'warn' }, title),
+    el('div', {}, describe(job)),
+    progress !== null ? el('div', { class: 'progress' }, el('div', { style: `width:${Math.round(progress * 100)}%` })) : null,
+    job.note ? el('div', { class: 'meta' }, job.note) : null);
+}
+
+function resyncText(job) {
+  switch (job.step) {
+    case 'waiting': return 'Waiting for the screen. It checks in about once a minute.';
+    case 'downloading': return job.total
+      ? `Downloading a fresh copy: ${Math.min(job.done + 1, job.total)} of ${job.total} files. Still playing the current files.`
+      : 'Downloading a fresh copy. Still playing the current files.';
+    case 'switching': return 'All files are in. Switching to the fresh copy and deleting the old files…';
+    case 'done': return 'Done: playing the fresh copy. Old files deleted.';
+    default: return job.error || 'It didn’t work.';
+  }
+}
+
+function updateText(job, d) {
+  const version = d.app && d.app.latest ? d.app.latest.version : 'the new app';
+  switch (job.step) {
+    case 'waiting': return 'Waiting for the screen. It checks in about once a minute.';
+    case 'downloading': return `Downloading Kiosk Player ${version}…`;
+    case 'waiting_for_install': return `Waiting for someone to press Install on the TV.${d.app.android_sdk && d.app.android_sdk < 31 ? ` This TV runs ${androidName(d.app.android_sdk)}, which asks every time.` : ''}`;
+    case 'installing': return 'Installing. The player closes for a few seconds and reopens by itself.';
+    case 'done': return `Updated to ${job.version || version}.`;
+    default: return job.error || 'The update didn’t work.';
+  }
+}
+
+/** Whether this screen's app can be updated from here, and how. */
+function appUpdateHint(d) {
+  const app = d.app;
+  if (!app || !app.latest || d.kind === 'browser' || jobRunning(app.update)) return null;
+  if (app.version_code == null) {
+    return d.app_version ? el('div', { class: 'meta' }, `Install Kiosk Player ${app.latest.version} on this TV by hand once; after that, updates come from here.`) : null;
+  }
+  if (!app.update_available) return null;
+  if (app.can_install_apps === false) {
+    return el('div', { class: 'warn' }, 'Can’t update from here yet: on the TV, allow Kiosk Player under Settings → Apps → Special app access → Install unknown apps.');
+  }
+  return el('div', { class: 'meta' }, `Update available: ${d.app_version || 'this app'} → ${app.latest.version}`,
+    app.android_sdk >= 31 ? ' (installs by itself on Android 12 and newer, after the first time)' : ' (someone presses Install on the TV)');
+}
+
+function resyncDialog(d, onDone) {
+  confirmDialog(`Reset sync on ${d.name}?`,
+    'The TV downloads every file in its playlist again, from scratch. It keeps playing what it has meanwhile, then switches to the fresh copy and deletes the old files. If the TV hasn’t enough space for both, it deletes first and shows “Getting content ready” until the files are back.',
+    'Reset sync',
+    () => attempt(async () => {
+      await api('POST', `api/devices/${d.id}/resync`);
+      toast(`${d.name} starts at its next check-in`);
+      onDone();
+    }));
 }
 
 function addScreenDialog(playlists, devices, onDone) {
@@ -595,7 +704,7 @@ function addScreenDialog(playlists, devices, onDone) {
 }
 
 /** Name, location, how the screen is mounted and its playlist. New (code) or existing (device). */
-async function screenForm({ code, device, kind = device?.kind, site = null, playlists, devices, onDone }) {
+async function screenForm({ code, device, kind = device?.kind, site = null, mounting: asked = null, playlists, devices, onDone }) {
   // Every location, to choose from (or add a new one). A screen has to be in one:
   // that is where its playlist and its working hours come from.
   const data = await attempt(() => api('GET', 'api/locations'));
@@ -614,7 +723,8 @@ async function screenForm({ code, device, kind = device?.kind, site = null, play
       if (!newLocation.hidden) newLocation.focus();
       updateWarning();
     });
-    let mounting = mountingOf(device);
+    // A new TV says how staff turned its picture (Turn picture on the TV).
+    let mounting = device ? mountingOf(device) : (MOUNTINGS[asked] ? asked : 'landscape');
     // null means Automatic: the screen follows its site's Landscape or Portrait playlist.
     let playlistId = device?.playlist_id ?? null;
     // The chosen location's name ("" until one is chosen, or while a new one is being typed).
@@ -1387,11 +1497,14 @@ function googleAccountDialog(user, onDone) {
     };
     return el('form', { method: 'dialog', onsubmit: (e) => { e.preventDefault(); save(email.value.trim() || null); } },
       el('h2', {}, `Google account for ${user.username}`),
-      el('p', { class: 'meta', style: 'margin:0' }, 'On the public dashboard address, people sign in with Google only. Signing in with this Google account gives this user’s role. Their username and password keep working at home and in the phone app.'),
+      el('p', { class: 'meta', style: 'margin:0' }, user.has_password
+        ? 'On the public dashboard address, people sign in with Google only. Signing in with this Google account gives this user’s role. Their username and password keep working at home and in the phone app.'
+        : 'Signing in with this Google account gives this user’s role. They have no password, so Google is their only way in: unlinking needs a password first.'),
       el('label', { class: 'field', for: 'google-email' }, 'Google account (email)', email),
       problem,
       el('div', { class: 'dialog-actions' },
         user.google_email ? el('button', { type: 'button', class: 'btn text danger', onclick: () => save(null) }, 'Unlink') : null,
+        user.google_email && !user.has_password ? el('button', { type: 'button', class: 'btn text', onclick: () => { dialog.close(); resetPasswordDialog(user, onDone); } }, 'Set a password…') : null,
         el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
         el('button', { class: 'btn primary' }, 'Save')));
   });
@@ -1424,49 +1537,97 @@ function changeMyPasswordDialog() {
 }
 
 async function pageUsers(page) {
+  // Google account first once Google sign-in is set up; until then, username and password.
+  const googleReady = Boolean(config && config.web_google_client_id);
+  let method = googleReady ? 'google' : 'password';
   async function draw() {
     const users = await api('GET', 'api/users');
-    const username = el('input', { type: 'text', id: 'new-username', placeholder: 'e.g. patrick', autocomplete: 'off', autocapitalize: 'none', spellcheck: false, required: true });
-    const pw = passwordField('new-user-password', 'Password');
     const role = el('select', { id: 'new-user-role' }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === 'content_uploader' }, r.label)));
     const problem = el('div', { class: 'error', role: 'alert' });
+
+    // Google account
+    const email = el('input', { type: 'email', id: 'new-user-google', placeholder: 'e.g. sandy.cheeks@gmail.com', autocomplete: 'off', spellcheck: false });
+    const googleHint = el('span', { class: 'meta' });
+    const hint = () => {
+      const value = email.value.trim().toLowerCase();
+      googleHint.textContent = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+        ? `They’ll sign in with “Sign in with Google” on the dashboard. Kiosk makes their username from the address (usually the address itself). No password needed; you can give them one later for the phone app.`
+        : 'No password needed: they sign in with “Sign in with Google” on the dashboard. Kiosk makes their username from the address. You can give them a password later for the phone app.';
+    };
+    email.addEventListener('input', hint);
+    hint();
+
+    // Username and password
+    const username = el('input', { type: 'text', id: 'new-username', placeholder: 'e.g. patrick', autocomplete: 'off', autocapitalize: 'none', spellcheck: false });
+    const pw = passwordField('new-user-password', 'Password');
+
+    const tab = (key, label, iconName) => el('button', {
+      type: 'button', class: `btn small ${method === key ? 'primary' : ''}`, 'aria-pressed': String(method === key),
+      onclick: () => { method = key; draw(); },
+    }, icon(iconName, 16), label);
+
     fill(page,
       el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, 'Users'),
-        el('p', { class: 'sub' }, 'Who may use the Kiosk Admin phone app and this web page. Each person signs in with a username and password you make here.'))),
+        el('p', { class: 'sub' }, 'Who may use this web page and the Kiosk Admin phone app. Add someone by their Google account, or give them a username and password.'))),
+      method === 'google' && !googleReady ? el('div', { class: 'card note-card', role: 'status' },
+        'Google sign-in isn’t set up yet, so people added by Google account can’t sign in until it is. ',
+        el('a', { href: '#/settings' }, 'Set it up in Settings → Public dashboard'), '.') : null,
       el('form', {
         class: 'card', style: 'display:flex;flex-direction:column;gap:12px',
         onsubmit: async (e) => {
           e.preventDefault();
           problem.textContent = '';
           try {
-            const made = await api('POST', 'api/users', { username: username.value.trim(), role: role.value, password: pw.input.value });
-            toast(`${made.username} can sign in now. Tell them their username and password.`);
+            if (method === 'google') {
+              const made = await api('POST', 'api/users', { google_email: email.value.trim(), role: role.value });
+              toast(`${made.google_email} can sign in with Google now, as ${ROLES[made.role].label}. Send them the dashboard address.`);
+            } else {
+              const made = await api('POST', 'api/users', { username: username.value.trim(), role: role.value, password: pw.input.value });
+              toast(`${made.username} can sign in now. Tell them their username and password.`);
+            }
             draw();
           } catch (err) { problem.textContent = err.message; }
         },
       },
       el('h2', {}, 'Add someone'),
-      el('div', { class: 'user-form' },
-        el('label', { class: 'field', for: 'new-username' }, 'Username', username),
-        pw.field,
-        el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
-      el('span', { class: 'meta' }, 'The password needs at least 8 characters. Kiosk keeps it scrambled and can’t show it again, so note it down for them.'),
+      el('div', { role: 'group', 'aria-label': 'How will they sign in?', class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+        el('span', { class: 'meta', style: 'margin-right:6px' }, 'How will they sign in?'),
+        tab('google', 'Google account', 'mail'),
+        tab('password', 'Username and password', 'lock')),
+      method === 'google'
+        ? [
+          el('div', { class: 'user-form' },
+            el('label', { class: 'field', for: 'new-user-google' }, 'Their Google account (email)', email),
+            el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
+          googleHint,
+        ]
+        : [
+          el('div', { class: 'user-form' },
+            el('label', { class: 'field', for: 'new-username' }, 'Username', username),
+            pw.field,
+            el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
+          el('span', { class: 'meta' }, 'The password needs at least 8 characters. Kiosk keeps it scrambled and can’t show it again, so note it down for them. Add a Google account later for the public dashboard.'),
+        ],
       problem,
       el('div', {}, el('button', { class: 'btn primary' }, 'Add user'))),
       el('div', { class: 'section-label' }, `${users.length} ${users.length === 1 ? 'person' : 'people'}`),
       users.length === 0
-        ? el('div', { class: 'empty' }, 'Nobody yet. Add the first person above; they can then sign in on the phone app.')
+        ? el('div', { class: 'empty' }, 'Nobody yet. Add the first person above.')
         : el('div', { class: 'list' }, users.map((u) => {
           const isMe = !me.via_home_assistant && u.username === me.username;
-          return el('div', { class: 'list-row' },
+          return el('div', { class: 'list-row', style: 'flex-wrap:wrap' },
             el('div', { class: 'grow' }, el('div', { class: 'name' }, u.username),
-              el('div', { class: 'meta' }, isMe ? `You · ${ROLES[u.role].label}` : (u.has_password ? '' : 'No password yet: set one so they can sign in')),
-              u.google_email ? el('div', { class: 'meta' }, `Google: ${u.google_email}`) : null),
+              el('div', { class: 'row', style: 'gap:6px;margin-top:4px;flex-wrap:wrap' },
+                isMe ? el('span', { class: 'meta' }, `You · ${ROLES[u.role].label}`) : null,
+                u.google_email ? el('span', { class: 'chip primary' }, icon('mail', 12), `Google · ${u.google_email}`) : null,
+                u.has_password ? el('span', { class: 'chip primary' }, icon('lock', 12), 'Password') : null,
+                !u.google_email && !u.has_password ? el('span', { class: 'warn' }, 'No way to sign in yet: set a password or link Google') : null)),
             isMe ? null : el('select', {
               'aria-label': `Role for ${u.username}`,
               onchange: (e) => attempt(async () => { await api('PATCH', `api/users/${u.id}`, { role: e.target.value }); toast(`${u.username} is now ${ROLES[e.target.value].label}`); }),
             }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === u.role }, r.label))),
-            el('button', { class: 'btn text small', onclick: () => (isMe ? changeMyPasswordDialog() : resetPasswordDialog(u, draw)) }, isMe ? 'Change password' : 'New password'),
+            el('button', { class: 'btn text small', onclick: () => (isMe ? changeMyPasswordDialog() : resetPasswordDialog(u, draw)) },
+              isMe ? 'Change password' : (u.has_password ? 'New password' : 'Set password')),
             el('button', { class: 'btn text small', onclick: () => googleAccountDialog(u, draw) }, u.google_email ? 'Google…' : 'Link Google'),
             isMe ? null : el('button', {
               class: 'btn icon', 'aria-label': `Remove ${u.username}`,
@@ -1480,6 +1641,35 @@ async function pageUsers(page) {
     );
   }
   await attempt(draw);
+}
+
+// ---------- Settings → Sound (0.11.0) ----------
+
+/** One switch for every screen: videos play with or without sound. Playback copies follow it. */
+function soundCard(s, redraw) {
+  const sound = s.sound || { on: false, copies: { done: 0, total: 0 } };
+  const copies = sound.copies || { done: 0, total: 0 };
+  const remaking = s.transcode && s.transcode.active && copies.total > 0 && copies.done < copies.total;
+  return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
+    el('h2', { class: 'row', style: 'gap:8px' }, icon(sound.on ? 'volume' : 'volume-off', 20), 'Sound'),
+    el('p', { class: 'meta', style: 'margin:0' }, 'For every screen. With sound off, screens play videos silently whatever their TV’s volume is, and the playback copies are made without sound, so they’re a little smaller. Your files in Google Drive keep their sound.'),
+    el('label', { class: 'row', style: 'font-weight:600;min-height:44px' },
+      el('input', {
+        type: 'checkbox', checked: sound.on, style: 'width:20px;height:20px;accent-color:var(--primary)',
+        onchange: (e) => attempt(async () => {
+          await api('PATCH', 'api/settings', { play_sound: e.target.checked });
+          toast(e.target.checked ? 'Sound on for all screens' : 'Sound off for all screens');
+          redraw();
+        }),
+      }),
+      'Play videos with sound'),
+    el('div', { class: 'row meta', role: 'status' },
+      el('span', { class: 'dot', style: `width:10px;height:10px;border-radius:5px;background:${sound.on ? 'var(--accent)' : 'var(--success)'}` }),
+      sound.on ? 'Screens play videos with sound, at their TV’s volume. Screens change within a minute.'
+        : 'Every screen plays videos silently. Screens change within a minute.'),
+    remaking ? el('div', { class: 'meta' }, sound.on
+      ? `Remaking playback copies with sound: ${copies.done} of ${copies.total} done. Until a video’s new copy is ready, screens keep playing its silent one.`
+      : `Taking the sound out of playback copies: ${copies.done} of ${copies.total} done. Screens are already silent meanwhile.`) : null);
 }
 
 // ---------- Settings → Public dashboard (0.8.0) ----------
@@ -1976,9 +2166,11 @@ async function pageSettings(page) {
           ]
           : el('p', { class: 'meta' }, 'Not available on this server.')),
 
+      soundCard(s, draw),
+
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
         el('h2', {}, 'Playback copies'),
-        el('p', { class: 'meta', style: 'margin:0' }, 'Heavy 4K videos are hard for some TV boxes. The server can make a 1080p H.264 copy (and a smaller 720p one) after each video arrives. The original in Google Drive is left as it is. Turn this off on a slow machine, such as a Raspberry Pi, if the add-on becomes unresponsive.'),
+        el('p', { class: 'meta', style: 'margin:0' }, 'Heavy 4K videos are hard for some TV boxes. The server can make a 1080p H.264 copy (and a smaller 720p one) after each video arrives. The original in Google Drive is left as it is. Copies follow the Sound setting above. Turn this off on a slow machine, such as a Raspberry Pi, if the add-on becomes unresponsive.'),
         el('label', { class: 'row', style: 'font-weight:600' },
           el('input', {
             type: 'checkbox', checked: s.transcode.enabled, style: 'width:20px;height:20px;accent-color:var(--primary)',

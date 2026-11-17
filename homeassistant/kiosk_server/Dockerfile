@@ -15,6 +15,8 @@ RUN apk add --no-cache ffmpeg tailscale \
  && apk del .build-tools
 COPY app/src ./src
 COPY app/public ./public
+# The TV app (if the release built it), for updating screens from the dashboard.
+COPY app/player ./player
 
 ENV DATA_DIR=/data NODE_ENV=production
 EXPOSE 3000

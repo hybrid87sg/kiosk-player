@@ -38,6 +38,15 @@ enum class Mounting(val label: String, val shape: ScreenShape, val rotationDegre
     @SerialName("landscape_flipped") LANDSCAPE_FLIPPED("Landscape, upside down", ScreenShape.LANDSCAPE, 180),
 }
 
+/** The name the server uses for a mounting, e.g. "portrait_right". */
+val Mounting.wireName: String
+    get() = when (this) {
+        Mounting.LANDSCAPE -> "landscape"
+        Mounting.PORTRAIT_RIGHT -> "portrait_right"
+        Mounting.PORTRAIT_LEFT -> "portrait_left"
+        Mounting.LANDSCAPE_FLIPPED -> "landscape_flipped"
+    }
+
 /** Puts the server's orientation and its "flipped" flag together. */
 fun mountingOf(orientation: Mounting, flipped: Boolean): Mounting =
     if (flipped && orientation == Mounting.LANDSCAPE) Mounting.LANDSCAPE_FLIPPED else orientation
@@ -308,9 +317,53 @@ data class PlayerPlaylist(
     val hours: Map<String, DayHours?>? = null,
     /** A landscape screen mounted upside down. Use [mounting] to read it. */
     val flipped: Boolean = false,
+    /** Settings → Sound. False: videos play silently. Servers from before 0.11.0 don't send it: sound on. */
+    val sound: Boolean = true,
+    /** Asked for on the dashboard: Reset sync, an app update (0.11.0). */
+    val actions: PlayerActions = PlayerActions(),
 ) {
     val mounting: Mounting get() = mountingOf(orientation, flipped)
 }
+
+/** What the dashboard asked this TV to do. */
+@Serializable
+data class PlayerActions(
+    /** Reset sync: download every file again from scratch. The id is reported back with progress. */
+    val resync: String? = null,
+    /** Install the app that came with the server. */
+    val update: AppUpdate? = null,
+)
+
+@Serializable
+data class AppUpdate(
+    val id: String,
+    val version: String,
+    @SerialName("version_code") val versionCode: Int,
+    val size: Long,
+    val sha256: String,
+    val url: String,
+)
+
+/** Progress of a Reset sync or an app update, sent with the heartbeat. */
+@Serializable
+data class JobReport(
+    val id: String,
+    /** resync: downloading, switching, done, failed. update: downloading, waiting_for_install, installing, failed. */
+    val step: String,
+    val done: Int? = null,
+    val total: Int? = null,
+    val error: String? = null,
+    val note: String? = null,
+)
+
+/** What the TV app says about itself in each heartbeat (0.11.0). */
+data class DeviceReport(
+    val androidSdk: Int? = null,
+    val versionCode: Int? = null,
+    val canInstallApps: Boolean? = null,
+    val resync: JobReport? = null,
+    val update: JobReport? = null,
+)
 
 /** Opening and closing time on one day, e.g. "08:00" and "18:00". */
 @Serializable

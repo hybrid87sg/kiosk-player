@@ -167,7 +167,8 @@ function planOne(profileId, probe) {
 
 // Which copies to make. 720p is skipped when the picture is already that small
 // (the 1080p copy is not upscaled, so it is the same size). 4K HEVC is optional.
-function planRenditions(probe, { hevc4k = false } = {}) {
+// sound: false makes every copy without sound (Settings → Sound off).
+function planRenditions(probe, { hevc4k = false, sound = true } = {}) {
   if (!probe || !probe.video || !probe.video.width || !probe.video.height) return [];
   const jobs = [planOne('h264_1080', probe)];
   if (largerThan(probe.video.width, probe.video.height, PROFILES.h264_720)) {
@@ -176,7 +177,13 @@ function planRenditions(probe, { hevc4k = false } = {}) {
   if (hevc4k && largerThan(probe.video.width, probe.video.height, PROFILES.h264_1080)) {
     jobs.push(planOne('hevc_2160', probe));
   }
+  if (!sound) for (const job of jobs) job.audio = { none: true };
   return jobs;
+}
+
+// Takes the sound out of a finished copy without encoding it again (Sound turned off).
+function silenceArgs(input, output) {
+  return ['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-map', '0:v:0', '-c', 'copy', '-an', '-movflags', '+faststart', '-f', 'mp4', output];
 }
 
 // Caps each side, swaps the cap for portrait, and refuses to enlarge.
@@ -342,6 +349,7 @@ function normalizeDecoderCaps(input) {
 }
 
 module.exports = {
+  silenceArgs,
   PROFILES,
   PROFILE_IDS,
   summarizeProbe,

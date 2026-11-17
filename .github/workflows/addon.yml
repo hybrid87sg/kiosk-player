@@ -119,8 +119,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The TV app goes inside the add-on, so screens can be updated from the dashboard.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the TV app
+        working-directory: android
+        run: ./gradlew :player:assembleDebug
+
       - name: Put the add-on together
-        run: bash homeassistant/package-addon.sh
+        run: |
+          bash homeassistant/package-addon.sh
+          test -f homeassistant/dist/kiosk_server/app/player/kiosk-player.apk
 
       - name: Read the add-on's version
         id: version
