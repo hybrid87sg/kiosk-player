@@ -21,6 +21,15 @@ const { isAllowed, pinMatches } = require('./core/rules');
 const { findServers } = require('./core/finder');
 
 const BAR_HEIGHT = 76; // the bar under the web page (Back, Start over)
+// What counts as "someone is still using it": touches, taps, clicks, scrolling and typing,
+// anywhere on the page, embedded frames included (booking forms, maps, payment boxes).
+// A mouse merely resting or drifting over the screen doesn't count.
+const STILL_THERE = new Set([
+  'mouseDown', 'mouseWheel', 'rawKeyDown', 'keyDown', 'char',
+  'touchStart', 'touchMove', 'pointerDown',
+  'gestureTapDown', 'gestureTap', 'gestureScrollBegin', 'gestureScrollUpdate', 'gestureFlingStart',
+  'gesturePinchBegin', 'gesturePinchUpdate', 'gestureLongPress', 'gestureDoubleTap', 'gestureTwoFingerTap',
+]);
 const LEAVE_MS = 15 * 60 * 1000; // staff "Leave for 15 minutes"
 
 // Signage videos play with sound without anyone touching first, as on the TVs.
@@ -118,6 +127,16 @@ function startSession() {
   };
   wc.on('will-navigate', stopIfNotAllowed);
   wc.on('will-redirect', stopIfNotAllowed);
+  // Every input the page receives, from the app itself: the page's own helper (preload-web.js)
+  // only runs in the main page, not inside embedded frames.
+  let lastInput = 0;
+  wc.on('input-event', (event, input) => {
+    if (!STILL_THERE.has(input.type)) return;
+    const now = Date.now();
+    if (now - lastInput < 500) return;
+    lastInput = now;
+    if (view && view.webContents === wc) stillThere();
+  });
   wc.on('render-process-gone', () => endSession());
   wc.on('did-fail-load', (e, code, desc, url, isMainFrame) => {
     if (isMainFrame && code !== -3) win && win.webContents.send('notice', 'The page didn’t load. Check the internet connection, or tap Start over.');
