@@ -876,6 +876,7 @@ function createApp({
 
   // Landscape screens play landscape playlists; a screen turned on its side plays portrait ones.
   const shapeOf = (deviceOrientation) => (deviceOrientation === 'landscape' ? 'landscape' : 'portrait');
+  const uprightOf = (device) => Boolean(device.upright) && device.orientation !== 'landscape';
   const SHAPE_SQL = `(CASE WHEN devices.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END)`;
   const AUTO_NAMES = { landscape: 'Landscape', portrait: 'Portrait' };
 
@@ -1119,6 +1120,8 @@ function createApp({
       // from before this existed keep working: they just don't know about the flip.
       flipped: Boolean(d.flipped) && d.orientation === 'landscape',
       can_flip: versionAtLeast(d.app_version, '0.5.0'), // older TV apps can't turn the picture upside down
+      // A portrait display whose picture is already upright: nothing is turned (0.11.2).
+      upright: Boolean(d.upright) && d.orientation !== 'landscape',
       // null = "Automatic": the screen follows its location's Landscape or Portrait playlist.
       playlist_id: d.playlist_id,
       playlist_name: playlist ? playlist.name : null, // null: it has no location yet, so nothing to play
@@ -1233,6 +1236,11 @@ function createApp({
       }
       out.orientation = body.orientation;
       if (body.orientation !== 'landscape') out.flipped = 0; // only a landscape screen can be upside down
+      if (body.orientation === 'landscape') out.upright = 0; // only a portrait screen can be "already upright"
+    }
+    if (body.upright !== undefined) {
+      if (typeof body.upright !== 'boolean') return { error: 'upright must be true or false' };
+      out.upright = body.upright && (out.orientation ?? 'portrait_right') !== 'landscape' ? 1 : 0;
     }
     if (body.flipped !== undefined) {
       if (typeof body.flipped !== 'boolean') return { error: 'flipped must be true or false' };
@@ -1327,6 +1335,7 @@ function createApp({
     if (error) return res.status(400).json({ error });
     const device = db.prepare(`SELECT * FROM devices WHERE pairing_code = ? AND claimed = 0`).get(code);
     if (!device) return res.status(404).json({ error: 'No player is showing that code' });
+    if (fields.upright && (fields.orientation ?? device.orientation) === 'landscape') fields.upright = 0;
     db.transaction(() => {
       db.prepare(`UPDATE devices SET claimed = 1, pairing_code = NULL WHERE id = ?`).run(device.id);
       applyDeviceFields(device.id, fields);
@@ -1343,6 +1352,7 @@ function createApp({
     const { error, fields } = checkDeviceFields(req.body || {}, { partial: true });
     if (error) return res.status(400).json({ error });
     if (fields.flipped && (fields.orientation ?? device.orientation) !== 'landscape') fields.flipped = 0;
+    if (fields.upright && (fields.orientation ?? device.orientation) === 'landscape') fields.upright = 0;
     applyDeviceFields(device.id, fields);
     ensureLocation(device.site, fields.location);
     tellRelayAbout(device.id);
@@ -1831,7 +1841,10 @@ function createApp({
       version: `${device.config_version}.${playlist ? playlist.id : 0}.${playlist ? playlist.version : 0}.${choices}.${ids(playing)}` +
         (ahead.length ? `~${ids(ahead)}` : ''),
       name: device.name,
-      orientation: device.orientation,
+      // The TV turns its picture by this. A portrait display that is already upright is told
+      // "landscape" (turn nothing): TV apps of every version then show it as it is, while the
+      // server still picks its Portrait playlist.
+      orientation: uprightOf(device) ? 'landscape' : device.orientation,
       flipped: Boolean(device.flipped) && device.orientation === 'landscape',
       playlist_name: playlist ? playlist.name : null,
       items: playing,
@@ -2168,7 +2181,7 @@ function createApp({
 
     // A relay's own screens only. Another relay's screen is 404, as if it didn't exist.
     const RELAY_PLAYER_FIELDS = [
-      'id', 'name', 'location', 'location_id', 'orientation', 'flipped', 'online', 'last_seen', 'current_media_id',
+      'id', 'name', 'location', 'location_id', 'orientation', 'flipped', 'upright', 'online', 'last_seen', 'current_media_id',
       'current_filename', 'playlist_id', 'playlist_name', 'playlist_auto', 'playing_playlist_id', 'app_version', 'model',
       'free_bytes', 'open_now', 'after_hours', 'hours_summary', 'playback_error', 'last_restart', 'download',
     ];

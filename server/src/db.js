@@ -156,6 +156,10 @@ function openDatabase(dataDir) {
   // Playlists belong to a location (see the playlists table's "auto" column below).
   addColumnIfMissing(db, 'playlists', 'location_id', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'flipped', 'INTEGER'); // 1 = a landscape screen mounted upside down
+  // 0.11.2: 1 = a portrait display whose picture is already upright (e.g. a Rockchip signage
+  // stand, where Android itself runs in portrait). It plays portrait playlists, and the TV is
+  // told not to turn anything. Kept beside "orientation" so existing apps keep working.
+  addColumnIfMissing(db, 'devices', 'upright', 'INTEGER');
   // 0.10.0: a Windows "Kiosk Browser" (kind 'browser'): shows signage when idle and a web page on touch.
   addColumnIfMissing(db, 'devices', 'kind', 'TEXT'); // null = a TV running Kiosk Player
   addColumnIfMissing(db, 'devices', 'kiosk_url', 'TEXT'); // the page customers use

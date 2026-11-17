@@ -143,10 +143,18 @@ const MOUNTINGS = {
   portrait_right: { label: 'Portrait, turned right', shape: 'portrait' },
   portrait_left: { label: 'Portrait, turned left', shape: 'portrait' },
   landscape_flipped: { label: 'Landscape, upside down', shape: 'landscape' },
+  portrait_upright: { label: 'Portrait, already upright', shape: 'portrait', hint: 'Tall signage displays, e.g. Rockchip' },
 };
-// The server keeps "upside down" as a flag beside the orientation, so older apps still work.
-const mountingOf = (d) => (d && d.flipped && d.orientation === 'landscape' ? 'landscape_flipped' : (d && d.orientation) || 'landscape');
-const mountingBody = (key) => (key === 'landscape_flipped' ? { orientation: 'landscape', flipped: true } : { orientation: key, flipped: false });
+// The server keeps "upside down" and "already upright" as flags beside the orientation, so older apps still work.
+const mountingOf = (d) => {
+  if (d && d.upright && d.orientation !== 'landscape') return 'portrait_upright';
+  return d && d.flipped && d.orientation === 'landscape' ? 'landscape_flipped' : (d && d.orientation) || 'landscape';
+};
+const mountingBody = (key) => {
+  if (key === 'landscape_flipped') return { orientation: 'landscape', flipped: true, upright: false };
+  if (key === 'portrait_upright') return { orientation: 'portrait_right', flipped: false, upright: true };
+  return { orientation: key, flipped: false, upright: false };
+};
 const playlistLabel = (p) => (p.auto ? `${p.name} (automatic)` : p.name);
 // Where "back" goes from a playlist: people who manage screens see playlists under Locations.
 const playlistsHome = () => (me && me.role === 'content_uploader' ? '#/playlists' : '#/locations');
@@ -161,7 +169,7 @@ function mountIcon(key, size = 24) {
   const portrait = MOUNTINGS[key].shape === 'portrait';
   const w = portrait ? Math.round(size * 0.62) : size;
   const h = portrait ? size : Math.round(size * 0.62);
-  const edge = { landscape: 'top', landscape_flipped: 'bottom', portrait_right: 'right', portrait_left: 'left' }[key];
+  const edge = { landscape: 'top', landscape_flipped: 'bottom', portrait_right: 'right', portrait_left: 'left', portrait_upright: 'top' }[key];
   return el('span', {
     class: 'mount-icon', 'aria-hidden': 'true',
     style: `width:${w}px;height:${h}px;border-${edge}-width:5px`,
@@ -748,21 +756,38 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
       return el('label', { class: `choice${off ? ' disabled' : ''}` },
         el('input', { type: 'radio', name: 'mounting', value: key, checked: mounting === key, disabled: off, onchange: () => { mounting = key; updateWarning(); } }),
         el('span', {}, mountIcon(key, 26), ' ', m.label,
+          m.hint && kind !== 'browser' ? [el('br'), el('span', { class: 'meta' }, m.hint)] : null,
           off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.5.0 or newer; this TV has ${device.app_version || 'an older version'}.`)] : null));
     }));
     const autoMeta = el('span', { class: 'meta' });
-    // Automatic first; then the chosen location's extra playlists (and the one in use, wherever it is).
+    // Automatic first. Then any playlist can be chosen for just this screen (an override): the
+    // chosen location's own (its Landscape and Portrait ones too), then every other location's.
     const autoInput = el('input', { type: 'radio', name: 'playlist', value: '', checked: playlistId === null, onchange: () => { playlistId = null; updateWarning(); } });
     const extraBox = el('div', { class: 'choices', style: 'display:contents' });
     const extraHint = el('span', { class: 'meta' });
+    let showOthers = false;
     function drawExtras() {
       const where = chosenLocation();
-      const extras = playlists.filter((p) => !p.auto && ((!p.unassigned && p.location === where) || p.id === playlistId));
-      fill(extraBox, extras.map((p) =>
-        el('label', { class: 'choice' },
-          el('input', { type: 'radio', name: 'playlist', value: p.id, checked: playlistId === p.id, onchange: () => { playlistId = p.id; autoInput.checked = false; updateWarning(); } }),
-          el('span', {}, el('strong', {}, p.name), el('br'), el('span', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} item${p.item_count === 1 ? '' : 's'}`)))));
-      extraHint.textContent = extras.length || !where ? '' : `To show something different on one screen, add an extra playlist for ${where} under Locations.`;
+      const here = (p) => !p.unassigned && p.location === where;
+      const option = (p) => el('label', { class: 'choice' },
+        el('input', { type: 'radio', name: 'playlist', value: p.id, checked: playlistId === p.id, onchange: () => { playlistId = p.id; autoInput.checked = false; updateWarning(); } }),
+        el('span', {}, el('strong', {}, p.name),
+          p.auto ? el('span', { class: 'meta' }, ' (automatic)') : null,
+          el('br'),
+          el('span', { class: 'meta' }, `${SHAPES[p.orientation]} · ${p.item_count} item${p.item_count === 1 ? '' : 's'}${here(p) ? '' : ` · ${p.unassigned ? 'no location' : p.location}`}`)));
+      const mine = playlists.filter(here);
+      const others = playlists.filter((p) => !here(p));
+      // The one in use is always shown, even if it belongs to another location.
+      const open = showOthers || others.some((p) => p.id === playlistId);
+      fill(extraBox,
+        mine.length ? el('span', { class: 'meta', style: 'grid-column:1/-1;margin-top:6px' }, `Or always play one of ${where}’s playlists:`) : null,
+        mine.map(option),
+        others.length && open ? [el('span', { class: 'meta', style: 'grid-column:1/-1;margin-top:6px' }, 'Other locations’ playlists:'), others.map(option)] : null,
+        others.length && !open ? el('button', {
+          type: 'button', class: 'btn text', style: 'grid-column:1/-1;justify-self:start',
+          onclick: () => { showOthers = true; drawExtras(); },
+        }, `Show playlists from other locations (${others.length})`) : null);
+      extraHint.textContent = where ? '' : 'Choose a location to see its playlists.';
     }
     const playlistChoices = el('div', { class: 'choices' },
       el('label', { class: 'choice' }, autoInput, el('span', {}, el('strong', {}, 'Automatic'), el('br'), autoMeta)),
@@ -826,7 +851,7 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
     el('div', { class: 'field' }, el('strong', {}, 'How the screen is mounted'), mountChoices,
       el('span', { class: 'meta' }, kind === 'browser'
         ? 'This picks its Landscape or Portrait playlist. Turn a Windows screen in Windows itself: Settings → System → Display → Display orientation.'
-        : 'Pick the way the top of the picture should point. Kiosk Player turns the picture to match, because TV boxes always send a landscape picture.')),
+        : 'Pick the way the top of the picture should point. Kiosk Player turns the picture to match, because most TV boxes send a landscape picture. If the display already shows its own menus upright on a tall screen, pick Portrait, already upright: nothing is turned.')),
     el('div', { class: 'field' }, el('strong', {}, 'Playlist'), playlistChoices, extraHint),
     warning,
     browserFields,
