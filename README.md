@@ -462,6 +462,16 @@ On **Users**, press **Link Google** next to each person and enter their Google a
 Google account that isn't linked is refused. Their username and password keep working at home and
 in the phone app.
 
+The first time someone signs in with Google, Kiosk remembers **that exact Google account**, not just
+its email address. So if the address later passes to someone else (a work address given to a new
+member of staff, or a lapsed domain), the new account is refused. If a person really did get a new
+Google account with the same address, **Unlink** and **Link Google** again; their next sign-in is
+remembered instead.
+
+To protect the internet address, each visitor gets 10 Google sign-in attempts a minute, and the browser
+is told to run only Kiosk's own code and Google's sign-in button. Signed-in sessions are stored scrambled
+(like passwords), so a copy of a Home Assistant backup can't be used to sign in.
+
 ### Windows web kiosk: Kiosk Browser (optional)
 
 A Windows PC with a touch screen can be a **web kiosk**: while nobody uses it, it plays its playlist
@@ -568,6 +578,7 @@ same way, connect with Tailscale, and sign in.
 | Public dashboard: **Needs Funnel** or **Needs HTTPS** | Press **Open Tailscale to allow it** on that card, signed in as the Tailscale account owner. Kiosk tries again every minute. |
 | Public address: "Google sign-in isn't set up yet" | Paste the Google web client ID under **Settings → Public dashboard** (part B). |
 | Public address: Google says the **origin isn't allowed** (error 400) | In Google Cloud, the client's **Authorized JavaScript origins** must be exactly the address shown under Settings, starting `https://`, with no slash at the end. Changes there can take a few minutes. |
+| Public address: "This isn't the Google account that was linked" | Kiosk remembers the Google account used the first time. If it's the right person with a new Google account, press **Unlink** then **Link Google** on **Users** again. |
 | Public address: "… isn't linked to a Kiosk user" | On **Users**, press **Link Google** for that person and enter exactly that Google account. |
 | Public address: Google says "access blocked" or "app not verified" | In Google Cloud's consent screen, add that account as a test user, or **Publish app**. |
 | Kiosk Browser: "Windows protected your PC" when installing | It isn't signed with a paid certificate. Click **More info → Run anyway**. |

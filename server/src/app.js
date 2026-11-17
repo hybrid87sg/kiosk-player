@@ -347,25 +347,48 @@ function createApp({
     }
     tries.delete(username);
     const token = auth.newToken();
-    db.prepare(`INSERT INTO sessions (token, user_id, created_at, method) VALUES (?, ?, ?, 'password')`).run(token, user.id, now);
+    db.prepare(`INSERT INTO sessions (token, user_id, created_at, method) VALUES (?, ?, ?, 'password')`).run(auth.hashToken(token), user.id, now);
     res.json({ token, username: user.email, email: user.email, role: user.role });
   });
 
   // "Sign in with Google" on the web dashboard (0.8.0). Only a Google account that Spongebob
   // linked to a user on the Users page gets in, with that user's role.
-  const googleTries = []; // times of recent attempts, for a simple overall limit
+  //
+  // Attempts are counted per visitor (their internet address), so someone sending junk
+  // can't use up everyone's tries. On the public address the add-on's Tailscale Funnel is
+  // the only caller, and it puts the visitor's real address in X-Forwarded-For (replacing
+  // any the visitor sent). A high overall limit stays as a backstop.
+  const GOOGLE_TRIES_PER_VISITOR = 10;
+  const GOOGLE_TRIES_OVERALL = 300;
+  const googleTries = new Map(); // visitor -> times of their attempts in the last minute
+  let googleTriesOverall = [];
+  const visitorOf = (req) => {
+    if (req.viaPublic) {
+      const forwarded = String(req.get('x-forwarded-for') || '').split(',').pop().trim();
+      if (forwarded) return forwarded;
+    }
+    return (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  };
   app.post('/api/auth/google', async (req, res) => {
     const now = Date.now();
-    while (googleTries.length && googleTries[0] < now - 60 * 1000) googleTries.shift();
-    if (googleTries.length >= 60) return res.status(429).json({ error: 'Too many sign-in attempts. Wait a minute and try again.' });
-    googleTries.push(now);
+    const recent = (times) => times.filter((t) => t > now - 60 * 1000);
+    const visitor = visitorOf(req);
+    const mine = recent(googleTries.get(visitor) || []);
+    googleTriesOverall = recent(googleTriesOverall);
+    if (mine.length >= GOOGLE_TRIES_PER_VISITOR || googleTriesOverall.length >= GOOGLE_TRIES_OVERALL) {
+      return res.status(429).json({ error: 'Too many sign-in attempts. Wait a minute and try again.' });
+    }
+    if (googleTries.size > 10000) googleTries.clear(); // never grows without limit
+    googleTries.set(visitor, [...mine, now]);
+    googleTriesOverall.push(now);
     const clientId = getSetting(db, 'google_web_client_id');
     if (!clientId) return res.status(400).json({ error: 'Google sign-in isn’t set up on this Kiosk yet (Settings → Public dashboard).' });
     const credential = (req.body || {}).credential;
     if (typeof credential !== 'string' || !credential || credential.length > 8192) return res.status(400).json({ error: 'No Google sign-in received' });
     let email;
+    let sub;
     try {
-      ({ email } = await google.verifyIdToken(credential, clientId));
+      ({ email, sub } = await google.verifyIdToken(credential, clientId));
     } catch {
       return res.status(401).json({ error: 'Google didn’t confirm that sign-in. Try again.' });
     }
@@ -374,13 +397,21 @@ function createApp({
       log(`Google sign-in refused: that Google account isn't linked to a Kiosk user`);
       return res.status(403).json({ error: `${email} isn’t linked to a Kiosk user. Ask whoever runs Kiosk to link it on the Users page.` });
     }
+    // The first sign-in remembers which Google account this is. After that only the same
+    // account gets in, even if its email address later belongs to a different account.
+    if (!user.google_sub) {
+      db.prepare(`UPDATE users SET google_sub = ? WHERE id = ? AND google_sub IS NULL`).run(sub, user.id);
+    } else if (user.google_sub !== sub) {
+      log(`Google sign-in refused for ${user.email}: a different Google account with the linked address`);
+      return res.status(403).json({ error: `This isn’t the Google account that was linked for ${email}. Ask whoever runs Kiosk to link it again on the Users page.` });
+    }
     const token = auth.newToken();
-    db.prepare(`INSERT INTO sessions (token, user_id, created_at, method) VALUES (?, ?, ?, 'google')`).run(token, user.id, now);
+    db.prepare(`INSERT INTO sessions (token, user_id, created_at, method) VALUES (?, ?, ?, 'google')`).run(auth.hashToken(token), user.id, now);
     res.json({ token, username: user.email, email: user.email, role: user.role });
   });
 
   app.post('/api/auth/logout', requireAnyUser, (req, res) => {
-    db.prepare(`DELETE FROM sessions WHERE token = ?`).run(auth.bearerToken(req));
+    db.prepare(`DELETE FROM sessions WHERE token = ?`).run(auth.sessionKey(req));
     res.json({ ok: true });
   });
 
@@ -404,7 +435,7 @@ function createApp({
     const problem = auth.checkNewPassword(body.new_password);
     if (problem) return res.status(400).json({ error: problem });
     db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(await auth.hashPassword(body.new_password), user.id);
-    db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.bearerToken(req));
+    db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.sessionKey(req));
     res.json({ ok: true });
   });
 
@@ -501,13 +532,14 @@ function createApp({
     }
     if (body.role !== undefined) db.prepare(`UPDATE users SET role = ? WHERE id = ?`).run(body.role, user.id);
     if (googleEmail !== undefined && googleEmail !== (user.google_email || null)) {
-      db.prepare(`UPDATE users SET google_email = ? WHERE id = ?`).run(googleEmail, user.id);
+      // A new link starts fresh: the next Google sign-in decides which account it is.
+      db.prepare(`UPDATE users SET google_email = ?, google_sub = NULL WHERE id = ?`).run(googleEmail, user.id);
       // Whoever signed in with the old Google account is signed out.
-      db.prepare(`DELETE FROM sessions WHERE user_id = ? AND method = 'google' AND token != ?`).run(user.id, auth.bearerToken(req) || '');
+      db.prepare(`DELETE FROM sessions WHERE user_id = ? AND method = 'google' AND token != ?`).run(user.id, auth.sessionKey(req));
     }
     if (body.password !== undefined) {
       db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(await auth.hashPassword(body.password), user.id);
-      db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.bearerToken(req) || '');
+      db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(user.id, auth.sessionKey(req));
       tries.delete(user.email);
     }
     res.json(userView(findUser(user.id)));
@@ -2356,6 +2388,22 @@ function createIngressServer(app, trustedAddress = '172.30.32.2') {
 // here, on a port only reachable from inside the add-on. Through it:
 //  - the web dashboard and the API calls it makes, signed in with Google only (auth.js);
 //  - never the TVs' or relays' paths, files, the password sign-in, or Home Assistant's headers.
+// On the internet address, the browser is told to run scripts only from this server and Google's
+// sign-in button (Google's recommended settings for it), and to send data only there. So even if a
+// bug ever let someone put their own script on the page, it couldn't run or send a session away.
+// Inline style attributes are allowed: the dashboard sets a few, and they can't run code.
+const PUBLIC_CSP = [
+  "default-src 'self'",
+  "script-src 'self' https://accounts.google.com/gsi/client",
+  "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",
+  "frame-src https://accounts.google.com/gsi/",
+  "connect-src 'self' https://accounts.google.com/gsi/",
+  "img-src 'self' data: https://*.googleusercontent.com",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
 const PUBLIC_BLOCKED = ['/api/player', '/api/relay', '/api/auth/login', '/api/auth/password', '/media', '/relay'];
 function publicPathAllowed(method, rawUrl) {
   let path;
@@ -2383,6 +2431,7 @@ function createPublicServer(app) {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Content-Security-Policy', PUBLIC_CSP);
     req.viaPublic = true;
     app(req, res);
   });

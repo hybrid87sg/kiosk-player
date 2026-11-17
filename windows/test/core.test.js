@@ -118,7 +118,10 @@ test('a dropped connection is a download problem that resumes, never a crash', a
   await sync.sync({ items: [item] });
   assert.ok(sync.isReady(item));
   assert.ok(fs.readFileSync(sync.fileFor(item)).equals(bytes));
-  assert.equal(ranges[1], 'bytes=80000-');
+  // It resumes from what really arrived. Up to 80,000 bytes were sent before the cut; Windows
+  // can drop the last of them when a connection is cut, so it may resume a little earlier.
+  const resumedAt = Number((/^bytes=(\d+)-$/.exec(ranges[1]) || [])[1]);
+  assert.ok(resumedAt > 0 && resumedAt <= 80_000, `resumed from ${ranges[1]}`);
 });
 
 test('pairs, downloads its playlist, gets its web page, checks in, and keeps going offline', async (t) => {

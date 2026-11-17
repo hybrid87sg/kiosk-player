@@ -2,7 +2,7 @@
 // app.js only calls these, so the tests can swap in a fake (test/fake-google.js)
 // and run without a real Google account.
 //
-//   verifyIdToken(idToken, clientId) -> { email } checks a "Sign in with Google" token (web dashboard, 0.8.0)
+//   verifyIdToken(idToken, clientId) -> { email, sub } checks a "Sign in with Google" token (web dashboard, 0.8.0)
 //   listFolder()                    -> [file]      files in the signage Drive folder
 //   uploadFile(stream, name, mime)  -> file        saves a new file into the folder
 //   downloadStream(fileId, range)   -> { status, headers, stream }
@@ -144,7 +144,9 @@ function createGoogle({ serviceAccountFile, serviceAccountKey = null, folderId }
     const ticket = await signInChecker.verifyIdToken({ idToken, audience: clientId });
     const payload = ticket.getPayload() || {};
     if (!payload.email || !payload.email_verified) throw new Error('That Google account has no verified email');
-    return { email: payload.email };
+    if (!payload.sub) throw new Error('That Google sign-in has no account ID');
+    // sub is the account's permanent ID: it never changes, and is never given to another account.
+    return { email: payload.email, sub: String(payload.sub) };
   }
 
   return {

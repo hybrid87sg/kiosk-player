@@ -3,6 +3,7 @@
 // reject the request (401/403) or attach who is calling (req.user / req.device).
 
 const crypto = require('node:crypto');
+const { hashToken } = require('./db');
 
 const ROLES = ['superadmin', 'system_manager', 'content_uploader'];
 
@@ -59,6 +60,13 @@ function bearerToken(req) {
   return header.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
+// The database keeps only a hash of each sign-in session's token (db.js), so a copy of the
+// database can't be used to sign in. This is what to look the caller's session up by.
+function sessionKey(req) {
+  const token = bearerToken(req);
+  return token ? hashToken(token) : '';
+}
+
 // Finds who is calling: a Home Assistant user (through the sidebar page), or
 // a signed-in session (phone app or web page, by token).
 //
@@ -73,7 +81,7 @@ function sessionLookup(db) {
   return (req) => {
     const ha = homeAssistantUser(req);
     if (ha) return ha;
-    const session = stmt.get(bearerToken(req), Date.now() - SESSION_MAX_AGE_MS);
+    const session = stmt.get(sessionKey(req), Date.now() - SESSION_MAX_AGE_MS);
     if (session && req.viaPublic && session.method !== 'google') return undefined;
     return session;
   };
@@ -138,6 +146,8 @@ module.exports = {
   checkNewPassword,
   USERNAME,
   bearerToken,
+  sessionKey,
+  hashToken,
   requireRole,
   requireDevice,
   requireUserOrDevice,
