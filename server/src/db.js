@@ -3,6 +3,7 @@
 
 const Database = require('better-sqlite3');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 // Bump this when the tables below change shape. Nothing is deployed yet, so
 // an older database is simply wiped and rebuilt instead of being migrated.
@@ -147,6 +148,9 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'users', 'password_hash', 'TEXT');
   // 0.8.0: a Google account linked to the user, for the public web dashboard (lower case).
   addColumnIfMissing(db, 'users', 'google_email', 'TEXT');
+  // 0.11.1: the linked Google account's permanent ID ("sub"), remembered at its first sign-in.
+  // An email address can change hands; this number never does. Cleared when the link changes.
+  addColumnIfMissing(db, 'users', 'google_sub', 'TEXT');
   // 0.8.0: how a session signed in: 'password' or 'google'. Sessions from before are passwords.
   addColumnIfMissing(db, 'sessions', 'method', 'TEXT');
   // Playlists belong to a location (see the playlists table's "auto" column below).
@@ -291,7 +295,23 @@ function openDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS relay_commands_by_device ON relay_commands (device_id, status);
   `);
 
+  // 0.11.1: sessions keep only a hash of their token (like passwords), so a copy of this
+  // database (e.g. in a Home Assistant backup) can't be used to sign in. Done once; nobody
+  // is signed out by it.
+  if (!getSetting(db, 'session_tokens_hashed')) {
+    db.transaction(() => {
+      const rewrite = db.prepare(`UPDATE sessions SET token = ? WHERE token = ?`);
+      for (const { token } of db.prepare(`SELECT token FROM sessions`).all()) rewrite.run(hashToken(token), token);
+      setSetting(db, 'session_tokens_hashed', true);
+    })();
+  }
+
   return db;
+}
+
+/** What is stored for a session token: its SHA-256, in hex. */
+function hashToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
 function addColumnIfMissing(db, table, column, type) {
@@ -321,4 +341,4 @@ function playlistsUsingMedia(db, mediaId) {
   return db.prepare(`SELECT DISTINCT playlist_id FROM playlist_items WHERE media_id = ?`).all(mediaId).map((r) => r.playlist_id);
 }
 
-module.exports = { openDatabase, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting, SCHEMA_VERSION };
+module.exports = { openDatabase, hashToken, bumpPlaylistVersions, playlistsUsingMedia, getSetting, setSetting, SCHEMA_VERSION };

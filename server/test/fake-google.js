@@ -40,9 +40,12 @@ function createFakeGoogle() {
     async verifyIdToken(idToken, clientId) {
       if (!clientId) throw new Error('Google sign-in isn\'t set up');
       if (typeof idToken !== 'string' || !idToken.startsWith('valid:')) throw new Error('bad token');
-      const [email, forClient] = idToken.slice(6).split('@for:');
+      // "valid:<email>[@for:<client id>][#sub:<account id>]". Without #sub, the account ID
+      // is made from the email, so the same address is the same account.
+      const [rest, sub] = idToken.slice(6).split('#sub:');
+      const [email, forClient] = rest.split('@for:');
       if (forClient && forClient !== clientId) throw new Error('token for another app');
-      return { email };
+      return { email, sub: sub || `sub-${email}` };
     },
 
     async listFolder() {

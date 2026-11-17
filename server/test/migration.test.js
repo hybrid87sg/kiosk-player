@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const { createApp } = require('../src/app');
-const { SCHEMA_VERSION } = require('../src/db');
+const { SCHEMA_VERSION, hashToken } = require('../src/db');
 const { createFakeGoogle } = require('./fake-google');
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'kiosk-0.6.0.db');
@@ -67,12 +67,17 @@ test('upgrading a 0.6.0 database keeps everything, and existing sign-ins and TVs
   const db = first.app.locals.db;
   for (const table of KEPT_TABLES) {
     const now = db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
-    const ignore = table === 'app_settings' ? new Set(['relay_hmac_secret', 'relays_adopted']) : new Set();
+    const ignore = table === 'app_settings' ? new Set(['relay_hmac_secret', 'relays_adopted', 'session_tokens_hashed']) : new Set();
     const kept = table === 'app_settings' ? now.filter((r) => !ignore.has(r.key)) : now;
     assert.equal(kept.length, before.rows[table].length, `${table}: row count`);
     before.rows[table].forEach((old, i) => {
       for (const [column, value] of Object.entries(old)) {
         if (table === 'devices' && ['last_seen'].includes(column)) continue; // changes when a TV checks in below
+        // 0.11.1: sessions keep only a hash of their token (they still work: checked below).
+        if (table === 'sessions' && column === 'token') {
+          assert.equal(kept[i].token, hashToken(value), `sessions.token of row ${i} is its hash`);
+          continue;
+        }
         assert.deepEqual(kept[i][column], value, `${table}.${column} of row ${i}`);
       }
     });
