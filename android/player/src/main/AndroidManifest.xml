@@ -13,6 +13,8 @@
     <!-- Runs as a media app, so Android doesn't close it to free memory (see KeepAliveService.kt). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Updates from the dashboard: "Install unknown apps", granted once by the user (see AppUpdater.kt). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- An Android TV app: no touch screen needed, and it shows up on the TV home screen. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -82,6 +84,18 @@
         <receiver
             android:name=".WakeReceiver"
             android:exported="false" />
+
+        <!-- App updates: the installer's answer, and reopening after the update (see AppUpdater.kt). -->
+        <receiver
+            android:name=".InstallResultReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".AppReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Opens the player when the TV box is switched on. -->
         <receiver

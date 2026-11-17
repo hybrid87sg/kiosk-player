@@ -4,6 +4,7 @@ package com.kiosk.core.network
 
 import com.kiosk.core.model.Device
 import com.kiosk.core.model.DeviceCapabilities
+import com.kiosk.core.model.JobReport
 import com.kiosk.core.model.Library
 import com.kiosk.core.model.Media
 import com.kiosk.core.model.Mounting
@@ -158,6 +159,11 @@ internal data class HeartbeatBody(
     /** Why the app last closed without being asked to (crash, out of memory…), and when (unix ms). */
     @SerialName("last_restart_reason") val lastRestartReason: String? = null,
     @SerialName("last_restart_at") val lastRestartAt: Long? = null,
+    @SerialName("android_sdk") val androidSdk: Int? = null,
+    @SerialName("version_code") val versionCode: Int? = null,
+    @SerialName("can_install_apps") val canInstallApps: Boolean? = null,
+    val resync: JobReport? = null,
+    val update: JobReport? = null,
 )
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

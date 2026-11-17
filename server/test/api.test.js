@@ -1535,3 +1535,115 @@ test('Sound: off by default for every screen, and turned on from Settings', asyn
   assert.equal((await settings()).sound.on, true);
   assert.equal((await tv.playlist()).sound, true);
 });
+
+test('Reset sync: Spongebob asks, the TV gets it with its playlist, reports progress, and it finishes', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  await call('POST', '/api/users', { token: boss, json: { username: 'patrick', role: 'system_manager', password: PASSWORD } });
+  const patrick = await signIn('patrick');
+  const tv = await addScreen(call, boss, { name: 'Lobby' });
+  const beat = (json) => call('POST', '/api/player/heartbeat', { token: tv.token, json });
+  const view = async () => (await (await call('GET', '/api/devices', { token: boss })).json()).find((d) => d.id === tv.id);
+
+  // An app from before 0.11.0 can't do it.
+  assert.equal((await call('POST', `/api/devices/${tv.id}/resync`, { token: boss })).status, 409);
+  await beat({ version_code: 10, android_sdk: 30, can_install_apps: true });
+  assert.deepEqual((await view()).app.android_sdk, 30);
+
+  // Only Spongebob.
+  assert.equal((await call('POST', `/api/devices/${tv.id}/resync`, { token: patrick })).status, 403);
+  const started = await (await call('POST', `/api/devices/${tv.id}/resync`, { token: boss })).json();
+  assert.equal(started.resync.step, 'waiting');
+  const id = (await tv.playlist()).actions.resync;
+  assert.match(id, /^[0-9a-f]{16}$/);
+
+  // A report for another request is ignored; the right one shows on the card.
+  await beat({ resync: { id: 'other', step: 'done' } });
+  assert.equal((await view()).resync.step, 'waiting');
+  await beat({ resync: { id, step: 'downloading', done: 2, total: 5 } });
+  assert.deepEqual([(await view()).resync.step, (await view()).resync.done, (await view()).resync.total], ['downloading', 2, 5]);
+  assert.equal((await tv.playlist()).actions.resync, id, 'still asked for until it is done');
+
+  await beat({ resync: { id, step: 'done' } });
+  assert.equal((await view()).resync.step, 'done');
+  assert.equal((await tv.playlist()).actions.resync, null);
+});
+
+test('App updates: the TV app that came with the server, offered to screens that can take it', async (t) => {
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-app-'));
+  t.after(() => fs.rmSync(appDir, { recursive: true, force: true }));
+  const apk = crypto.randomBytes(4096);
+  fs.writeFileSync(path.join(appDir, 'kiosk-player.apk'), apk);
+  fs.writeFileSync(path.join(appDir, 'kiosk-player.json'), JSON.stringify({ version: '0.11.1', version_code: 11 }));
+  const { call, signIn } = await startServer(t, { playerAppDir: appDir });
+  const boss = await signIn(BOSS);
+  const lobby = await addScreen(call, boss, { name: 'Lobby' });
+  const counter = await addScreen(call, boss, { name: 'Counter' });
+  const old = await addScreen(call, boss, { name: 'Old box' });
+  const beat = (tv, json) => call('POST', '/api/player/heartbeat', { token: tv.token, json });
+  const view = async (tv) => (await (await call('GET', '/api/devices', { token: boss })).json()).find((d) => d.id === tv.id);
+  await beat(lobby, { version_code: 10, app_version: '0.11.0', android_sdk: 31, can_install_apps: true });
+  await beat(counter, { version_code: 10, app_version: '0.11.0', android_sdk: 30, can_install_apps: false });
+
+  const v = await view(lobby);
+  assert.deepEqual([v.app.update_available, v.app.latest.version], [true, '0.11.1']);
+  assert.equal((await view(old)).app.update_available, false, 'an app from before 0.11.0 is updated by hand once');
+
+  // Not allowed to install apps yet, or too old: refused with a reason.
+  assert.match((await (await call('POST', `/api/devices/${counter.id}/update`, { token: boss })).json()).error, /Install unknown apps/);
+  assert.equal((await call('POST', `/api/devices/${old.id}/update`, { token: boss })).status, 409);
+
+  // Update all starts only the screens that can take it.
+  assert.deepEqual(await (await call('POST', '/api/devices/update-all', { token: boss })).json(), { started: 1 });
+  const action = (await lobby.playlist()).actions.update;
+  assert.equal(action.version_code, 11);
+  assert.equal(action.sha256, crypto.createHash('sha256').update(apk).digest('hex'));
+  assert.equal(action.size, apk.length);
+
+  // The file itself, for that TV only.
+  const file = await call('GET', action.url, { token: lobby.token });
+  assert.equal(file.status, 200);
+  assert.deepEqual(Buffer.from(await file.arrayBuffer()), apk);
+  assert.equal((await call('GET', action.url)).status, 401);
+
+  await beat(lobby, { update: { id: action.id, step: 'installing' } });
+  assert.equal((await view(lobby)).app.update.step, 'installing');
+  // The new app checks in with the new build number: done.
+  await beat(lobby, { version_code: 11, app_version: '0.11.1' });
+  const after = await view(lobby);
+  assert.deepEqual([after.app.update.step, after.app.update_available], ['done', false]);
+  assert.equal((await lobby.playlist()).actions.update, null);
+});
+
+test('App updates: a server without the TV app offers none', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const tv = await addScreen(call, boss, { name: 'Lobby' });
+  await call('POST', '/api/player/heartbeat', { token: tv.token, json: { version_code: 10, can_install_apps: true } });
+  assert.equal((await call('POST', `/api/devices/${tv.id}/update`, { token: boss })).status, 409);
+  assert.equal((await call('GET', '/api/player/app.apk', { token: tv.token })).status, 404);
+});
+
+test('App updates reach TVs behind a relay: the app file comes through whole', async (t) => {
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-app-'));
+  t.after(() => fs.rmSync(appDir, { recursive: true, force: true }));
+  const apk = crypto.randomBytes(300_000);
+  fs.writeFileSync(path.join(appDir, 'kiosk-player.apk'), apk);
+  fs.writeFileSync(path.join(appDir, 'kiosk-player.json'), JSON.stringify({ version: '0.11.1', version_code: 11 }));
+  const { call, signIn, base } = await startServer(t, { siteName: 'Head office', playerAppDir: appDir });
+  const boss = await signIn(BOSS);
+  const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-relay-'));
+  const relayApp = createRelay({ mainUrl: base, siteName: 'Orchard branch', dataDir: relayDir, log: () => {}, pruneIntervalMs: 0 });
+  const relayServer = await new Promise((resolve) => { const s = relayApp.listen(0, () => resolve(s)); });
+  t.after(async () => {
+    await new Promise((resolve) => relayServer.close(resolve));
+    fs.rmSync(relayDir, { recursive: true, force: true });
+  });
+  const relay = `http://127.0.0.1:${relayServer.address().port}`;
+  const tv = await (await fetch(`${relay}/api/player/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+  await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, location: 'Lobby', name: 'Branch TV' } });
+  const got = await fetch(`${relay}/api/player/app.apk`, { headers: { authorization: `Bearer ${tv.token}` } });
+  assert.equal(got.status, 200);
+  assert.deepEqual(Buffer.from(await got.arrayBuffer()), apk);
+  assert.equal((await fetch(`${relay}/api/player/app.apk`)).status, 401);
+});

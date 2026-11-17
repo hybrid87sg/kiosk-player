@@ -1,6 +1,7 @@
 package com.kiosk.player
 
 import android.content.Context
+import com.kiosk.core.model.JobReport
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PlayerPlaylist
 import kotlinx.serialization.json.Json
@@ -87,6 +88,20 @@ class PlayerSettings(context: Context) {
     /** How many times the app crashed in the last 10 minutes (to slow down a crash loop). */
     fun recentCrashes(now: Long): Int =
         prefs.getString("crash_times", "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }.count { now - it < CRASH_WINDOW_MS }
+
+    /** The latest step of an app update, written by the installer's answer too (0.11.0). */
+    var updateReport: JobReport?
+        get() = prefs.getString("update_report", null)?.let { runCatching { json.decodeFromString(JobReport.serializer(), it) }.getOrNull() }
+        set(value) = prefs.edit()
+            .putString("update_report", value?.let { json.encodeToString(JobReport.serializer(), it) })
+            .putLong("update_report_at", System.currentTimeMillis())
+            .commit().let { }
+    val updateReportAt: Long get() = prefs.getLong("update_report_at", 0L)
+
+    /** The last Reset sync finished, so a "done" that didn't reach the server isn't done twice. */
+    var resyncDoneId: String?
+        get() = prefs.getString("resync_done_id", null)
+        set(value) = prefs.edit().putString("resync_done_id", value).apply()
 
     fun clear() = prefs.edit().clear().apply()
 

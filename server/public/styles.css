@@ -273,3 +273,7 @@ input[type=password] {
 
 /* Settings → Home Assistant Relays */
 .link-card:hover { border-color: var(--accent-primary); }
+
+/* Reset sync and app updates on a screen card (0.11.0) */
+.job-box { background: rgba(243, 239, 234, 0.10); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.job-box .warn, .job-box .error { font-size: 13px; }

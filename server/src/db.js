@@ -159,6 +159,19 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'kiosk_allowed_hosts', 'TEXT'); // JSON: other websites customers may open
   addColumnIfMissing(db, 'devices', 'kiosk_pin_hash', 'TEXT'); // staff PIN, as sha256(salt:pin)
   addColumnIfMissing(db, 'devices', 'kiosk_pin_salt', 'TEXT');
+  // 0.11.0: what the TV app says about itself, for app updates from the dashboard.
+  addColumnIfMissing(db, 'devices', 'android_sdk', 'INTEGER'); // e.g. 30 = Android 11
+  addColumnIfMissing(db, 'devices', 'version_code', 'INTEGER'); // the TV app's build number
+  addColumnIfMissing(db, 'devices', 'can_install_apps', 'INTEGER'); // 1 = "Install unknown apps" allowed
+  // 0.11.0: Reset sync and app updates asked for on the dashboard. *_id is set while the
+  // TV still has to act on it; *_state is the TV's latest report (JSON).
+  addColumnIfMissing(db, 'devices', 'resync_id', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'resync_state', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'resync_at', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'update_id', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'update_target', 'INTEGER'); // the build number being installed
+  addColumnIfMissing(db, 'devices', 'update_state', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'update_at', 'INTEGER');
   // Playlists belong to a site. Each site has two automatic ones (auto = 1), Landscape
   // and Portrait; a screen with no playlist of its own plays the one that fits it.
   // site is empty ('') for this server's own site, and NULL for a playlist from before

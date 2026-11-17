@@ -490,6 +490,8 @@ async function pageScreens(page) {
       api('GET', 'api/devices'), api('GET', 'api/playlists'), api('GET', 'api/devices/waiting'),
     ]);
     const online = devices.filter((d) => d.online).length;
+    // Screens Spongebob can update from here right now.
+    const updatable = isSpongebob() ? devices.filter((d) => d.app && d.app.update_available && d.app.can_install_apps !== false && !jobRunning(d.app.update)) : [];
     // With TVs at more than one site, group by site first, then location.
     const sites = new Set([...devices, ...waiting].map((d) => d.site || ''));
     const manySites = sites.size > 1;
@@ -510,7 +512,18 @@ async function pageScreens(page) {
       el('div', { class: 'page-head' },
         el('div', {}, el('h1', {}, 'Screens'),
           el('p', { class: 'sub' }, `${devices.length} screen${devices.length === 1 ? '' : 's'} · ${online} online · updates every 10 seconds`)),
-        el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add by code')),
+        el('div', { class: 'row' },
+          updatable.length ? el('button', {
+            class: 'btn',
+            onclick: () => confirmDialog(`Update ${updatable.length} screen${updatable.length === 1 ? '' : 's'}?`,
+              `They get Kiosk Player ${updatable[0].app.latest.version} at their next check-in. Each closes for a few seconds while it installs.`, 'Update',
+              () => attempt(async () => {
+                const { started } = await api('POST', 'api/devices/update-all');
+                toast(`${started} screen${started === 1 ? '' : 's'} updating`);
+                draw();
+              })),
+          }, icon('download', 18), `Update all screens (${updatable.length})`) : null,
+          el('button', { class: 'btn primary', onclick: () => addScreenDialog(playlists, devices, draw) }, '+ Add by code'))),
       waiting.length ? waitingCard(waiting, manySites, playlists, devices, draw) : null,
       devices.length === 0
         ? el('div', { class: 'empty' }, 'No screens yet. Open Kiosk Player on a TV and choose “Find my server automatically”; it then appears here under “New screens waiting”.')
@@ -565,15 +578,102 @@ function screenCard(d, playlists, devices, redraw) {
     d.download ? el('div', {},
       el('div', { class: 'warn' }, `Downloading ${Math.min(d.download.done + 1, d.download.total)} of ${d.download.total} new files`),
       el('div', { class: 'progress', style: 'margin-top:6px' }, el('div', { style: `width:${Math.round((d.download.done / d.download.total) * 100)}%` }))) : null,
-    el('div', { class: 'meta' }, d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : '', d.app_version ? ` · App ${d.app_version}` : ''),
+    el('div', { class: 'meta' }, d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : '', d.app_version ? ` · App ${d.app_version}` : '',
+      d.app && d.app.android_sdk ? ` · ${androidName(d.app.android_sdk)}` : ''),
+    isSpongebob() ? appUpdateHint(d) : null,
+    jobBox('Reset sync', d.resync, resyncText),
+    jobBox(`App update${d.app && d.app.latest ? ` to ${d.app.latest.version}` : ''}`, d.app && d.app.update, (job) => updateText(job, d)),
     el('div', { class: 'row' },
       el('button', { class: 'btn text small', onclick: () => screenForm({ device: d, site: d.site, playlists, devices, onDone: redraw }) }, 'Edit'),
+      isSpongebob() && d.kind !== 'browser' ? el('button', {
+        class: 'btn text small',
+        disabled: jobRunning(d.resync),
+        onclick: () => resyncDialog(d, redraw),
+      }, icon('resync', 16), 'Reset sync') : null,
+      isSpongebob() && d.app && d.app.update_available ? el('button', {
+        class: 'btn text small',
+        disabled: jobRunning(d.app.update) || d.app.can_install_apps === false,
+        onclick: () => attempt(async () => {
+          await api('POST', `api/devices/${d.id}/update`);
+          toast(`${d.name} gets the new app at its next check-in`);
+          redraw();
+        }),
+      }, icon('download', 16), 'Update app') : null,
       el('button', {
         class: 'btn danger small',
         onclick: () => confirmDialog(`Remove ${d.name}?`, 'The TV stops getting updates and shows a new pairing code, so it can be added again later.', 'Remove',
           () => attempt(async () => { await api('DELETE', `api/devices/${d.id}`); toast(`${d.name} removed`); redraw(); })),
       }, 'Remove')),
   );
+}
+
+// ---------- Reset sync and app updates (0.11.0, Spongebob only) ----------
+
+const isSpongebob = () => Boolean(me && me.role === 'superadmin');
+const jobRunning = (job) => Boolean(job && job.step !== 'done' && job.step !== 'failed');
+const ANDROID_NAMES = { 26: '8', 27: '8.1', 28: '9', 29: '10', 30: '11', 31: '12', 32: '12L', 33: '13', 34: '14', 35: '15', 36: '16' };
+const androidName = (sdk) => `Android ${ANDROID_NAMES[sdk] || `(API ${sdk})`}`;
+
+/** A Reset sync or app update in progress, or how it ended. */
+function jobBox(title, job, describe) {
+  if (!job) return null;
+  const failed = job.step === 'failed';
+  const progress = job.step === 'downloading' && job.total ? job.done / job.total : null;
+  return el('div', { role: 'status', class: 'job-box' },
+    el('div', { class: failed ? 'error' : 'warn' }, title),
+    el('div', {}, describe(job)),
+    progress !== null ? el('div', { class: 'progress' }, el('div', { style: `width:${Math.round(progress * 100)}%` })) : null,
+    job.note ? el('div', { class: 'meta' }, job.note) : null);
+}
+
+function resyncText(job) {
+  switch (job.step) {
+    case 'waiting': return 'Waiting for the screen. It checks in about once a minute.';
+    case 'downloading': return job.total
+      ? `Downloading a fresh copy: ${Math.min(job.done + 1, job.total)} of ${job.total} files. Still playing the current files.`
+      : 'Downloading a fresh copy. Still playing the current files.';
+    case 'switching': return 'All files are in. Switching to the fresh copy and deleting the old files…';
+    case 'done': return 'Done: playing the fresh copy. Old files deleted.';
+    default: return job.error || 'It didn’t work.';
+  }
+}
+
+function updateText(job, d) {
+  const version = d.app && d.app.latest ? d.app.latest.version : 'the new app';
+  switch (job.step) {
+    case 'waiting': return 'Waiting for the screen. It checks in about once a minute.';
+    case 'downloading': return `Downloading Kiosk Player ${version}…`;
+    case 'waiting_for_install': return `Waiting for someone to press Install on the TV.${d.app.android_sdk && d.app.android_sdk < 31 ? ` This TV runs ${androidName(d.app.android_sdk)}, which asks every time.` : ''}`;
+    case 'installing': return 'Installing. The player closes for a few seconds and reopens by itself.';
+    case 'done': return `Updated to ${job.version || version}.`;
+    default: return job.error || 'The update didn’t work.';
+  }
+}
+
+/** Whether this screen's app can be updated from here, and how. */
+function appUpdateHint(d) {
+  const app = d.app;
+  if (!app || !app.latest || d.kind === 'browser' || jobRunning(app.update)) return null;
+  if (app.version_code == null) {
+    return d.app_version ? el('div', { class: 'meta' }, `Install Kiosk Player ${app.latest.version} on this TV by hand once; after that, updates come from here.`) : null;
+  }
+  if (!app.update_available) return null;
+  if (app.can_install_apps === false) {
+    return el('div', { class: 'warn' }, 'Can’t update from here yet: on the TV, allow Kiosk Player under Settings → Apps → Special app access → Install unknown apps.');
+  }
+  return el('div', { class: 'meta' }, `Update available: ${d.app_version || 'this app'} → ${app.latest.version}`,
+    app.android_sdk >= 31 ? ' (installs by itself on Android 12 and newer, after the first time)' : ' (someone presses Install on the TV)');
+}
+
+function resyncDialog(d, onDone) {
+  confirmDialog(`Reset sync on ${d.name}?`,
+    'The TV downloads every file in its playlist again, from scratch. It keeps playing what it has meanwhile, then switches to the fresh copy and deletes the old files. If the TV hasn’t enough space for both, it deletes first and shows “Getting content ready” until the files are back.',
+    'Reset sync',
+    () => attempt(async () => {
+      await api('POST', `api/devices/${d.id}/resync`);
+      toast(`${d.name} starts at its next check-in`);
+      onDone();
+    }));
 }
 
 function addScreenDialog(playlists, devices, onDone) {

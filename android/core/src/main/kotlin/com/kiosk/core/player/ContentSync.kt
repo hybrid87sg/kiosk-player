@@ -70,6 +70,55 @@ class ContentSync(
         }
     }
 
+    /**
+     * Reset sync: downloads every file of [playlist] again, from scratch, into a
+     * separate folder while the current files keep playing. When all are in and
+     * checked, [onSwitching] is called and they replace the current ones; the old
+     * files are deleted. Returns true when it worked that way.
+     *
+     * If the TV hasn't room for both sets, the current files are deleted first and
+     * downloaded again in place (returns false): the screen waits meanwhile.
+     * A cut-off download throws; the next try carries on where it stopped.
+     */
+    suspend fun freshCopy(
+        playlist: PlayerPlaylist,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        onSwitching: () -> Unit = {},
+        onDeletingFirst: () -> Unit = {},
+    ): Boolean {
+        val items = (playlist.items + playlist.upcoming).distinctBy { it.id to it.md5 }
+        val fresh = freshDir()
+        val freshSync = ContentSync(client, baseUrl, fresh, freeSpace)
+        val stillNeeded = items.filterNot { freshSync.isReady(it) }.sumOf { it.size }
+        if (!fresh.exists() || items.none { freshSync.isReady(it) }) {
+            if (!enoughFreeSpace(freeSpace(), stillNeeded)) {
+                fresh.deleteRecursively()
+                onDeletingFirst()
+                mediaDir.listFiles()?.forEach { it.delete() }
+                sync(playlist, emptyList(), onProgress)
+                return false
+            }
+        }
+        freshSync.sync(playlist, emptyList(), onProgress)
+        onSwitching()
+        withContext(Dispatchers.IO) {
+            for (item in items) {
+                val from = freshSync.fileFor(item)
+                val to = fileFor(item)
+                // Replacing a file that is playing is fine: the player keeps the old one open.
+                if (!from.renameTo(to)) {
+                    to.delete()
+                    if (!from.renameTo(to)) throw DownloadException("${item.filename}: couldn't save")
+                }
+            }
+            fresh.deleteRecursively()
+        }
+        removeUnused(items)
+        return true
+    }
+
+    private fun freshDir() = File(mediaDir.parentFile, mediaDir.name + "-fresh")
+
     /** Free space on the TV's storage, reported to the admin app. */
     fun freeBytes(): Long = mediaDir.usableSpace
 

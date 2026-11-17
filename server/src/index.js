@@ -171,6 +171,8 @@ const app = createApp({
         token: process.env.SUPERVISOR_TOKEN,
       })
     : null,
+  // The TV app that came with the add-on (player/), for updating screens from the dashboard.
+  playerAppDir: process.env.KIOSK_PLAYER_APP_DIR || path.join(__dirname, '..', 'player'),
   transcode: {
     enabled: settings.transcodeVideos,
     hevc4k: settings.transcode4kHevc,

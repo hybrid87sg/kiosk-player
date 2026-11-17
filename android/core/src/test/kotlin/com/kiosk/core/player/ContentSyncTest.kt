@@ -164,4 +164,35 @@ class ContentSyncTest {
         sync.sync(PlayerPlaylist("2", items = emptyList()))
         assertTrue(tmp.root.listFiles()!!.isEmpty())
     }
+
+    @Test fun resetSyncDownloadsEverythingAgainThenSwitchesOver() = runTest {
+        val media = tmp.newFolder("media")
+        val sync = ContentSync(OkHttpClient(), server.url("/").toString(), media)
+        val playlist = PlayerPlaylist("1", items = listOf(item))
+        sync.sync(playlist)
+        val before = ranges.size
+        var switched = false
+        val progress = mutableListOf<Pair<Int, Int>>()
+        assertTrue(sync.freshCopy(playlist, { d, t -> progress += d to t }, { switched = true }))
+        assertEquals("downloaded again", before + 1, ranges.size)
+        assertTrue(switched)
+        assertTrue(sync.isReady(item))
+        assertArrayEquals(bytes, sync.fileFor(item).readBytes())
+        assertEquals(listOf(0 to 1, 1 to 1), progress)
+        assertFalse("the fresh folder is gone", java.io.File(tmp.root, "media-fresh").exists())
+        assertEquals(1, media.listFiles()!!.size)
+    }
+
+    @Test fun resetSyncWithoutRoomForTwoCopiesDeletesFirst() = runTest {
+        val media = tmp.newFolder("media")
+        // Room for nothing while the old file is there; plenty once it's gone.
+        val sync = ContentSync(OkHttpClient(), server.url("/").toString(), media) {
+            if (media.listFiles().isNullOrEmpty()) Long.MAX_VALUE / 2 else 0L
+        }
+        val playlist = PlayerPlaylist("1", items = listOf(item))
+        sync.sync(playlist)
+        assertFalse(sync.freshCopy(playlist))
+        assertTrue(sync.isReady(item))
+        assertFalse(java.io.File(tmp.root, "media-fresh").exists())
+    }
 }

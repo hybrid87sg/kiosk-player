@@ -66,6 +66,7 @@ import com.kiosk.core.model.Mounting
 import com.kiosk.core.player.FoundServer
 import com.kiosk.player.BuildConfig
 import com.kiosk.player.AfterHours
+import com.kiosk.player.AppUpdater
 import com.kiosk.player.HomeScreen
 import com.kiosk.player.KeepInFront
 import com.kiosk.player.PlayerSettings
@@ -330,6 +331,7 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
             Text("Kiosk Player ${BuildConfig.VERSION_NAME}", fontSize = 20.sp, color = Muted)
             KeepInFrontSection()
             HomeScreenSection()
+            AppUpdatesSection()
             AfterHoursSection()
             if (vm.isDemo) {
                 Text("Demo: how this screen is mounted", fontSize = 22.sp, color = Muted)
@@ -492,6 +494,40 @@ private fun ClosedScreen(onOpenSettings: () -> Unit) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     Box(Modifier.fillMaxSize().background(Color.Black).openSettingsOnOk(onOpenSettings, focus))
+}
+
+/** The one-time permission that lets the dashboard update this app (0.11.0). */
+@Composable
+private fun AppUpdatesSection(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(AppUpdater.canInstall(context)) }
+    var showAdb by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        allowed = AppUpdater.canInstall(context)
+        onPauseOrDispose { }
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("App updates from the dashboard", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text(
+            if (allowed) "Allowed · Kiosk Player ${BuildConfig.VERSION_NAME}. New versions are installed when someone presses Update on the dashboard."
+            else "Needs “Install unknown apps” for Kiosk Player, so the dashboard can update it without a USB stick.",
+            fontSize = 20.sp,
+            color = if (allowed) Muted else Warning,
+        )
+        if (!allowed) {
+            TvButton("Allow installing updates", {
+                KeepInFront.pauseFor(context, 3) // don't jump back while Android's screen is open
+                val activity = context as? Activity
+                if (activity == null || !AppUpdater.openPermissionScreen(activity)) showAdb = true
+            })
+        }
+        if (showAdb) {
+            Text(
+                "This TV hides that setting. From a computer on the same network, run:\n${AppUpdater.ADB_COMMAND}",
+                fontSize = 18.sp, color = Warning,
+            )
+        }
+    }
 }
 
 /** The one-time permission that lets the player put the screen into standby after hours. */
