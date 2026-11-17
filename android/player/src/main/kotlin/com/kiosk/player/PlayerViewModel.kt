@@ -57,7 +57,7 @@ sealed interface PlayerUi {
     data class Finding(val found: List<FoundServer>?, val problem: String? = null) : PlayerUi
     data class Pairing(val code: String, val qrPayload: String, val demo: Boolean, val problem: String? = null) : PlayerUi
     data class Waiting(val name: String?, val title: String, val detail: String, val progress: Float? = null) : PlayerUi
-    data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null) : PlayerUi
+    data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null, val sound: Boolean = true) : PlayerUi
     /** Outside the location's working hours: a black screen (and standby where allowed). */
     data class Closed(val opens: String?) : PlayerUi
 }
@@ -418,8 +418,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             val current = _ui.value
             // Same content: keep playing without restarting, just clear the badge.
-            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) current.copy(badge = null)
-            else PlayerUi.Playing(items, playlist.mounting)
+            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) current.copy(badge = null, sound = playlist.sound)
+            else PlayerUi.Playing(items, playlist.mounting, sound = playlist.sound)
         }
     }
 

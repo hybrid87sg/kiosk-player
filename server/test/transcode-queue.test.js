@@ -48,7 +48,7 @@ function setup(t, extra = {}) {
     },
     runFfmpeg: extra.run,
     log: () => {},
-    getSetting: () => undefined,
+    getSetting: (key) => (extra.settings ? extra.settings[key] : undefined),
   });
   return { db, dir, transcoder, source, downloads: () => downloads };
 }
@@ -219,4 +219,66 @@ test('startup removes rendition files whose video is gone', (t) => {
   });
   const names = fs.readdirSync(dir);
   assert.deepEqual(names, [`${media.id}-h264_1080.mp4`]);
+});
+
+test('Sound: copies follow the setting; turning it off takes the sound out without encoding again', async (t) => {
+  const settings = { play_sound: true };
+  const calls = [];
+  let statusDuringEncode = null;
+  let ctx = null;
+  const { db, transcoder, downloads } = ctx = setup(t, {
+    settings,
+    run: async (args) => {
+      calls.push(args);
+      if (ctx && calls.length > 2) {
+        const row = ctx.db.prepare(`SELECT status FROM renditions WHERE profile = 'h264_1080'`).get();
+        statusDuringEncode = row && row.status;
+      }
+      fs.writeFileSync(args[args.length - 1], `copy-${calls.length}`);
+    },
+  });
+  const media = insertVideo(db);
+  const row = () => db.prepare(`SELECT * FROM renditions WHERE media_id = ? AND profile = 'h264_1080'`).get(media.id);
+
+  // Sound on: the copy keeps its sound.
+  await transcoder.schedule(media);
+  assert.equal(row().status, 'ready');
+  assert.equal(row().silent, 0);
+  assert.ok(!calls[0].includes('-an'));
+  assert.equal(downloads(), 1);
+  assert.deepEqual(transcoder.progress(), { done: 1, total: 1 });
+
+  // Sound off: the finished copy loses its sound by a quick copy, not a new encode.
+  settings.play_sound = false;
+  assert.deepEqual(transcoder.progress(), { done: 0, total: 1 });
+  const before = row().md5;
+  await transcoder.resume();
+  assert.equal(downloads(), 1, 'the original is not downloaded again');
+  assert.ok(calls[1].includes('-an') && calls[1].includes('copy'));
+  assert.equal(row().status, 'ready');
+  assert.equal(row().silent, 1);
+  assert.notEqual(row().md5, before);
+  assert.deepEqual(transcoder.progress(), { done: 1, total: 1 });
+
+  // Sound on again: made again from the original, and the silent copy stays ready meanwhile.
+  settings.play_sound = true;
+  await transcoder.resume();
+  assert.equal(downloads(), 2);
+  assert.equal(statusDuringEncode, 'ready');
+  assert.ok(!calls[calls.length - 1].includes('-an'));
+  assert.equal(row().silent, 0);
+});
+
+test('Sound off (the default): new copies are made without sound', async (t) => {
+  const calls = [];
+  const { db, transcoder } = setup(t, {
+    run: async (args) => {
+      calls.push(args);
+      fs.writeFileSync(args[args.length - 1], 'copy');
+    },
+  });
+  const media = insertVideo(db);
+  await transcoder.schedule(media);
+  assert.ok(calls[0].includes('-an'));
+  assert.equal(db.prepare(`SELECT silent FROM renditions WHERE media_id = ? AND profile = 'h264_1080'`).get(media.id).silent, 1);
 });

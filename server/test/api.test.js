@@ -1521,3 +1521,17 @@ test('playlists from before 0.5: the ones in use become each location\'s automat
   const d = devices.find((x) => x.name === 'D');
   assert.deepEqual([d.location, d.playlist_name, d.playing_playlist_id], [null, null, null]);
 });
+
+test('Sound: off by default for every screen, and turned on from Settings', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const tv = await addScreen(call, boss, { name: 'Lobby' });
+  const settings = async () => (await call('GET', '/api/settings', { token: boss })).json();
+  assert.equal((await settings()).sound.on, false);
+  assert.equal((await tv.playlist()).sound, false);
+
+  assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { play_sound: 'yes' } })).status, 400);
+  assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { play_sound: true } })).status, 200);
+  assert.equal((await settings()).sound.on, true);
+  assert.equal((await tv.playlist()).sound, true);
+});

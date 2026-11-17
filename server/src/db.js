@@ -189,6 +189,8 @@ function openDatabase(dataDir) {
       PRIMARY KEY (media_id, profile)
     );
   `);
+  // 0.11.0: 1 when a playback copy was made without sound (Settings → Sound off).
+  addColumnIfMissing(db, 'renditions', 'silent', 'INTEGER');
 
   // ---------- Relays: the Home Assistants at other sites (added in 0.7.0) ----------
   // All new tables, so existing data is untouched. SCHEMA_VERSION must stay as it is:

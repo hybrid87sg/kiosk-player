@@ -152,6 +152,7 @@ function createApp({
   const serverTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const cacheStore = mediaCacheDir ? new MediaCache(mediaCacheDir) : null;
   const cacheOn = () => Boolean(cacheStore) && (getSetting(db, 'cache_media') ?? cacheMedia);
+  const soundOn = () => getSetting(db, 'play_sound') === true;
   const pruneCache = () => {
     if (cacheStore) cacheStore.prune(db.prepare(`SELECT id, md5, filename FROM media WHERE removed_at IS NULL`).all());
   };
@@ -1466,6 +1467,8 @@ function createApp({
       },
       library: db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes FROM media WHERE removed_at IS NULL`).get(),
       notifications: { available: Boolean(homeAssistant), targets: notifyTargets() },
+      // Settings → Sound: off (the default) plays every video silently on every screen.
+      sound: { on: soundOn(), copies: transcoder.progress() },
       transcode: {
         ffmpeg: transcoder.ffmpegAvailable(),
         enabled: transcoder.requested(),
@@ -1516,8 +1519,12 @@ function createApp({
       if (typeof body.transcode_4k_hevc !== 'boolean') return res.status(400).json({ error: 'transcode_4k_hevc must be true or false' });
       setSetting(db, 'transcode_4k_hevc', body.transcode_4k_hevc);
     }
+    if (body.play_sound !== undefined) {
+      if (typeof body.play_sound !== 'boolean') return res.status(400).json({ error: 'play_sound must be true or false' });
+      setSetting(db, 'play_sound', body.play_sound);
+    }
     if (body.transcode_videos === false) transcoder.shutdown();
-    else if (body.transcode_videos === true || body.transcode_4k_hevc === true) await transcoder.resume();
+    else if (body.transcode_videos === true || body.transcode_4k_hevc === true || body.play_sound !== undefined) await transcoder.resume();
     res.json(settingsView());
   });
 
@@ -1695,6 +1702,8 @@ function createApp({
       upcoming: ahead,
       // The location's working hours; the TV goes dark outside them (null = always on).
       hours: hoursOf(locationOf(device)),
+      // Settings → Sound. TVs skip the sound track when false.
+      sound: soundOn(),
       // A Windows Kiosk Browser's page and rules (null for TVs).
       browser: device.kind === 'browser' ? browserSettings(device) : null,
     };

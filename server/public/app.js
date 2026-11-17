@@ -63,6 +63,12 @@ const ICONS = {
   expand: '<path d="M9 18l6-6-6-6"/>',
   bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
   relay: '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 11l10-5M7 13l10 5"/>',
+  volume: '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
+  'volume-off': '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+  resync: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
 };
 
 /** An icon from the fixed set above (our own markup, never server text). */
@@ -1482,6 +1488,35 @@ async function pageUsers(page) {
   await attempt(draw);
 }
 
+// ---------- Settings → Sound (0.11.0) ----------
+
+/** One switch for every screen: videos play with or without sound. Playback copies follow it. */
+function soundCard(s, redraw) {
+  const sound = s.sound || { on: false, copies: { done: 0, total: 0 } };
+  const copies = sound.copies || { done: 0, total: 0 };
+  const remaking = s.transcode && s.transcode.active && copies.total > 0 && copies.done < copies.total;
+  return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
+    el('h2', { class: 'row', style: 'gap:8px' }, icon(sound.on ? 'volume' : 'volume-off', 20), 'Sound'),
+    el('p', { class: 'meta', style: 'margin:0' }, 'For every screen. With sound off, screens play videos silently whatever their TV’s volume is, and the playback copies are made without sound, so they’re a little smaller. Your files in Google Drive keep their sound.'),
+    el('label', { class: 'row', style: 'font-weight:600;min-height:44px' },
+      el('input', {
+        type: 'checkbox', checked: sound.on, style: 'width:20px;height:20px;accent-color:var(--primary)',
+        onchange: (e) => attempt(async () => {
+          await api('PATCH', 'api/settings', { play_sound: e.target.checked });
+          toast(e.target.checked ? 'Sound on for all screens' : 'Sound off for all screens');
+          redraw();
+        }),
+      }),
+      'Play videos with sound'),
+    el('div', { class: 'row meta', role: 'status' },
+      el('span', { class: 'dot', style: `width:10px;height:10px;border-radius:5px;background:${sound.on ? 'var(--accent)' : 'var(--success)'}` }),
+      sound.on ? 'Screens play videos with sound, at their TV’s volume. Screens change within a minute.'
+        : 'Every screen plays videos silently. Screens change within a minute.'),
+    remaking ? el('div', { class: 'meta' }, sound.on
+      ? `Remaking playback copies with sound: ${copies.done} of ${copies.total} done. Until a video’s new copy is ready, screens keep playing its silent one.`
+      : `Taking the sound out of playback copies: ${copies.done} of ${copies.total} done. Screens are already silent meanwhile.`) : null);
+}
+
 // ---------- Settings → Public dashboard (0.8.0) ----------
 
 const PUBLIC_STATES = {
@@ -1976,9 +2011,11 @@ async function pageSettings(page) {
           ]
           : el('p', { class: 'meta' }, 'Not available on this server.')),
 
+      soundCard(s, draw),
+
       el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:12px;margin-top:16px' },
         el('h2', {}, 'Playback copies'),
-        el('p', { class: 'meta', style: 'margin:0' }, 'Heavy 4K videos are hard for some TV boxes. The server can make a 1080p H.264 copy (and a smaller 720p one) after each video arrives. The original in Google Drive is left as it is. Turn this off on a slow machine, such as a Raspberry Pi, if the add-on becomes unresponsive.'),
+        el('p', { class: 'meta', style: 'margin:0' }, 'Heavy 4K videos are hard for some TV boxes. The server can make a 1080p H.264 copy (and a smaller 720p one) after each video arrives. The original in Google Drive is left as it is. Copies follow the Sound setting above. Turn this off on a slow machine, such as a Raspberry Pi, if the add-on becomes unresponsive.'),
         el('label', { class: 'row', style: 'font-weight:600' },
           el('input', {
             type: 'checkbox', checked: s.transcode.enabled, style: 'width:20px;height:20px;accent-color:var(--primary)',

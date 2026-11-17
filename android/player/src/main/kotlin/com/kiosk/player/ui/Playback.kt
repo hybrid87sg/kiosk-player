@@ -29,6 +29,8 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -103,7 +105,7 @@ fun PlaybackScreen(
     val segments = remember(items) { segmentPlaylist(items) }
 
     Box(Modifier.fillMaxSize().background(Color.Black).openSettingsOnOk(onOpenSettings, focus)) {
-        MountedScreen(state.mounting) {
+        CompositionLocalProvider(LocalSound provides state.sound) { MountedScreen(state.mounting) {
             val onlyVideos = segments.singleOrNull() as? Segment.Videos
             if (onlyVideos != null) {
                 ContinuousPlaylist(
@@ -114,9 +116,12 @@ fun PlaybackScreen(
                 MixedPlaylist(segments, state.mounting, onNowPlaying, onPlaybackProblem, onPlaybackHealthy)
             }
             state.badge?.let { Badge(it, Modifier.align(Alignment.TopEnd)) }
-        }
+        } }
     }
 }
+
+/** Settings → Sound, for every video player on the screen. */
+private val LocalSound = staticCompositionLocalOf { true }
 
 private sealed interface Segment {
     data class Videos(val items: List<PlayItem>) : Segment
@@ -243,6 +248,16 @@ private fun ContinuousPlaylist(
                 videoChangeFrameRateStrategy = C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
                 playWhenReady = true
             }
+    }
+
+    // Sound off: the sound track isn't even decoded (less work for the box, and a sound
+    // format the TV can't play can't stop a video). The volume is zero as well.
+    val sound = LocalSound.current
+    LaunchedEffect(player, sound) {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, !sound)
+            .build()
+        player.volume = if (sound) 1f else 0f
     }
 
     DisposableEffect(player) {

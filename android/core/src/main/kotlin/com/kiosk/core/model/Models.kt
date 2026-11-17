@@ -308,6 +308,8 @@ data class PlayerPlaylist(
     val hours: Map<String, DayHours?>? = null,
     /** A landscape screen mounted upside down. Use [mounting] to read it. */
     val flipped: Boolean = false,
+    /** Settings → Sound. False: videos play silently. Servers from before 0.11.0 don't send it: sound on. */
+    val sound: Boolean = true,
 ) {
     val mounting: Mounting get() = mountingOf(orientation, flipped)
 }
