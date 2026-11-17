@@ -453,7 +453,7 @@ private fun PlayItem.toMediaItem(): MediaItem {
  * a graphics layer stops a SurfaceView from drawing.
  */
 @Composable
-private fun MountedScreen(mounting: Mounting, content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
+internal fun MountedScreen(mounting: Mounting, content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val sideways = mounting.rotationDegrees == 90 || mounting.rotationDegrees == 270
         val width = if (sideways) maxHeight else maxWidth

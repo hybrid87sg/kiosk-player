@@ -20,7 +20,8 @@ interface PlayerRepository {
      * [decoders] is what it can play, so it gets playback copies that suit it.
      */
     suspend fun register(appVersion: String, model: String? = null, decoders: DeviceCapabilities? = null): Registration
-    suspend fun status(): PlayerStatus
+    /** [mounting]: how staff turned the picture while it waits to be added (e.g. "portrait_right"). */
+    suspend fun status(mounting: String? = null): PlayerStatus
     suspend fun playlist(): PlayerPlaylist
     /**
      * Reports "I'm alive"; returns the server's current playlist version.
@@ -56,7 +57,7 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
     /** Which server this is (its ID lets the TV find it again if its address changes). */
     suspend fun config(): ServerConfig = apiCall { api.config() }
 
-    override suspend fun status(): PlayerStatus = apiCall { api.status() }
+    override suspend fun status(mounting: String?): PlayerStatus = apiCall { api.status(mounting) }
     override suspend fun playlist(): PlayerPlaylist = apiCall { api.playlist() }
 
     override suspend fun heartbeat(

@@ -42,6 +42,14 @@ class PlayerSettings(context: Context) {
         get() = prefs.getString("demo_mounting", null)?.let { m -> Mounting.entries.firstOrNull { it.name == m } } ?: Mounting.LANDSCAPE
         set(value) = prefs.edit().putString("demo_mounting", value.name).apply()
 
+    /**
+     * How the screen is mounted as far as this TV knows: chosen with Turn picture before
+     * it's added, then whatever the dashboard says. Every screen of the app follows it.
+     */
+    var mounting: Mounting
+        get() = prefs.getString("mounting", null)?.let { m -> Mounting.entries.firstOrNull { it.name == m } } ?: Mounting.LANDSCAPE
+        set(value) = prefs.edit().putString("mounting", value.name).apply()
+
     /** Come back to the front when someone leaves the app (needs "Display over other apps"). */
     var keepInFront: Boolean
         get() = prefs.getBoolean("keep_in_front", true)

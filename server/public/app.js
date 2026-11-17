@@ -550,7 +550,7 @@ function waitingCard(waiting, manySites, playlists, devices, redraw) {
             el('strong', {}, pretty(w.pairing_code)), ' on its screen')),
         el('button', {
           class: 'btn primary small',
-          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, playlists, devices, onDone: redraw }),
+          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, mounting: w.mounting, playlists, devices, onDone: redraw }),
         }, 'Add')))),
   );
 }
@@ -701,7 +701,7 @@ function addScreenDialog(playlists, devices, onDone) {
 }
 
 /** Name, location, how the screen is mounted and its playlist. New (code) or existing (device). */
-async function screenForm({ code, device, kind = device?.kind, site = null, playlists, devices, onDone }) {
+async function screenForm({ code, device, kind = device?.kind, site = null, mounting: asked = null, playlists, devices, onDone }) {
   // Every location, to choose from (or add a new one). A screen has to be in one:
   // that is where its playlist and its working hours come from.
   const data = await attempt(() => api('GET', 'api/locations'));
@@ -720,7 +720,8 @@ async function screenForm({ code, device, kind = device?.kind, site = null, play
       if (!newLocation.hidden) newLocation.focus();
       updateWarning();
     });
-    let mounting = mountingOf(device);
+    // A new TV says how staff turned its picture (Turn picture on the TV).
+    let mounting = device ? mountingOf(device) : (MOUNTINGS[asked] ? asked : 'landscape');
     // null means Automatic: the screen follows its site's Landscape or Portrait playlist.
     let playlistId = device?.playlist_id ?? null;
     // The chosen location's name ("" until one is chosen, or while a new one is being typed).

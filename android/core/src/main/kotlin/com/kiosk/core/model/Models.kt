@@ -38,6 +38,15 @@ enum class Mounting(val label: String, val shape: ScreenShape, val rotationDegre
     @SerialName("landscape_flipped") LANDSCAPE_FLIPPED("Landscape, upside down", ScreenShape.LANDSCAPE, 180),
 }
 
+/** The name the server uses for a mounting, e.g. "portrait_right". */
+val Mounting.wireName: String
+    get() = when (this) {
+        Mounting.LANDSCAPE -> "landscape"
+        Mounting.PORTRAIT_RIGHT -> "portrait_right"
+        Mounting.PORTRAIT_LEFT -> "portrait_left"
+        Mounting.LANDSCAPE_FLIPPED -> "landscape_flipped"
+    }
+
 /** Puts the server's orientation and its "flipped" flag together. */
 fun mountingOf(orientation: Mounting, flipped: Boolean): Mounting =
     if (flipped && orientation == Mounting.LANDSCAPE) Mounting.LANDSCAPE_FLIPPED else orientation

@@ -13,6 +13,7 @@ import com.kiosk.core.model.DeviceReport
 import com.kiosk.core.model.JobReport
 import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.Mounting
+import com.kiosk.core.model.wireName
 import com.kiosk.core.model.PlayerPlaylist
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.network.ApiException
@@ -73,6 +74,25 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val mediaDir = File(app.filesDir, "media")
     private val _ui = MutableStateFlow<PlayerUi>(PlayerUi.Loading)
     val ui: StateFlow<PlayerUi> = _ui
+
+    /** How every screen of the app is turned (playback has its own, from the playlist). */
+    private val _mounting = MutableStateFlow(
+        if (settings.mode == PlayerMode.DEMO) settings.demoMounting else settings.cachedPlaylist?.mounting ?: settings.mounting,
+    )
+    val mounting: StateFlow<Mounting> = _mounting
+
+    /** Turn picture: the next way round, for a TV whose dashboard setting isn't known yet. */
+    fun turnPicture() {
+        val order = listOf(Mounting.LANDSCAPE, Mounting.PORTRAIT_RIGHT, Mounting.PORTRAIT_LEFT, Mounting.LANDSCAPE_FLIPPED)
+        val next = order[(order.indexOf(_mounting.value) + 1) % order.size]
+        useMounting(next)
+        if (settings.mode == PlayerMode.DEMO) setDemoMounting(next)
+    }
+
+    private fun useMounting(mounting: Mounting) {
+        if (settings.mounting != mounting) settings.mounting = mounting
+        _mounting.value = mounting
+    }
 
     /** Set by the playback screen, reported in the heartbeat ("Now playing"). */
     @Volatile var currentMediaId: Long? = null
@@ -167,6 +187,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun chooseDemo() {
         settings.mode = PlayerMode.DEMO
+        _mounting.value = settings.demoMounting
         start()
     }
 
@@ -219,7 +240,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Forget everything (server, pairing, downloaded files) and go back to setup. */
     fun resetEverything() {
         job?.cancel()
+        val mounted = _mounting.value // the screen is still on the wall the same way
         settings.clear()
+        settings.mounting = mounted
         mediaDir.deleteRecursively()
         start()
     }
@@ -230,6 +253,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setDemoMounting(mounting: Mounting) {
         settings.demoMounting = mounting
+        _mounting.value = mounting
         _ui.update { if (it is PlayerUi.Playing) it.copy(mounting = mounting) else it }
     }
 
@@ -419,7 +443,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (repo.token == null) {
                     settings.token = repo.register(BuildConfig.VERSION_NAME, deviceModel(), caps).token
                 }
-                val status = repo.status()
+                val status = repo.status(_mounting.value.wireName)
                 if (status.claimed) return
                 lastCode = PlayerUi.Pairing(status.pairingCode.orEmpty(), status.qrPayload.orEmpty(), demo = false)
                 _ui.value = lastCode
@@ -505,6 +529,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private fun show(playlist: PlayerPlaylist, sync: ContentSync) {
         // Stay dark after hours (the loop refreshes every minute, also at night).
         if (_ui.value is PlayerUi.Closed && !OpeningHours.isOpen(playlist.hours, ZonedDateTime.now())) return
+        useMounting(playlist.mounting)
         val items = playlist.items.filter { sync.isReady(it) }.map {
             PlayItem(it.id, it.filename, it.type, sync.fileFor(it), it.durationSeconds ?: 10, it.orientation)
         }
@@ -540,6 +565,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
             ?.hostAddress
     }
+
+    /** e.g. "Xiaomi MIBOX4", on the pairing screen. */
+    val deviceModelName: String get() = deviceModel()
 
     /** e.g. "Xiaomi MIBOX4", shown in Kiosk Signage while this TV waits to be added. */
     private fun deviceModel(): String {

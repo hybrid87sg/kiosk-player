@@ -76,7 +76,7 @@ internal interface AdminApi {
 internal interface PlayerApi {
     @GET("api/config") suspend fun config(): ServerConfig
     @POST("api/player/register") suspend fun register(@Body body: AppVersionBody): Registration
-    @GET("api/player/status") suspend fun status(): PlayerStatus
+    @GET("api/player/status") suspend fun status(@retrofit2.http.Query("mounting") mounting: String? = null): PlayerStatus
     @GET("api/player/playlist") suspend fun playlist(): PlayerPlaylist
     @POST("api/player/heartbeat") suspend fun heartbeat(@Body body: HeartbeatBody): HeartbeatReply
 }

@@ -1122,6 +1122,8 @@ function createApp({
     };
   }
 
+  const WAITING_MOUNTINGS = ['landscape', 'portrait_right', 'portrait_left', 'landscape_flipped'];
+
   // ----- Reset sync and app updates (0.11.0) -----
 
   const readJob = (text) => {
@@ -1279,6 +1281,7 @@ function createApp({
       kind: d.kind === 'browser' ? 'browser' : 'tv',
       pairing_code: d.pairing_code,
       last_seen: d.last_seen,
+      mounting: d.requested_mounting || null,
     })));
   });
 
@@ -1718,6 +1721,10 @@ function createApp({
     const d = req.device;
     // A TV waiting to be added asks every few seconds; that keeps it on the "waiting" list.
     if (!d.claimed) db.prepare(`UPDATE devices SET last_seen = ?, site = ? WHERE id = ?`).run(Date.now(), siteOf(req), d.id);
+    // How staff turned the picture on the TV, so the Add dialog starts with it (0.11.0).
+    if (!d.claimed && WAITING_MOUNTINGS.includes(req.query.mounting)) {
+      db.prepare(`UPDATE devices SET requested_mounting = ? WHERE id = ?`).run(req.query.mounting, d.id);
+    }
     noteRelayOf(req, d.id);
     res.json({
       claimed: !!d.claimed,

@@ -172,6 +172,8 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'update_target', 'INTEGER'); // the build number being installed
   addColumnIfMissing(db, 'devices', 'update_state', 'TEXT');
   addColumnIfMissing(db, 'devices', 'update_at', 'INTEGER');
+  // 0.11.0: how a TV waiting to be added says it's mounted (its "Turn picture" button).
+  addColumnIfMissing(db, 'devices', 'requested_mounting', 'TEXT');
   // Playlists belong to a site. Each site has two automatic ones (auto = 1), Landscape
   // and Portrait; a screen with no playlist of its own plays the one that fits it.
   // site is empty ('') for this server's own site, and NULL for a playlist from before

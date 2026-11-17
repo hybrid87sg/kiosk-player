@@ -1647,3 +1647,15 @@ test('App updates reach TVs behind a relay: the app file comes through whole', a
   assert.deepEqual(Buffer.from(await got.arrayBuffer()), apk);
   assert.equal((await fetch(`${relay}/api/player/app.apk`)).status, 401);
 });
+
+test('a TV waiting to be added says how its picture is turned, for the Add dialog', async (t) => {
+  const { call, signIn } = await startServer(t);
+  const boss = await signIn(BOSS);
+  const tv = await (await call('POST', '/api/player/register', { json: {} })).json();
+  await call('GET', '/api/player/status?mounting=portrait_left', { token: tv.token });
+  let [waiting] = await (await call('GET', '/api/devices/waiting', { token: boss })).json();
+  assert.equal(waiting.mounting, 'portrait_left');
+  await call('GET', '/api/player/status?mounting=sideways', { token: tv.token });
+  [waiting] = await (await call('GET', '/api/devices/waiting', { token: boss })).json();
+  assert.equal(waiting.mounting, 'portrait_left', 'an unknown value is ignored');
+});
