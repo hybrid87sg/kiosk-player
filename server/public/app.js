@@ -578,8 +578,11 @@ function screenCard(d, playlists, devices, redraw) {
     d.download ? el('div', {},
       el('div', { class: 'warn' }, `Downloading ${Math.min(d.download.done + 1, d.download.total)} of ${d.download.total} new files`),
       el('div', { class: 'progress', style: 'margin-top:6px' }, el('div', { style: `width:${Math.round((d.download.done / d.download.total) * 100)}%` }))) : null,
-    el('div', { class: 'meta' }, d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : '', d.app_version ? ` · App ${d.app_version}` : '',
-      d.app && d.app.android_sdk ? ` · ${androidName(d.app.android_sdk)}` : ''),
+    el('div', { class: 'meta' }, [
+      d.free_bytes ? `Storage: ${formatBytes(d.free_bytes)} free` : null,
+      d.app_version ? `App ${d.app_version}` : null,
+      d.app && d.app.android_sdk ? androidName(d.app.android_sdk) : null,
+    ].filter(Boolean).join(' · ')),
     isSpongebob() ? appUpdateHint(d) : null,
     jobBox('Reset sync', d.resync, resyncText),
     jobBox(`App update${d.app && d.app.latest ? ` to ${d.app.latest.version}` : ''}`, d.app && d.app.update, (job) => updateText(job, d)),
@@ -1494,11 +1497,14 @@ function googleAccountDialog(user, onDone) {
     };
     return el('form', { method: 'dialog', onsubmit: (e) => { e.preventDefault(); save(email.value.trim() || null); } },
       el('h2', {}, `Google account for ${user.username}`),
-      el('p', { class: 'meta', style: 'margin:0' }, 'On the public dashboard address, people sign in with Google only. Signing in with this Google account gives this user’s role. Their username and password keep working at home and in the phone app.'),
+      el('p', { class: 'meta', style: 'margin:0' }, user.has_password
+        ? 'On the public dashboard address, people sign in with Google only. Signing in with this Google account gives this user’s role. Their username and password keep working at home and in the phone app.'
+        : 'Signing in with this Google account gives this user’s role. They have no password, so Google is their only way in: unlinking needs a password first.'),
       el('label', { class: 'field', for: 'google-email' }, 'Google account (email)', email),
       problem,
       el('div', { class: 'dialog-actions' },
         user.google_email ? el('button', { type: 'button', class: 'btn text danger', onclick: () => save(null) }, 'Unlink') : null,
+        user.google_email && !user.has_password ? el('button', { type: 'button', class: 'btn text', onclick: () => { dialog.close(); resetPasswordDialog(user, onDone); } }, 'Set a password…') : null,
         el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
         el('button', { class: 'btn primary' }, 'Save')));
   });
@@ -1531,49 +1537,97 @@ function changeMyPasswordDialog() {
 }
 
 async function pageUsers(page) {
+  // Google account first once Google sign-in is set up; until then, username and password.
+  const googleReady = Boolean(config && config.web_google_client_id);
+  let method = googleReady ? 'google' : 'password';
   async function draw() {
     const users = await api('GET', 'api/users');
-    const username = el('input', { type: 'text', id: 'new-username', placeholder: 'e.g. patrick', autocomplete: 'off', autocapitalize: 'none', spellcheck: false, required: true });
-    const pw = passwordField('new-user-password', 'Password');
     const role = el('select', { id: 'new-user-role' }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === 'content_uploader' }, r.label)));
     const problem = el('div', { class: 'error', role: 'alert' });
+
+    // Google account
+    const email = el('input', { type: 'email', id: 'new-user-google', placeholder: 'e.g. sandy.cheeks@gmail.com', autocomplete: 'off', spellcheck: false });
+    const googleHint = el('span', { class: 'meta' });
+    const hint = () => {
+      const value = email.value.trim().toLowerCase();
+      googleHint.textContent = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+        ? `They’ll sign in with “Sign in with Google” on the dashboard. Kiosk makes their username from the address (usually the address itself). No password needed; you can give them one later for the phone app.`
+        : 'No password needed: they sign in with “Sign in with Google” on the dashboard. Kiosk makes their username from the address. You can give them a password later for the phone app.';
+    };
+    email.addEventListener('input', hint);
+    hint();
+
+    // Username and password
+    const username = el('input', { type: 'text', id: 'new-username', placeholder: 'e.g. patrick', autocomplete: 'off', autocapitalize: 'none', spellcheck: false });
+    const pw = passwordField('new-user-password', 'Password');
+
+    const tab = (key, label, iconName) => el('button', {
+      type: 'button', class: `btn small ${method === key ? 'primary' : ''}`, 'aria-pressed': String(method === key),
+      onclick: () => { method = key; draw(); },
+    }, icon(iconName, 16), label);
+
     fill(page,
       el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, 'Users'),
-        el('p', { class: 'sub' }, 'Who may use the Kiosk Admin phone app and this web page. Each person signs in with a username and password you make here.'))),
+        el('p', { class: 'sub' }, 'Who may use this web page and the Kiosk Admin phone app. Add someone by their Google account, or give them a username and password.'))),
+      method === 'google' && !googleReady ? el('div', { class: 'card note-card', role: 'status' },
+        'Google sign-in isn’t set up yet, so people added by Google account can’t sign in until it is. ',
+        el('a', { href: '#/settings' }, 'Set it up in Settings → Public dashboard'), '.') : null,
       el('form', {
         class: 'card', style: 'display:flex;flex-direction:column;gap:12px',
         onsubmit: async (e) => {
           e.preventDefault();
           problem.textContent = '';
           try {
-            const made = await api('POST', 'api/users', { username: username.value.trim(), role: role.value, password: pw.input.value });
-            toast(`${made.username} can sign in now. Tell them their username and password.`);
+            if (method === 'google') {
+              const made = await api('POST', 'api/users', { google_email: email.value.trim(), role: role.value });
+              toast(`${made.google_email} can sign in with Google now, as ${ROLES[made.role].label}. Send them the dashboard address.`);
+            } else {
+              const made = await api('POST', 'api/users', { username: username.value.trim(), role: role.value, password: pw.input.value });
+              toast(`${made.username} can sign in now. Tell them their username and password.`);
+            }
             draw();
           } catch (err) { problem.textContent = err.message; }
         },
       },
       el('h2', {}, 'Add someone'),
-      el('div', { class: 'user-form' },
-        el('label', { class: 'field', for: 'new-username' }, 'Username', username),
-        pw.field,
-        el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
-      el('span', { class: 'meta' }, 'The password needs at least 8 characters. Kiosk keeps it scrambled and can’t show it again, so note it down for them.'),
+      el('div', { role: 'group', 'aria-label': 'How will they sign in?', class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+        el('span', { class: 'meta', style: 'margin-right:6px' }, 'How will they sign in?'),
+        tab('google', 'Google account', 'mail'),
+        tab('password', 'Username and password', 'lock')),
+      method === 'google'
+        ? [
+          el('div', { class: 'user-form' },
+            el('label', { class: 'field', for: 'new-user-google' }, 'Their Google account (email)', email),
+            el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
+          googleHint,
+        ]
+        : [
+          el('div', { class: 'user-form' },
+            el('label', { class: 'field', for: 'new-username' }, 'Username', username),
+            pw.field,
+            el('label', { class: 'field', for: 'new-user-role' }, 'Role', role)),
+          el('span', { class: 'meta' }, 'The password needs at least 8 characters. Kiosk keeps it scrambled and can’t show it again, so note it down for them. Add a Google account later for the public dashboard.'),
+        ],
       problem,
       el('div', {}, el('button', { class: 'btn primary' }, 'Add user'))),
       el('div', { class: 'section-label' }, `${users.length} ${users.length === 1 ? 'person' : 'people'}`),
       users.length === 0
-        ? el('div', { class: 'empty' }, 'Nobody yet. Add the first person above; they can then sign in on the phone app.')
+        ? el('div', { class: 'empty' }, 'Nobody yet. Add the first person above.')
         : el('div', { class: 'list' }, users.map((u) => {
           const isMe = !me.via_home_assistant && u.username === me.username;
-          return el('div', { class: 'list-row' },
+          return el('div', { class: 'list-row', style: 'flex-wrap:wrap' },
             el('div', { class: 'grow' }, el('div', { class: 'name' }, u.username),
-              el('div', { class: 'meta' }, isMe ? `You · ${ROLES[u.role].label}` : (u.has_password ? '' : 'No password yet: set one so they can sign in')),
-              u.google_email ? el('div', { class: 'meta' }, `Google: ${u.google_email}`) : null),
+              el('div', { class: 'row', style: 'gap:6px;margin-top:4px;flex-wrap:wrap' },
+                isMe ? el('span', { class: 'meta' }, `You · ${ROLES[u.role].label}`) : null,
+                u.google_email ? el('span', { class: 'chip primary' }, icon('mail', 12), `Google · ${u.google_email}`) : null,
+                u.has_password ? el('span', { class: 'chip primary' }, icon('lock', 12), 'Password') : null,
+                !u.google_email && !u.has_password ? el('span', { class: 'warn' }, 'No way to sign in yet: set a password or link Google') : null)),
             isMe ? null : el('select', {
               'aria-label': `Role for ${u.username}`,
               onchange: (e) => attempt(async () => { await api('PATCH', `api/users/${u.id}`, { role: e.target.value }); toast(`${u.username} is now ${ROLES[e.target.value].label}`); }),
             }, Object.entries(ROLES).map(([key, r]) => el('option', { value: key, selected: key === u.role }, r.label))),
-            el('button', { class: 'btn text small', onclick: () => (isMe ? changeMyPasswordDialog() : resetPasswordDialog(u, draw)) }, isMe ? 'Change password' : 'New password'),
+            el('button', { class: 'btn text small', onclick: () => (isMe ? changeMyPasswordDialog() : resetPasswordDialog(u, draw)) },
+              isMe ? 'Change password' : (u.has_password ? 'New password' : 'Set password')),
             el('button', { class: 'btn text small', onclick: () => googleAccountDialog(u, draw) }, u.google_email ? 'Google…' : 'Link Google'),
             isMe ? null : el('button', {
               class: 'btn icon', 'aria-label': `Remove ${u.username}`,

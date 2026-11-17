@@ -277,3 +277,4 @@ input[type=password] {
 /* Reset sync and app updates on a screen card (0.11.0) */
 .job-box { background: rgba(243, 239, 234, 0.10); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .job-box .warn, .job-box .error { font-size: 13px; }
+.note-card { background: var(--accent-container); border-color: var(--status-warning); margin-bottom: 16px; font-size: 14px; }
