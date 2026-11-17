@@ -426,24 +426,44 @@ function createApp({
     res.json(db.prepare(`SELECT * FROM users ORDER BY email`).all().map(userView));
   });
 
+  // A free username for someone added by their Google account: the address itself
+  // when it fits, otherwise the part before the @ (patrick, patrick-2, …).
+  const usernameFor = (googleEmail) => {
+    const taken = (name) => Boolean(db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(name));
+    if (auth.USERNAME.test(googleEmail) && !taken(googleEmail)) return googleEmail;
+    let base = googleEmail.split('@')[0].replace(/[^a-z0-9._-]/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 34);
+    if (base.length < 3) base = `${base}user`.slice(0, 34).replace(/^[^a-z0-9]+/, '') || 'user';
+    if (!taken(base)) return base;
+    for (let n = 2; ; n += 1) if (!taken(`${base}-${n}`)) return `${base}-${n}`;
+  };
+
+  // Add someone. Either a username and password (home, Tailscale and the phone app),
+  // or just a Google account (the public dashboard), or both. With only a Google
+  // account the username is made from it, and they can be given a password later.
   app.post('/api/users', requireUsers, async (req, res) => {
     const body = req.body || {};
-    const username = String(body.username || '').trim().toLowerCase();
-    if (!auth.USERNAME.test(username)) {
-      return res.status(400).json({ error: 'A username is 3 to 40 letters or digits (and . _ - @), starting with a letter or digit' });
-    }
     if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
-    const problem = auth.checkNewPassword(body.password);
-    if (problem) return res.status(400).json({ error: problem });
-    if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) return res.status(409).json({ error: 'That username is taken' });
     let googleEmail = null;
     if (body.google_email !== undefined) {
       const checked = checkGoogleEmail(body.google_email, null);
       if (checked.error) return res.status(400).json({ error: checked.error });
       googleEmail = checked.value;
     }
+    const hasPassword = body.password !== undefined && body.password !== null && body.password !== '';
+    if (!hasPassword && !googleEmail) return res.status(400).json({ error: 'Give them a Google account, or a password' });
+    if (hasPassword) {
+      const problem = auth.checkNewPassword(body.password);
+      if (problem) return res.status(400).json({ error: problem });
+    }
+    const typed = String(body.username || '').trim().toLowerCase();
+    if (!typed && !googleEmail) return res.status(400).json({ error: 'Give them a username' });
+    const username = typed || usernameFor(googleEmail);
+    if (!auth.USERNAME.test(username)) {
+      return res.status(400).json({ error: 'A username is 3 to 40 letters or digits (and . _ - @), starting with a letter or digit' });
+    }
+    if (db.prepare(`SELECT 1 FROM users WHERE email = ?`).get(username)) return res.status(409).json({ error: 'That username is taken' });
     const result = db.prepare(`INSERT INTO users (email, role, password_hash, created_at, google_email) VALUES (?, ?, ?, ?, ?)`)
-      .run(username, body.role, await auth.hashPassword(body.password), Date.now(), googleEmail);
+      .run(username, body.role, hasPassword ? await auth.hashPassword(body.password) : null, Date.now(), googleEmail);
     res.status(201).json(userView(findUser(result.lastInsertRowid)));
   });
 
@@ -465,6 +485,10 @@ function createApp({
     if (body.role !== undefined) {
       if (!auth.ROLES.includes(body.role)) return res.status(400).json({ error: `Role must be one of: ${auth.ROLES.join(', ')}` });
       if (user.id === req.user.id) return res.status(400).json({ error: "You can't change your own role" });
+    }
+    // Someone added by Google account only would have no way left to sign in.
+    if (googleEmail === null && !user.password_hash && body.password === undefined) {
+      return res.status(400).json({ error: `${user.email} signs in with Google only. Give them a password first, or remove them.` });
     }
     if (body.password !== undefined) {
       const problem = auth.checkNewPassword(body.password);

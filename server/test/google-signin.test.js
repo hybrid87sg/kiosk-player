@@ -79,6 +79,42 @@ test('a Google account linked to a user signs in with that user’s role; any ot
   assert.equal((await call('POST', '/api/auth/google', { json: { credential: 'valid:pat@gmail.com' } })).status, 403);
 });
 
+test('adding someone by Google account alone lets them sign in with Google straight away', async (t) => {
+  const { call, boss } = await start(t);
+  assert.equal((await call('PATCH', '/api/settings', { token: boss, json: { google_web_client_id: CLIENT } })).status, 200);
+  const add = (json) => call('POST', '/api/users', { token: boss, json });
+  // Neither a Google account nor a password: refused.
+  assert.equal((await add({ role: 'content_uploader' })).status, 400);
+  assert.equal((await add({ username: 'gary', role: 'content_uploader' })).status, 400);
+  assert.equal((await add({ role: 'content_uploader', google_email: 'not an email' })).status, 400);
+
+  // Just a Google account: the username is the address, and there is no password.
+  const res = await add({ role: 'content_uploader', google_email: 'Sandy.Cheeks@Gmail.com' });
+  assert.equal(res.status, 201);
+  const sandy = await res.json();
+  assert.deepEqual([sandy.username, sandy.google_email, sandy.has_password], ['sandy.cheeks@gmail.com', 'sandy.cheeks@gmail.com', false]);
+  const session = await (await call('POST', '/api/auth/google', { json: { credential: 'valid:sandy.cheeks@gmail.com' } })).json();
+  assert.deepEqual([session.username, session.role], ['sandy.cheeks@gmail.com', 'content_uploader']);
+  // No password to guess.
+  assert.equal((await call('POST', '/api/auth/login', { json: { username: 'sandy.cheeks@gmail.com', password: '' } })).status, 400);
+  assert.equal((await call('POST', '/api/auth/login', { json: { username: 'sandy.cheeks@gmail.com', password: PASSWORD } })).status, 401);
+  // The same Google account twice: refused.
+  assert.equal((await add({ role: 'content_uploader', google_email: 'sandy.cheeks@gmail.com' })).status, 400);
+
+  // A long address: the part before the @, made unique.
+  const long = 'a-really-quite-long-name@some-company-domain.example.com';
+  const first = await (await add({ role: 'content_uploader', google_email: long })).json();
+  assert.equal(first.username, 'a-really-quite-long-name');
+  const second = await (await add({ role: 'content_uploader', google_email: 'a-really-quite-long-name@other-company-domain.example.org' })).json();
+  assert.equal(second.username, 'a-really-quite-long-name-2');
+
+  // Unlinking would lock Sandy out: refused until she has a password; then allowed.
+  assert.equal((await call('PATCH', `/api/users/${sandy.id}`, { token: boss, json: { google_email: null } })).status, 400);
+  assert.equal((await call('PATCH', `/api/users/${sandy.id}`, { token: boss, json: { password: PASSWORD } })).status, 200);
+  assert.equal((await call('POST', '/api/auth/login', { json: { username: 'sandy.cheeks@gmail.com', password: PASSWORD } })).status, 200);
+  assert.equal((await call('PATCH', `/api/users/${sandy.id}`, { token: boss, json: { google_email: null } })).status, 200);
+});
+
 test('the public door: the dashboard with Google sign-in only, nothing for TVs, relays or passwords', async (t) => {
   const { call, pub, boss, doorPort } = await start(t);
   await call('PATCH', '/api/settings', { token: boss, json: { google_web_client_id: CLIENT } });
