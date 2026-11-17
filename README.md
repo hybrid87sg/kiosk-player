@@ -234,10 +234,14 @@ flowchart TB
 4. On the web interface (**Kiosk Signage** in Home Assistant's sidebar), the TV appears under
    **New screens waiting** with its model name and code. Click **Add**, then set it up:
    - its **name** and its **location** (required: that is where its playlist and working hours come from),
-   - **how the screen is mounted**: landscape, landscape upside down, or portrait turned left or right,
+   - **how the screen is mounted**: landscape, landscape upside down, portrait turned left or right, or
+     **portrait, already upright**. Use that last one for tall signage displays (for example Rockchip
+     stands) that already show their own menus upright: the TV app turns nothing, and the screen plays
+     Portrait playlists. If the picture comes out sideways on such a display, this is the setting to pick.
    - its **playlist**. Leave it on **Automatic** and the screen plays its location's Landscape or
-     Portrait playlist, whichever fits. To show something different on one screen, add an **extra
-     playlist** for the location under **Locations** and choose it here.
+     Portrait playlist, whichever fits. Or choose **any playlist** for just this screen: the location's
+     own Landscape, Portrait or extra playlists, or (under **Show playlists from other locations**)
+     another location's. Choose **Automatic** again to go back.
 
    Click **Add screen**. On your phone, **Players** shows the same **New TVs waiting** list; you can also
    **Scan QR code** or **Enter code instead**.
