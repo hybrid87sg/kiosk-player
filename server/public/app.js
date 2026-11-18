@@ -434,11 +434,28 @@ function renderShell() {
       me.via_home_assistant ? ' · via Home Assistant' : ''),
     me.via_home_assistant ? null : el('div', { class: 'row', style: 'gap:14px;margin-top:6px' },
       el('button', { class: 'btn text small', style: 'padding:0', onclick: changeMyPasswordDialog }, 'Password'),
-      el('button', { class: 'btn text small', style: 'padding:0', onclick: signOut }, 'Sign out'))),
+      el('button', { class: 'btn text small', style: 'padding:0', onclick: signOut }, 'Sign out')),
+    themeSwitch()),
   );
   fill(app, el('div', { class: 'shell' }, nav, el('main', { id: 'page' })));
   refreshNavLocations();
   route();
+}
+
+/** Light, dark, or the computer's own setting; remembered in this browser (theme.js). */
+function themeSwitch() {
+  const choices = [['light', 'Light'], ['dark', 'Dark'], ['auto', 'Automatic']];
+  const current = window.kioskTheme ? window.kioskTheme.get() : 'auto';
+  const box = el('div', { class: 'theme-switch', role: 'group', 'aria-label': 'Theme' },
+    choices.map(([key, label]) => el('button', {
+      type: 'button', 'aria-pressed': String(key === current),
+      onclick: () => {
+        if (window.kioskTheme) window.kioskTheme.set(key);
+        for (const b of box.children) b.setAttribute('aria-pressed', String(b.dataset.key === key));
+      },
+      'data-key': key,
+    }, label)));
+  return box;
 }
 
 /** Fills the Locations part of the menu: one link per location. */
