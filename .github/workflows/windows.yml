@@ -45,7 +45,13 @@ jobs:
       - name: Build the installer
         working-directory: windows
         timeout-minutes: 10
-        run: npm run dist
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        # For a release, the app and its file name take the release's version
+        # (KioskBrowser-Setup-0.11.3.exe for v0.11.3), so every file in a release matches it.
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then npm run dist -- "-c.extraMetadata.version=${RELEASE_TAG#v}"; else npm run dist; fi
       - uses: actions/upload-artifact@v4
         continue-on-error: true # a full artifact store must not stop the build
         with:

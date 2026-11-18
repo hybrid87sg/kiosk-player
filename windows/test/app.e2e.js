@@ -43,11 +43,13 @@ async function main() {
     // The customer website: 127.0.0.1 is "its" site; localhost counts as another website.
     const site = http.createServer((req, res) => {
       if (req.url === '/file.zip') { res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': 'attachment' }); return res.end('PK'); }
+      if (req.url === '/frame') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<!doctype html><body style="margin:0;background:#cde"><button style="width:100%;height:100%">A form inside a frame</button>'); }
       const page = req.url.startsWith('/second') ? 'second' : 'start';
       res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'visited=yes; Path=/' });
       res.end(`<!doctype html><title>${page}</title><p id="page">${page}</p><p id="cookie">${req.headers.cookie || 'none'}</p>
         <a id="same" href="/second">Second</a> <a id="other" href="http://localhost:${site.address().port}/x">Elsewhere</a>
-        <a id="dl" href="/file.zip">Download</a> <button id="pop" onclick="window.open('/second?popup')">Pop-up</button>`);
+        <a id="dl" href="/file.zip">Download</a> <button id="pop" onclick="window.open('/second?popup')">Pop-up</button>
+        <iframe id="frame" src="/frame" style="display:block;width:320px;height:160px"></iframe>`);
     });
     await new Promise((r) => site.listen(0, '127.0.0.1', r));
     cleanup.push(() => new Promise((r) => { site.closeAllConnections?.(); site.close(r); }));
@@ -131,6 +133,13 @@ async function main() {
     step('Start over: a fresh page, the cookie is gone');
     await win.click('#start-over');
     await until(async () => (await inPage('document.getElementById("cookie") && document.getElementById("cookie").textContent')) === 'none', 8000, 'a fresh session');
+
+    step('using a form inside an embedded frame keeps it open (a tap every 4 s for 20 s)');
+    for (let i = 0; i < 5; i++) {
+      await tap('frame');
+      await new Promise((r) => setTimeout(r, 4000));
+    }
+    assert.deepEqual(await urls(), [start], 'still open after 20 s of taps inside the frame');
 
     step('left alone for 15 seconds: back to signage, nothing kept');
     await until(async () => (await urls()).length === 0, 25000, 'the session to end');

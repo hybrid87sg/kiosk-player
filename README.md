@@ -173,7 +173,7 @@ flowchart TB
 ### Part 5: The phone app (about 5 minutes)
 
 1. From [**Releases**](https://github.com/hybrid87sg/kiosk-player/releases), download
-   `KioskAdmin-for-phone.apk` **on your phone** and open it. Allow **Install unknown apps** when Android
+   `KioskAdmin-for-phone-<version>.apk` (e.g. `KioskAdmin-for-phone-0.11.3.apk`) **on your phone** and open it. Allow **Install unknown apps** when Android
    asks.
 2. Open **Kiosk Admin**, enter the **Tailscale address** (e.g. `homeassistant.tail1234.ts.net:3000`),
    then the **username** and **password** you made in Part 3, step 7, and tap **Sign in**.
@@ -188,11 +188,11 @@ flowchart TB
 
 ### Part 6: The TVs (about 5 minutes per TV)
 
-1. Install `KioskPlayer-for-TV.apk` on the screen itself if it runs Android TV or Google TV (e.g. Xiaomi TVs,
+1. Install `KioskPlayer-for-TV-<version>.apk` on the screen itself if it runs Android TV or Google TV (e.g. Xiaomi TVs,
    many SWOSH TVs and commercial displays), otherwise on an Android TV box plugged into it. You can:
    - copy it on a USB stick and open it with a file manager app, or
    - use the **Send Files to TV** app on your phone and the TV, or
-   - install it from a computer over ADB (`adb install KioskPlayer-for-TV.apk`).
+   - install it from a computer over ADB (`adb install KioskPlayer-for-TV-0.11.3.apk`, with the version you downloaded).
 2. **Let it keep itself on screen.** On Kiosk Player's first screen, choose
    **Allow display over other apps** and switch it on for Kiosk Player. With this, the player starts by
    itself when the box is switched on, and comes back 30 seconds after someone presses Home or opens another
@@ -489,7 +489,7 @@ signage comes back for the next person.
 
 **Install it (once per PC)**
 
-1. Download `KioskBrowser-Setup-….exe` from the latest release
+1. Download `KioskBrowser-Setup-<version>.exe` from the latest release
    (<https://github.com/hybrid87sg/kiosk-player/releases>) and run it. Windows warns **"Windows
    protected your PC"** because the app isn't signed with a paid certificate: click **More info → Run
    anyway**.
