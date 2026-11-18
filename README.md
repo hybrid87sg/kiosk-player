@@ -304,6 +304,9 @@ What's on it:
 
 The **‹** button next to the name folds the side menu down to icons; it's remembered in that browser.
 
+**Light or dark:** the switch at the bottom of the side menu picks **Light** (cream), **Dark** (warm brown, like
+the TVs) or **Automatic** (follows the computer's own setting). Each browser remembers its choice.
+
 ### Working hours and after hours
 
 Each location can have working hours (Locations → a location → **Working hours**): opening and closing

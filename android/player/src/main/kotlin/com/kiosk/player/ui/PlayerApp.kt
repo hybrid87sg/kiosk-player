@@ -55,6 +55,10 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.material3.Typography
+import com.kiosk.player.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -78,14 +82,41 @@ import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
 import com.kiosk.player.PlayerViewModel
 
-// The app's colour palette (the same as the web interface and phone app).
-val Accent = Color(0xFFD97706) // primary accent: buttons, the pairing code
-val Ink = Color(0xFF003333) // app background, and text on orange buttons
-val Muted = Color(0xFFD4D4D4) // secondary text
-val Panel = Color(0xFF11384F) // surfaces: unselected buttons, panels
-val Soft = Color(0xFFD4D4D4) // body text on the background
-val Warning = Color(0xFFD97706) // problems and hints (the warning brown is too dark to read here)
-val Online = Color(0xFF15803D)
+// The showroom colours, warm dark (0.11.3): the same as the web dashboard's dark theme.
+val Accent = Color(0xFFD98A68) // terracotta: buttons, the pairing code, step numbers
+val Ink = Color(0xFF29241E) // app background (dark brown), and text on terracotta buttons
+val Cream = Color(0xFFFBF8F4) // headings and main text
+val Muted = Color(0xFFCFC5B6) // secondary text
+val Panel = Color(0xFF3D352C) // surfaces: unselected buttons, panels
+val Line = Color(0xFF5A5046) // outlines
+val Soft = Color(0xFFCFC5B6) // body text on the background
+val Warning = Color(0xFFE3A07F) // problems and hints
+val Online = Color(0xFF7DBE8A)
+
+// Fraunces for headings, Instrument Sans for everything else (both SIL Open Font License).
+val Headline = FontFamily(
+    Font(R.font.fraunces_regular, FontWeight.Normal),
+    Font(R.font.fraunces_medium, FontWeight.Medium),
+)
+val BodyFont = FontFamily(
+    Font(R.font.instrument_sans_regular, FontWeight.Normal),
+    Font(R.font.instrument_sans_semibold, FontWeight.SemiBold),
+    Font(R.font.instrument_sans_bold, FontWeight.Bold),
+)
+
+/** Material's text styles, all in Instrument Sans. */
+private fun kioskTypography(): Typography = Typography().let { t ->
+    Typography(
+        displayLarge = t.displayLarge.copy(fontFamily = BodyFont), displayMedium = t.displayMedium.copy(fontFamily = BodyFont),
+        displaySmall = t.displaySmall.copy(fontFamily = BodyFont), headlineLarge = t.headlineLarge.copy(fontFamily = BodyFont),
+        headlineMedium = t.headlineMedium.copy(fontFamily = BodyFont), headlineSmall = t.headlineSmall.copy(fontFamily = BodyFont),
+        titleLarge = t.titleLarge.copy(fontFamily = BodyFont), titleMedium = t.titleMedium.copy(fontFamily = BodyFont),
+        titleSmall = t.titleSmall.copy(fontFamily = BodyFont), bodyLarge = t.bodyLarge.copy(fontFamily = BodyFont),
+        bodyMedium = t.bodyMedium.copy(fontFamily = BodyFont), bodySmall = t.bodySmall.copy(fontFamily = BodyFont),
+        labelLarge = t.labelLarge.copy(fontFamily = BodyFont), labelMedium = t.labelMedium.copy(fontFamily = BodyFont),
+        labelSmall = t.labelSmall.copy(fontFamily = BodyFont),
+    )
+}
 
 @Composable
 fun PlayerApp(vm: PlayerViewModel) {
@@ -93,7 +124,10 @@ fun PlayerApp(vm: PlayerViewModel) {
     val mounting by vm.mounting.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, onPrimary = Ink, background = Ink, surface = Ink)) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(primary = Accent, onPrimary = Ink, background = Ink, surface = Ink),
+        typography = kioskTypography(),
+    ) {
         Box(Modifier.fillMaxSize().background(Ink)) {
             // Playback turns its own picture (from the playlist); every other screen follows
             // how this TV is mounted, so a portrait TV isn't showing these sideways.
@@ -133,13 +167,14 @@ fun TvButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, p
     Button(
         onClick = onClick,
         interactionSource = interaction,
+        shape = RoundedCornerShape(4.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = if (primary) Accent else Panel,
-            contentColor = if (primary) Ink else Color.White,
+            contentColor = if (primary) Ink else Cream,
         ),
         modifier = modifier
             .height(if (small) 48.dp else 56.dp)
-            .border(if (focused) (if (small) 3.dp else 4.dp) else 0.dp, if (focused) Color.White else Color.Transparent, RoundedCornerShape(30.dp))
+            .border(if (focused) (if (small) 3.dp else 4.dp) else 0.dp, if (focused) Cream else Color.Transparent, RoundedCornerShape(6.dp))
             .padding(4.dp),
     ) {
         Text(text, fontSize = if (small) 17.sp else 20.sp, fontWeight = FontWeight.SemiBold)
@@ -158,7 +193,7 @@ private fun SetupScreen(typeAddress: Boolean, onFind: () -> Unit, onDemo: () -> 
         verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Kiosk Player", fontSize = 48.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text("Kiosk Player", fontSize = 48.sp, fontFamily = Headline, color = Cream)
         if (!showServer) {
             Text("How should this screen get its content?", fontSize = 24.sp, color = Muted)
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -175,7 +210,7 @@ private fun SetupScreen(typeAddress: Boolean, onFind: () -> Unit, onDemo: () -> 
                 onValueChange = { address = it },
                 singleLine = true,
                 placeholder = { Text("e.g. 192.168.1.20:3000", fontSize = 22.sp) },
-                textStyle = MaterialTheme.typography.headlineSmall.copy(color = Color.White),
+                textStyle = MaterialTheme.typography.headlineSmall.copy(color = Cream),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { if (address.isNotBlank()) onServer(address) }),
                 colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Accent, unfocusedBorderColor = Muted),
@@ -208,13 +243,13 @@ private fun FindingScreen(
         val found = state.found
         when {
             found == null -> {
-                Text("Looking for your Kiosk server…", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Looking for your Kiosk server…", fontSize = 40.sp, fontFamily = Headline, color = Cream)
                 Text("Checking every device on this network. This takes a few seconds.", fontSize = 24.sp, color = Muted)
                 LinearProgressIndicator(Modifier.widthIn(max = 600.dp).fillMaxWidth(), color = Accent)
                 TvButton("Cancel", onBack, Modifier.focusRequester(first))
             }
             found.isEmpty() -> {
-                Text("No server found", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("No server found", fontSize = 40.sp, fontFamily = Headline, color = Cream)
                 Text(state.problem.orEmpty(), fontSize = 24.sp, color = Muted, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 900.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                     TvButton("Search again", onAgain, Modifier.focusRequester(first), primary = true)
@@ -223,7 +258,7 @@ private fun FindingScreen(
                 }
             }
             else -> {
-                Text("Which server is this screen for?", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Which server is this screen for?", fontSize = 40.sp, fontFamily = Headline, color = Cream)
                 Text("More than one Kiosk server answered on this network.", fontSize = 24.sp, color = Muted)
                 found.forEachIndexed { i, server ->
                     val name = server.siteName ?: "Kiosk server"
@@ -275,7 +310,7 @@ private fun PairingScreen(
     FitToScreen { portrait ->
         val qr: @Composable () -> Unit = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.alpha(if (offline) 0.35f else 1f).background(Color.White, RoundedCornerShape(20.dp)).padding(18.dp)) {
+                Box(Modifier.alpha(if (offline) 0.35f else 1f).background(Cream, RoundedCornerShape(6.dp)).padding(18.dp)) {
                     QrCode(state.qrPayload, Modifier.size(252.dp))
                 }
                 Text(
@@ -293,14 +328,14 @@ private fun PairingScreen(
                     (if (state.demo) "Demo · " else "New screen · ") + model,
                     fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.7.sp, color = Muted,
                 )
-                Text("Add this screen", fontSize = 40.sp, lineHeight = 46.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Add this screen", fontSize = 44.sp, lineHeight = 50.sp, fontFamily = Headline, color = Cream)
             }
         }
         val code: @Composable (center: Boolean) -> Unit = { center ->
             Column(horizontalAlignment = if (center) Alignment.CenterHorizontally else Alignment.Start) {
                 Text("Pairing code", fontSize = 15.sp, color = Muted)
                 Text(
-                    prettyCode(state.code), fontSize = 64.sp, lineHeight = 70.sp, fontWeight = FontWeight.ExtraBold,
+                    prettyCode(state.code), fontSize = 64.sp, lineHeight = 70.sp, fontFamily = Headline,
                     letterSpacing = 6.sp, color = Accent, maxLines = 1, modifier = Modifier.alpha(if (offline) 0.5f else 1f),
                 )
             }
@@ -308,10 +343,10 @@ private fun PairingScreen(
         val steps: @Composable () -> Unit = {
             if (offline) {
                 Row(
-                    Modifier.background(Color(0x4DB45309), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFFB45309), RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 12.dp),
+                    Modifier.background(Color(0x33D98A68), RoundedCornerShape(4.dp)).border(1.dp, Accent, RoundedCornerShape(4.dp)).padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
                     Column {
-                        Text("Can’t reach the Kiosk server", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("Can’t reach the Kiosk server", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Cream)
                         Text(state.problem.orEmpty(), fontSize = 16.sp, color = Soft, maxLines = 3)
                     }
                 }
@@ -337,7 +372,7 @@ private fun PairingScreen(
                     TvButton("Turn picture", onTurn, small = true)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(12.dp).background(if (offline) Color(0xFFF59E0B) else Online, CircleShape))
+                    Box(Modifier.size(12.dp).background(if (offline) Warning else Online, CircleShape))
                     Text(
                         "  " + (if (offline) "Offline" else if (state.demo) "Demo mode" else "Waiting to be added") + " · ${mounting.label}",
                         fontSize = 15.sp, color = Muted,
@@ -379,7 +414,7 @@ private fun PairingScreen(
 private fun PairingStep(number: Int, text: String) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(Modifier.size(28.dp).background(Panel, CircleShape), contentAlignment = Alignment.Center) {
-            Text("$number", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text("$number", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Accent)
         }
         Text(text, fontSize = 18.sp, lineHeight = 25.sp, color = Soft)
     }
@@ -417,7 +452,7 @@ private fun CenterMessage(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         eyebrow?.let { Text(it, fontSize = 22.sp, color = Muted, letterSpacing = 3.sp, fontWeight = FontWeight.SemiBold) }
-        Text(title, fontSize = 52.sp, fontWeight = FontWeight.Bold, color = Color.White, textAlign = TextAlign.Center)
+        Text(title, fontSize = 52.sp, fontFamily = Headline, color = Cream, textAlign = TextAlign.Center)
         Text(detail, fontSize = 26.sp, color = Soft, textAlign = TextAlign.Center)
         if (progress != null) {
             LinearProgressIndicator(progress = { progress }, color = Accent, trackColor = Panel, modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().height(10.dp))
@@ -433,17 +468,17 @@ private fun SettingsPanel(vm: PlayerViewModel, onClose: () -> Unit) {
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     var confirmReset by remember { mutableStateOf(false) }
     Box(
-        Modifier.fillMaxSize().background(Color(0xE6000000)).onPreviewKeyEvent {
+        Modifier.fillMaxSize().background(Color(0xE6140F0B)).onPreviewKeyEvent {
             if (it.type == KeyEventType.KeyUp && it.key == Key.Back) { onClose(); true } else false
         },
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.padding(vertical = 24.dp).background(Ink, RoundedCornerShape(28.dp))
+            Modifier.padding(vertical = 24.dp).background(Ink, RoundedCornerShape(8.dp)).border(1.dp, Line, RoundedCornerShape(8.dp))
                 .verticalScroll(rememberScrollState()).padding(48.dp).widthIn(max = 900.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            Text("Settings", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text("Settings", fontSize = 40.sp, fontFamily = Headline, color = Cream)
             Text(
                 if (vm.isDemo) "Demo mode · no server" else "Server: ${vm.serverUrl ?: "not set"}",
                 fontSize = 24.sp, color = Soft,
@@ -499,7 +534,7 @@ private fun KeepInFrontSection(modifier: Modifier = Modifier) {
     }
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Come back to the front automatically", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text("Come back to the front automatically", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Cream)
         Text(
             when {
                 !granted -> "Needs the “Display over other apps” permission, so the player can reopen itself after a restart or when someone leaves it."
@@ -569,7 +604,7 @@ private fun HomeScreenSection(modifier: Modifier = Modifier) {
         onPauseOrDispose { }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Use as this TV's home screen", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text("Use as this TV's home screen", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Cream)
         Text(
             when {
                 isDefault -> "On · Android reopens the player whatever closes it. The Home button also leads here: use Leave for 15 minutes, then Open TV settings."
@@ -627,7 +662,7 @@ private fun AppUpdatesSection(modifier: Modifier = Modifier) {
         onPauseOrDispose { }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("App updates from the dashboard", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text("App updates from the dashboard", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Cream)
         Text(
             if (allowed) "Allowed · Kiosk Player ${BuildConfig.VERSION_NAME}. New versions are installed when someone presses Update on the dashboard."
             else "Needs “Install unknown apps” for Kiosk Player, so the dashboard can update it without a USB stick.",
@@ -661,7 +696,7 @@ private fun AfterHoursSection(modifier: Modifier = Modifier) {
         onPauseOrDispose { }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("After working hours", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text("After working hours", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Cream)
         Text(
             if (allowed) "Black screen, and standby where this TV allows it. It wakes up at opening time."
             else "Black screen. Allow “turn the screen off” to also put the TV into standby where it can.",
