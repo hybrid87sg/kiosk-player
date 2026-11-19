@@ -48,6 +48,8 @@ function createController({ store, dataDir, appVersion, model = null, fetchImpl 
       items: (playlist.items || []).map(withFile).filter((item) => sync.isReady(item)),
       hours: playlist.hours || null,
       browser: playlist.browser || null,
+      // Video Kiosk ('video': touches ignored) or Web Kiosk ('web'), 0.12.0. Older servers: 'web'.
+      mode: playlist.mode === 'video' ? 'video' : 'web',
     };
   }
 

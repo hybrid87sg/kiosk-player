@@ -1,0 +1,32 @@
+{
+  "_about": "Which pages a Web Kiosk may open, and the staff PIN check. Both the Windows app (windows/test/core.test.js) and the Android TV app (android/core WebKioskRulesTest) are tested against this one list, so they always agree.",
+  "start": "https://www.shop.example.com/start",
+  "allowed_hosts": ["pay.example.net", "*.cdn.example.org"],
+  "allowed": [
+    "https://shop.example.com/cart",
+    "https://www.shop.example.com/a?b=1",
+    "https://help.shop.example.com/",
+    "http://shop.example.com/",
+    "https://SHOP.example.com/upper",
+    "https://pay.example.net/checkout",
+    "https://www.pay.example.net/",
+    "https://img.cdn.example.org/x.png",
+    "https://cdn.example.org/",
+    "about:blank"
+  ],
+  "refused": [
+    "https://youtube.com/",
+    "https://shop.example.com.evil.com/",
+    "https://evilshop.example.com/",
+    "https://sub.pay.example.net/",
+    "file:///C:/Windows/",
+    "javascript:alert(1)",
+    "mailto:a@b.c",
+    "chrome://settings",
+    "intent://scan/#Intent;scheme=zxing;end",
+    "data:text/html,<p>hi</p>",
+    "https://example.net/",
+    "not a url"
+  ],
+  "pin": { "salt": "abc123", "sha256_of_salt_colon_2468": "computed by the tests", "right": "2468", "wrong": ["2469", "", "24680"] }
+}

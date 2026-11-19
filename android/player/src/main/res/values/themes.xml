@@ -3,5 +3,5 @@
     <style name="Theme.KioskPlayer" parent="android:Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
-    <color name="ic_launcher_background">#0F766E</color>
+    <color name="ic_launcher_background">#29241E</color>
 </resources>

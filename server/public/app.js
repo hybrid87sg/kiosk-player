@@ -575,9 +575,18 @@ function waitingCard(waiting, manySites, playlists, devices, redraw) {
             el('strong', {}, pretty(w.pairing_code)), ' on its screen')),
         el('button', {
           class: 'btn primary small',
-          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, mounting: w.mounting, playlists, devices, onDone: redraw }),
+          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, mounting: w.mounting, canWeb: w.can_web_kiosk, playlists, devices, onDone: redraw }),
         }, 'Add')))),
   );
+}
+
+/** What an Android screen said about itself, when it matters for a Web Kiosk (0.12.0). */
+function webKioskWarning(d) {
+  const problems = [];
+  if (d.touchscreen === false) problems.push('No touchscreen found on this screen: customers can’t open the web page.');
+  if (d.webview_version === '') problems.push('This screen has no web viewer (Android System WebView). Install or update it from the Play Store.');
+  else if (d.webview_version && Number(d.webview_version.split('.')[0]) < 90) problems.push(`Its web viewer is old (${d.webview_version}): many websites need a newer one. Update Android System WebView.`);
+  return problems.length ? el('div', { class: 'warn' }, problems.join(' ')) : null;
 }
 
 function screenCard(d, playlists, devices, redraw) {
@@ -591,8 +600,9 @@ function screenCard(d, playlists, devices, redraw) {
           d.online ? 'Online' : `Offline · ${timeAgo(d.last_seen)}`)),
     el('div', { class: 'row meta' }, shapeIcon(mount.shape), `${mount.label} · ${d.playlist_name ? `${d.playlist_name}${d.playlist_auto ? ' (automatic)' : ''}` : 'No playlist'}`),
     el('div', {}, d.current_filename ? `Now playing: ${d.current_filename}` : 'Waiting for content'),
-    d.kind === 'browser' ? el('div', { class: d.browser?.url ? 'meta' : 'warn' },
-      d.browser?.url ? `Web kiosk · ${d.browser.url}` : 'Web kiosk · no web address yet: Edit to set one') : null,
+    d.screen_mode === 'web' ? el('div', { class: d.browser?.url ? 'meta' : 'warn' },
+      d.browser?.url ? `Web Kiosk · ${d.browser.url}` : 'Web Kiosk · no web address yet: Edit to set one') : null,
+    d.screen_mode === 'web' && d.kind !== 'browser' ? webKioskWarning(d) : null,
     d.playback_error ? el('div', { class: 'error' }, d.playback_error) : null,
     d.last_restart ? el('div', { class: 'warn', title: new Date(d.last_restart.at).toLocaleString() },
       `Closed by itself ${timeAgo(d.last_restart.at)} and reopened: ${d.last_restart.reason}`) : null,
@@ -729,7 +739,7 @@ function addScreenDialog(playlists, devices, onDone) {
 }
 
 /** Name, location, how the screen is mounted and its playlist. New (code) or existing (device). */
-async function screenForm({ code, device, kind = device?.kind, site = null, mounting: asked = null, playlists, devices, onDone }) {
+async function screenForm({ code, device, kind = device?.kind, site = null, mounting: asked = null, canWeb = device ? device.can_web_kiosk !== false : true, playlists, devices, onDone }) {
   // Every location, to choose from (or add a new one). A screen has to be in one:
   // that is where its playlist and its working hours come from.
   const data = await attempt(() => api('GET', 'api/locations'));
@@ -811,7 +821,9 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
       extraBox);
     updateWarning();
     // A Windows Kiosk Browser: the page customers use, and its rules.
+    // Video Kiosk or Web Kiosk (0.12.0). A Windows PC starts as a Web Kiosk, an Android screen as a Video Kiosk.
     const isBrowser = kind === 'browser';
+    let screenMode = device?.screen_mode || (isBrowser ? 'web' : 'video');
     const b = device?.browser || {};
     const kioskUrl = el('input', { type: 'url', value: b.url || '', placeholder: 'https://shop.example.com/start', spellcheck: false });
     const kioskIdle = el('input', { type: 'number', min: 15, max: 3600, step: 5, value: b.idle_seconds || 90, style: 'max-width:120px' });
@@ -819,31 +831,51 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
     const kioskPin = el('input', { type: 'password', inputmode: 'numeric', autocomplete: 'new-password', maxlength: 8, placeholder: b.has_pin ? 'Unchanged (type a new one to change)' : '4 to 8 digits', style: 'max-width:260px' });
     const kioskNoPin = el('input', { type: 'checkbox' });
     const browserBody = () => {
-      const out = {
-        kiosk_url: kioskUrl.value.trim() || null,
-        kiosk_idle_seconds: Number(kioskIdle.value) || 90,
-        kiosk_allowed_hosts: kioskHosts.value.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean),
-      };
+      const out = { screen_mode: screenMode };
+      if (screenMode === 'web') {
+        out.kiosk_url = kioskUrl.value.trim() || null;
+        out.kiosk_idle_seconds = Number(kioskIdle.value) || 90;
+        out.kiosk_allowed_hosts = kioskHosts.value.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean);
+      }
       if (kioskNoPin.checked) out.kiosk_pin = null;
       else if (kioskPin.value) out.kiosk_pin = kioskPin.value;
       return out;
     };
-    const browserFields = !isBrowser ? null : el('div', { class: 'field', style: 'display:flex;flex-direction:column;gap:10px' },
-      el('strong', {}, 'Web kiosk'),
-      el('span', { class: 'meta' }, 'When nobody is using it, this screen plays its playlist. A touch opens this web page, fresh for each customer.'),
+    const MODES = {
+      video: { label: 'Video Kiosk', hint: 'Plays its playlist. Touches do nothing.' },
+      web: { label: 'Web Kiosk', hint: 'Plays its playlist. A touch opens your web page; after the time below untouched, it’s wiped and back to the playlist.' },
+    };
+    const webOnly = el('div', { style: 'display:flex;flex-direction:column;gap:10px' },
       el('label', { class: 'field' }, 'Web address', kioskUrl),
       el('label', { class: 'field' }, 'Back to the playlist after (seconds untouched)', kioskIdle),
       el('label', { class: 'field' }, 'Other websites customers may open', kioskHosts,
         el('span', { class: 'meta' }, 'Pages on the web address’s own site always work. Links to any other site are blocked unless listed here.')),
-      el('label', { class: 'field' }, 'Staff PIN', kioskPin,
-        el('span', { class: 'meta' }, 'To leave the kiosk on the PC: tap the top-left corner 5 times quickly, then type the PIN.')),
+      device && !isBrowser ? webKioskWarning(device) : null);
+    const pinHint = el('span', { class: 'meta' });
+    const drawMode = () => {
+      webOnly.style.display = screenMode === 'web' ? 'flex' : 'none'; // (an inline display beats the hidden attribute)
+      pinHint.textContent = screenMode === 'web'
+        ? 'Staff: tap the top-left corner 5 times quickly, then type the PIN, to leave the kiosk.'
+        : `Staff: tap the top-left corner 5 times quickly, then type the PIN, to open ${isBrowser ? 'the staff menu' : 'Kiosk Player’s settings'} on a touch screen. Without a PIN, touches do nothing.`;
+    };
+    const modeChoices = el('div', { class: 'choices' }, Object.entries(MODES).map(([key, m]) => {
+      const off = key === 'web' && !canWeb && screenMode !== 'web';
+      return el('label', { class: `choice${off ? ' disabled' : ''}` },
+        el('input', { type: 'radio', name: 'screen-mode', value: key, checked: screenMode === key, disabled: off, onchange: () => { screenMode = key; drawMode(); } }),
+        el('span', {}, el('strong', {}, m.label), el('br'), el('span', { class: 'meta' }, m.hint),
+          off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.12.0 or newer; this screen has ${device?.app_version || 'an older version'}. Update it first.`)] : null));
+    }));
+    const browserFields = el('div', { class: 'field', style: 'display:flex;flex-direction:column;gap:10px' },
+      el('strong', {}, 'What this screen does'), modeChoices, webOnly,
+      el('label', { class: 'field' }, 'Staff PIN', kioskPin, pinHint),
       b.has_pin ? el('label', { class: 'row', style: 'gap:8px' }, kioskNoPin, 'Remove the staff PIN') : null);
+    drawMode();
     const form = el('form', {
       method: 'dialog',
       onsubmit: async (e) => {
         e.preventDefault();
-        const body = { name: name.value.trim(), location: location.value || null, ...mountingBody(mounting), playlist_id: playlistId, ...(isBrowser ? browserBody() : {}) };
-        if (isBrowser && !body.kiosk_url) return toast('Type the web address customers should see');
+        const body = { name: name.value.trim(), location: location.value || null, ...mountingBody(mounting), playlist_id: playlistId, ...browserBody() };
+        if (screenMode === 'web' && !body.kiosk_url) return toast('Type the web address customers should see');
         if (!body.name) return toast('Give the screen a name');
         if (!body.location) return toast('Choose a location for this screen');
         if (body.location === '__new' && !newLocation.value.trim()) return toast('Type the new location’s name');
@@ -862,7 +894,7 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
         onDone();
       },
     },
-    el('h2', {}, device ? (isBrowser ? 'Edit web kiosk' : 'Edit screen') : `Set up ${isBrowser ? 'web kiosk' : 'screen'} ${code.slice(0, 3)}-${code.slice(3)}`),
+    el('h2', {}, device ? 'Edit screen' : `Set up ${isBrowser ? 'Windows kiosk' : 'screen'} ${code.slice(0, 3)}-${code.slice(3)}`),
     el('label', { class: 'field' }, 'Name', name),
     el('label', { class: 'field' }, 'Location', location, newLocation),
     el('div', { class: 'field' }, el('strong', {}, 'How the screen is mounted'), mountChoices,

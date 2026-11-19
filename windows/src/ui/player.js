@@ -100,9 +100,11 @@ function renderReady(s) {
     return;
   }
   const stage = el('div', { class: 'stage' });
-  const hint = s.browser && s.browser.url
-    ? el('div', { class: 'touch-hint' }, 'Touch the screen to start')
-    : el('div', { class: 'touch-hint' }, 'No web address yet: set one on the Kiosk dashboard');
+  // A Video Kiosk just plays: no invitation to touch.
+  const hint = s.mode === 'video' ? null
+    : s.browser && s.browser.url
+      ? el('div', { class: 'touch-hint' }, 'Touch the screen to start')
+      : el('div', { class: 'touch-hint' }, 'No web address yet: set one on the Kiosk dashboard');
   fill(screenEl, stage, hint);
   playIndex = 0;
   playNext(stage, s.items || []);
@@ -139,7 +141,7 @@ function render() {
   badge.hidden = !(s.phase === 'ready' && s.badge && s.open !== false);
   badge.textContent = s.badge || '';
   // Only redraw the main screen when what it shows changes (the playlist keeps playing otherwise).
-  const key = JSON.stringify([s.phase, s.code, s.problem, s.detail, s.done, s.open, s.version, s.browser && s.browser.url, (s.items || []).map((i) => i.src)]);
+  const key = JSON.stringify([s.phase, s.code, s.problem, s.detail, s.done, s.open, s.version, s.mode, s.browser && s.browser.url, (s.items || []).map((i) => i.src)]);
   if (key === shownKey) return;
   shownKey = key;
   if (s.phase === 'setup') renderSetup();
@@ -158,7 +160,7 @@ bridge.onNotice((text) => {
 
 // A customer touches the signage: open the web page (not during setup, or after hours).
 screenEl.addEventListener('pointerdown', (e) => {
-  if (state.phase === 'ready' && state.open && !state.browsing && !cornerTap(e)) bridge.touch();
+  if (state.phase === 'ready' && state.open && !state.browsing && !cornerTap(e) && state.mode !== 'video') bridge.touch();
 });
 document.getElementById('back').addEventListener('click', () => bridge.back());
 document.getElementById('start-over').addEventListener('click', () => bridge.startOver());

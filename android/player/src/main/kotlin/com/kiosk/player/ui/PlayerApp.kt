@@ -78,6 +78,7 @@ import com.kiosk.player.AfterHours
 import com.kiosk.player.AppUpdater
 import com.kiosk.player.HomeScreen
 import com.kiosk.player.KeepInFront
+import com.kiosk.player.KioskInput
 import com.kiosk.player.PlayerSettings
 import com.kiosk.player.PlayerUi
 import com.kiosk.player.PlayerViewModel
@@ -123,6 +124,26 @@ fun PlayerApp(vm: PlayerViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val mounting by vm.mounting.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    // Web Kiosk (0.12.0): a customer is using the web page; staff are typing the PIN.
+    var browsing by remember { mutableStateOf(false) }
+    var pinPadOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    // A web session cut short (power cut, crash) leaves nothing behind for the next customer.
+    LaunchedEffect(Unit) { if (vm.isWebKiosk) wipeWebData(context, null) }
+    // Staff: 5 quick taps in the top-left corner. With a PIN: the PIN pad. A Web Kiosk without
+    // a PIN: straight to settings. A Video Kiosk without a PIN: nothing (touches do nothing).
+    LaunchedEffect(Unit) {
+        KioskInput.cornerTaps.collect {
+            when {
+                settingsOpen || pinPadOpen -> Unit
+                vm.staffPin != null -> pinPadOpen = true
+                vm.isWebKiosk -> { browsing = false; settingsOpen = true }
+            }
+        }
+    }
+    val webKiosk = (ui as? PlayerUi.Playing)?.webKiosk
+    // Not a Web Kiosk any more (or after hours, or the content changed): back to the playlist.
+    LaunchedEffect(webKiosk) { if (webKiosk == null) browsing = false }
 
     MaterialTheme(
         colorScheme = darkColorScheme(primary = Accent, onPrimary = Ink, background = Ink, surface = Ink),
@@ -132,7 +153,10 @@ fun PlayerApp(vm: PlayerViewModel) {
             // Playback turns its own picture (from the playlist); every other screen follows
             // how this TV is mounted, so a portrait TV isn't showing these sideways.
             val state = ui
-            if (state is PlayerUi.Playing) {
+            if (state is PlayerUi.Playing && browsing && state.webKiosk != null) {
+                // The playlist stops (no sound under the page) and starts again afterwards.
+                MountedScreen(state.mounting) { WebKioskSession(state.webKiosk, onEnd = { browsing = false }) }
+            } else if (state is PlayerUi.Playing) {
                 PlaybackScreen(
                     state,
                     onNowPlaying = { vm.currentMediaId = it },
@@ -140,6 +164,7 @@ fun PlayerApp(vm: PlayerViewModel) {
                     onPlaybackProblem = vm::notePlaybackProblem,
                     onPlaybackHealthy = vm::notePlaybackHealthy,
                 )
+                if (state.webKiosk != null) MountedScreen(state.mounting) { TouchToStart(onStart = { browsing = true }) }
             } else MountedScreen(mounting) { when (state) {
                 PlayerUi.Loading -> CenterMessage(title = "Kiosk Player", detail = "Starting…")
                 is PlayerUi.Setup -> SetupScreen(state.typeAddress, onFind = vm::findServer, onDemo = vm::chooseDemo, onServer = vm::chooseServer, onTurn = vm::turnPicture)
@@ -152,6 +177,12 @@ fun PlayerApp(vm: PlayerViewModel) {
                 is PlayerUi.Playing -> Unit
                 is PlayerUi.Closed -> ClosedScreen(onOpenSettings = { settingsOpen = true })
             } }
+            val staffPin = vm.staffPin
+            if (pinPadOpen && staffPin != null) {
+                MountedScreen(mounting) {
+                    StaffPinPad(staffPin, onRight = { pinPadOpen = false; browsing = false; settingsOpen = true }, onCancel = { pinPadOpen = false })
+                }
+            }
             if (settingsOpen) {
                 MountedScreen(mounting) { SettingsPanel(vm, onClose = { settingsOpen = false }) }
             }

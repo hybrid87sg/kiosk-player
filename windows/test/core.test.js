@@ -74,12 +74,10 @@ test('the working-hours rules are an exact copy of the server’s', () => {
   );
 });
 
-test('only the web address’s own site, and listed ones, can be opened', () => {
-  const start = 'https://www.shop.example.com/start';
-  const yes = ['https://shop.example.com/cart', 'https://www.shop.example.com/a?b=1', 'https://help.shop.example.com/', 'http://shop.example.com/', 'https://pay.example.net/checkout', 'https://img.cdn.example.org/x.png', 'https://cdn.example.org/'];
-  const no = ['https://youtube.com/', 'https://shop.example.com.evil.com/', 'https://evilshop.example.com/', 'file:///C:/Windows/', 'javascript:alert(1)', 'mailto:a@b.c', 'chrome://settings', 'https://example.net/'];
-  for (const u of yes) assert.equal(isAllowed(u, start, ['pay.example.net', '*.cdn.example.org']), true, u);
-  for (const u of no) assert.equal(isAllowed(u, start, ['pay.example.net', '*.cdn.example.org']), false, u);
+test('only the web address’s own site, and listed ones, can be opened (the list shared with Android)', () => {
+  const cases = JSON.parse(fs.readFileSync(path.join(__dirname, '../../shared/web-kiosk-rules.json'), 'utf8'));
+  for (const u of cases.allowed) assert.equal(isAllowed(u, cases.start, cases.allowed_hosts), true, u);
+  for (const u of cases.refused) assert.equal(isAllowed(u, cases.start, cases.allowed_hosts), false, u);
 });
 
 test('the staff PIN is checked against the server’s salted hash', () => {

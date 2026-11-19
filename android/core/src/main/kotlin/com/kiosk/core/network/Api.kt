@@ -162,6 +162,8 @@ internal data class HeartbeatBody(
     @SerialName("android_sdk") val androidSdk: Int? = null,
     @SerialName("version_code") val versionCode: Int? = null,
     @SerialName("can_install_apps") val canInstallApps: Boolean? = null,
+    val touchscreen: Boolean? = null,
+    @SerialName("webview_version") val webviewVersion: String? = null,
     val resync: JobReport? = null,
     val update: JobReport? = null,
 )
