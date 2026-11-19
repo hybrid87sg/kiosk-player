@@ -1,6 +1,7 @@
 package com.kiosk.player
 
 import android.view.MotionEvent
+import com.kiosk.core.player.TurnedScreen
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
@@ -27,12 +28,20 @@ object KioskInput {
         lastActivity = System.currentTimeMillis()
     }
 
-    /** Every touch on the screen. [density] turns the 80 dp corner into pixels. */
-    fun touched(event: MotionEvent, density: Float) {
+    /**
+     * How far the app turns its picture right now (Mounting.rotationDegrees), so the staff
+     * corner is the top-left corner people see, not the screen's own (0.12.1).
+     */
+    @Volatile var turnDegrees: Int = 0
+
+    /**
+     * Every touch on the screen, in the screen's own pixels ([width] × [height]).
+     * [density] turns the 80 dp corner into pixels.
+     */
+    fun touched(event: MotionEvent, density: Float, width: Float, height: Float) {
         active()
         if (event.actionMasked != MotionEvent.ACTION_DOWN) return
-        val corner = CORNER_DP * density
-        if (event.x > corner || event.y > corner) return
+        if (!TurnedScreen.inSeenTopLeft(event.x, event.y, width, height, turnDegrees, CORNER_DP * density)) return
         val now = System.currentTimeMillis()
         synchronized(taps) {
             taps.addLast(now)
@@ -44,7 +53,7 @@ object KioskInput {
         }
     }
 
-    /** True for a touch in the staff corner (it doesn't also open the web page). */
+    /** True for a touch in the staff corner, in the picture's own (turned) coordinates. */
     fun inCorner(x: Float, y: Float, density: Float): Boolean = x <= CORNER_DP * density && y <= CORNER_DP * density
 
     private const val CORNER_DP = 80f

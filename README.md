@@ -502,7 +502,12 @@ microphone and location are refused.
   dashboard warns if it doesn't.
 - **A working web viewer** (*Android System WebView*). Most screens have one; cheap TV boxes sometimes
   have an old one. The dashboard shows a warning if it's missing or old; update it from the Play Store.
-- For a tall touch stand, set **How the screen is mounted** to **Portrait, already upright**.
+- For a tall touch stand, set **How the screen is mounted** to **Portrait, already upright**. If its
+  Android runs sideways (the home screen looks turned), first turn it in Android itself: **Settings →
+  Display → rotation** (on Rockchip stands sometimes "Screen rotation" or "HDMI rotation"). Kiosk Player
+  can turn its own picture (*Portrait, turned right/left*), and since 0.12.1 the web page and the staff
+  corner follow it, but Android's on-screen keyboard can't be turned by an app and would come up
+  sideways. The dashboard warns about this.
 
 **Staff on an Android screen:** tap the **top-left corner 5 times quickly**, then type the staff PIN,
 to open Kiosk Player's settings (and from there, Android). This also works on a Video Kiosk with a

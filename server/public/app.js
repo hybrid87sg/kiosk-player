@@ -580,10 +580,15 @@ function waitingCard(waiting, manySites, playlists, devices, redraw) {
   );
 }
 
+// A screen Kiosk Player turns itself: Android doesn't know, so its on-screen keyboard comes up sideways (0.12.1).
+const TURNED_BY_APP = ['portrait_right', 'portrait_left', 'landscape_flipped'];
+const TURNED_KEYBOARD_NOTE = 'Kiosk Player turns this screen’s picture, but Android’s on-screen keyboard can’t be turned and will appear sideways. For typing on the web page, turn the screen in Android’s own display settings (Settings → Display → rotation) and set How the screen is mounted to Portrait, already upright (or Landscape).';
+
 /** What an Android screen said about itself, when it matters for a Web Kiosk (0.12.0). */
-function webKioskWarning(d) {
+function webKioskWarning(d, { turned = true } = {}) {
   const problems = [];
   if (d.touchscreen === false) problems.push('No touchscreen found on this screen: customers can’t open the web page.');
+  if (turned && d.kind !== 'browser' && TURNED_BY_APP.includes(mountingOf(d))) problems.push(TURNED_KEYBOARD_NOTE);
   if (d.webview_version === '') problems.push('This screen has no web viewer (Android System WebView). Install or update it from the Play Store.');
   else if (d.webview_version && Number(d.webview_version.split('.')[0]) < 90) problems.push(`Its web viewer is old (${d.webview_version}): many websites need a newer one. Update Android System WebView.`);
   return problems.length ? el('div', { class: 'warn' }, problems.join(' ')) : null;
@@ -776,12 +781,13 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
         : `Plays its location’s ${SHAPES[screenShape]} playlist.`;
       drawExtras();
     };
+    let redrawMode = () => {}; // set below, once the Web Kiosk part exists
     // Turning the picture upside down needs Kiosk Player 0.5.0 or newer on the TV.
     const cantFlip = Boolean(device) && device.can_flip === false;
     const mountChoices = el('div', { class: 'choices' }, Object.entries(MOUNTINGS).map(([key, m]) => {
       const off = key === 'landscape_flipped' && cantFlip && mounting !== key;
       return el('label', { class: `choice${off ? ' disabled' : ''}` },
-        el('input', { type: 'radio', name: 'mounting', value: key, checked: mounting === key, disabled: off, onchange: () => { mounting = key; updateWarning(); } }),
+        el('input', { type: 'radio', name: 'mounting', value: key, checked: mounting === key, disabled: off, onchange: () => { mounting = key; updateWarning(); redrawMode(); } }),
         el('span', {}, mountIcon(key, 26), ' ', m.label,
           m.hint && kind !== 'browser' ? [el('br'), el('span', { class: 'meta' }, m.hint)] : null,
           off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.5.0 or newer; this TV has ${device.app_version || 'an older version'}.`)] : null));
@@ -850,10 +856,12 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
       el('label', { class: 'field' }, 'Back to the playlist after (seconds untouched)', kioskIdle),
       el('label', { class: 'field' }, 'Other websites customers may open', kioskHosts,
         el('span', { class: 'meta' }, 'Pages on the web address’s own site always work. Links to any other site are blocked unless listed here.')),
-      device && !isBrowser ? webKioskWarning(device) : null);
+      device && !isBrowser ? webKioskWarning(device, { turned: false }) : null); // the keyboard note follows the choice below
+    const turnedNote = el('div', { class: 'warn' }, TURNED_KEYBOARD_NOTE);
     const pinHint = el('span', { class: 'meta' });
     const drawMode = () => {
       webOnly.style.display = screenMode === 'web' ? 'flex' : 'none'; // (an inline display beats the hidden attribute)
+      turnedNote.hidden = !(screenMode === 'web' && !isBrowser && TURNED_BY_APP.includes(mounting));
       pinHint.textContent = screenMode === 'web'
         ? 'Staff: tap the top-left corner 5 times quickly, then type the PIN, to leave the kiosk.'
         : `Staff: tap the top-left corner 5 times quickly, then type the PIN, to open ${isBrowser ? 'the staff menu' : 'Kiosk Player’s settings'} on a touch screen. Without a PIN, touches do nothing.`;
@@ -866,10 +874,11 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
           off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.12.0 or newer; this screen has ${device?.app_version || 'an older version'}. Update it first.`)] : null));
     }));
     const browserFields = el('div', { class: 'field', style: 'display:flex;flex-direction:column;gap:10px' },
-      el('strong', {}, 'What this screen does'), modeChoices, webOnly,
+      el('strong', {}, 'What this screen does'), modeChoices, webOnly, turnedNote,
       el('label', { class: 'field' }, 'Staff PIN', kioskPin, pinHint),
       b.has_pin ? el('label', { class: 'row', style: 'gap:8px' }, kioskNoPin, 'Remove the staff PIN') : null);
     drawMode();
+    redrawMode = drawMode;
     const form = el('form', {
       method: 'dialog',
       onsubmit: async (e) => {

@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
     // Every touch and key press, before the screen's parts get it: a Web Kiosk's idle
     // countdown and the staff corner taps (see KioskInput).
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        KioskInput.touched(ev, resources.displayMetrics.density)
+        KioskInput.touched(ev, resources.displayMetrics.density, window.decorView.width.toFloat(), window.decorView.height.toFloat())
         return super.dispatchTouchEvent(ev)
     }
 

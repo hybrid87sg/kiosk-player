@@ -36,6 +36,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -141,6 +142,9 @@ fun PlayerApp(vm: PlayerViewModel) {
             }
         }
     }
+    // The staff corner follows the picture as people see it (0.12.1).
+    val shownMounting = (ui as? PlayerUi.Playing)?.mounting ?: mounting
+    SideEffect { KioskInput.turnDegrees = shownMounting.rotationDegrees }
     val webKiosk = (ui as? PlayerUi.Playing)?.webKiosk
     // Not a Web Kiosk any more (or after hours, or the content changed): back to the playlist.
     LaunchedEffect(webKiosk) { if (webKiosk == null) browsing = false }
@@ -155,7 +159,7 @@ fun PlayerApp(vm: PlayerViewModel) {
             val state = ui
             if (state is PlayerUi.Playing && browsing && state.webKiosk != null) {
                 // The playlist stops (no sound under the page) and starts again afterwards.
-                MountedScreen(state.mounting) { WebKioskSession(state.webKiosk, onEnd = { browsing = false }) }
+                WebKioskSession(state.webKiosk, state.mounting, onEnd = { browsing = false })
             } else if (state is PlayerUi.Playing) {
                 PlaybackScreen(
                     state,
