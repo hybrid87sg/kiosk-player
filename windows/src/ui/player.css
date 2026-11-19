@@ -1,34 +1,41 @@
+/* The Kiosk colours (0.12.0): dark brown and terracotta, the same as the TV app and the dashboard. */
+@font-face { font-family: "Fraunces"; font-weight: 100 900; src: url("fonts/fraunces.woff2") format("woff2"); }
+@font-face { font-family: "Instrument Sans"; font-weight: 400 700; src: url("fonts/instrument-sans.woff2") format("woff2"); }
 :root {
-  --bg: #0b1a2e;
-  --surface: #13294a;
-  --text: #f4f7fb;
-  --muted: #a9b8cc;
-  --primary: #f28c28;
-  --on-primary: #1a1206;
-  --danger: #ff8a80;
+  --bg: #29241E;        /* background */
+  --bar: #221E19;       /* the bar under the web page */
+  --surface: #3D352C;   /* inputs, keys */
+  --card: #332D26;      /* panels */
+  --line: #5A5046;      /* outlines */
+  --text: #FBF8F4;      /* cream */
+  --muted: #CFC5B6;
+  --primary: #D98A68;   /* terracotta */
+  --on-primary: #29241E;
+  --danger: #F2A08F;
+  --font-head: "Fraunces", Georgia, serif;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
 /* Hidden means hidden, whatever display a box has (an invisible overlay would swallow every touch). */
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: #000; color: var(--text); overflow: hidden;
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; user-select: none; cursor: default; }
+  font-family: "Instrument Sans", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; user-select: none; cursor: default; }
 @media (pointer: coarse) { html, body { cursor: none; } }
 button { font: inherit; }
 #screen { position: fixed; inset: 0; }
 
 /* Setup, pairing and "getting ready" */
 .panel { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 24px; padding: 48px; text-align: center; background: radial-gradient(circle at 30% 20%, #1d3e6e, var(--bg) 70%); }
-.panel h1 { font-size: clamp(32px, 4vw, 56px); margin: 0; font-weight: 700; }
+  gap: 24px; padding: 48px; text-align: center; background: var(--bg); }
+.panel h1 { font-family: var(--font-head); font-size: clamp(32px, 4vw, 56px); margin: 0; font-weight: 400; }
 .panel p { margin: 0; font-size: clamp(18px, 1.6vw, 26px); color: var(--muted); max-width: 900px; line-height: 1.45; }
-.code { font-size: clamp(72px, 11vw, 160px); font-weight: 800; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
-.big-btn { min-height: 72px; min-width: 260px; padding: 0 36px; border-radius: 40px; border: 2px solid var(--muted);
+.code { font-size: clamp(72px, 11vw, 160px); font-weight: 700; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; color: var(--primary); }
+.big-btn { min-height: 72px; min-width: 260px; padding: 0 36px; border-radius: 6px; border: 2px solid var(--line);
   background: transparent; color: var(--text); font-size: 24px; font-weight: 600; }
 .big-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .big-btn:active { transform: scale(0.98); }
 .row { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; align-items: center; }
-.address { min-height: 72px; width: min(560px, 80vw); border-radius: 16px; border: 2px solid var(--muted); background: var(--surface);
+.address { min-height: 72px; width: min(560px, 80vw); border-radius: 6px; border: 2px solid var(--line); background: var(--surface);
   color: var(--text); font-size: 26px; padding: 0 20px; user-select: text; }
 .found { display: flex; flex-direction: column; gap: 12px; width: min(640px, 90vw); }
 .found button { text-align: left; }
@@ -40,7 +47,7 @@ button { font: inherit; }
 .stage { position: absolute; inset: 0; background: #000; }
 .stage img, .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .touch-hint { position: absolute; left: 50%; bottom: 6vh; transform: translateX(-50%); padding: 18px 40px; border-radius: 48px;
-  background: rgba(11, 26, 46, 0.82); color: var(--text); font-size: clamp(22px, 2.2vw, 34px); font-weight: 600;
+  background: rgba(41, 36, 30, 0.88); border: 2px solid var(--primary); color: var(--text); font-size: clamp(22px, 2.2vw, 34px); font-weight: 600;
   box-shadow: 0 6px 30px rgba(0,0,0,0.4); animation: breathe 2.6s ease-in-out infinite; white-space: nowrap; }
 @keyframes breathe { 50% { transform: translateX(-50%) scale(1.04); } }
 @media (prefers-reduced-motion: reduce) { .touch-hint { animation: none; } }
@@ -49,22 +56,23 @@ button { font: inherit; }
 #badge { position: fixed; top: 16px; right: 16px; padding: 8px 16px; border-radius: 20px; background: rgba(0,0,0,0.65);
   color: var(--text); font-size: 16px; max-width: 60vw; }
 #notice { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); padding: 14px 24px; border-radius: 14px;
-  background: #fff; color: #111; font-size: 20px; box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 5; }
+  background: var(--card); color: var(--text); border: 1px solid var(--line); font-size: 20px; box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 5; }
 
 /* The bar under the web page */
 #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 76px; display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; padding: 0 16px; background: var(--bg); border-top: 1px solid rgba(255,255,255,0.12); }
-.bar-btn { min-height: 56px; min-width: 160px; padding: 0 24px; border-radius: 28px; border: 2px solid var(--muted);
-  background: transparent; color: var(--text); font-size: 22px; font-weight: 600; }
+  gap: 16px; padding: 0 16px; background: var(--bar); border-top: 1px solid var(--line); }
+.bar-btn { min-height: 56px; min-width: 160px; padding: 0 24px; border-radius: 6px; border: 2px solid var(--line);
+  background: var(--surface); color: var(--text); font-size: 22px; font-weight: 600; }
 .bar-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .bar-hint { color: var(--muted); font-size: 18px; text-align: center; }
 
 /* Staff */
-#staff { position: fixed; inset: 0; z-index: 10; background: rgba(5, 12, 24, 0.94); display: flex; align-items: center; justify-content: center; }
-.staff-box { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 32px; }
-.pin-dots { font-size: 44px; letter-spacing: 0.3em; min-height: 56px; }
+#staff { position: fixed; inset: 0; z-index: 10; background: rgba(27, 23, 19, 0.96); display: flex; align-items: center; justify-content: center; }
+.staff-box { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 32px; background: var(--card); border: 1px solid #4A4138; border-radius: 12px; }
+.staff-box h1 { font-family: var(--font-head); font-weight: 400; margin: 0; }
+.pin-dots { font-size: 44px; letter-spacing: 0.3em; min-height: 56px; color: var(--primary); }
 .keypad { display: grid; grid-template-columns: repeat(3, 96px); gap: 14px; }
-.keypad button { height: 96px; border-radius: 48px; border: 2px solid var(--muted); background: var(--surface); color: var(--text); font-size: 36px; font-weight: 600; }
+.keypad button { height: 96px; border-radius: 8px; border: 2px solid #4A4138; background: var(--surface); color: var(--text); font-size: 36px; font-weight: 600; }
 .menu { display: flex; flex-direction: column; gap: 14px; width: min(520px, 90vw); }
 .menu .big-btn { width: 100%; }
 .big-btn.danger { border-color: var(--danger); color: var(--danger); }

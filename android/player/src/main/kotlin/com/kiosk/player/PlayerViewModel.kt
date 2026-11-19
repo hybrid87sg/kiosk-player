@@ -3,7 +3,9 @@ package com.kiosk.player
 import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
+import android.content.pm.PackageManager
 import android.os.Build
+import android.webkit.WebView
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +17,8 @@ import com.kiosk.core.model.MediaType
 import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.wireName
 import com.kiosk.core.model.PlayerPlaylist
+import com.kiosk.core.model.PinHash
+import com.kiosk.core.model.WebKioskSettings
 import com.kiosk.core.model.ScreenShape
 import com.kiosk.core.network.ApiException
 import com.kiosk.core.network.normaliseBaseUrl
@@ -61,7 +65,14 @@ sealed interface PlayerUi {
     data class Finding(val found: List<FoundServer>?, val problem: String? = null) : PlayerUi
     data class Pairing(val code: String, val qrPayload: String, val demo: Boolean, val problem: String? = null) : PlayerUi
     data class Waiting(val name: String?, val title: String, val detail: String, val progress: Float? = null) : PlayerUi
-    data class Playing(val items: List<PlayItem>, val mounting: Mounting, val badge: String? = null, val sound: Boolean = true) : PlayerUi
+    /** [webKiosk]: set when this screen is a Web Kiosk (a touch opens its web page), 0.12.0. */
+    data class Playing(
+        val items: List<PlayItem>,
+        val mounting: Mounting,
+        val badge: String? = null,
+        val sound: Boolean = true,
+        val webKiosk: WebKioskSettings? = null,
+    ) : PlayerUi
     /** Outside the location's working hours: a black screen (and standby where allowed). */
     data class Closed(val opens: String?) : PlayerUi
 }
@@ -139,6 +150,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             androidSdk = Build.VERSION.SDK_INT,
             versionCode = BuildConfig.VERSION_CODE,
             canInstallApps = runCatching { AppUpdater.canInstall(app) }.getOrNull(),
+            // For the dashboard's Web Kiosk warnings (0.12.0).
+            touchscreen = runCatching { app.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) }.getOrNull(),
+            webviewVersion = runCatching { WebView.getCurrentWebViewPackage()?.versionName ?: "" }.getOrDefault(""),
             resync = resyncReport,
             update = settings.updateReport,
         )
@@ -161,6 +175,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     val isDemo: Boolean get() = settings.mode == PlayerMode.DEMO
+
+    /** The staff PIN set on the dashboard (5 quick taps in the top-left corner ask for it), 0.12.0. */
+    val staffPin: PinHash? get() = settings.cachedPlaylist?.browser?.pin
+
+    /** True when this screen is a Web Kiosk. */
+    val isWebKiosk: Boolean get() = settings.cachedPlaylist?.webKiosk != null
     val serverUrl: String? get() = settings.serverUrl
     val demoMounting: Mounting get() = settings.demoMounting
 
@@ -538,8 +558,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             val current = _ui.value
             // Same content: keep playing without restarting, just clear the badge.
-            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) current.copy(badge = null, sound = playlist.sound)
-            else PlayerUi.Playing(items, playlist.mounting, sound = playlist.sound)
+            if (current is PlayerUi.Playing && current.items == items && current.mounting == playlist.mounting) {
+                current.copy(badge = null, sound = playlist.sound, webKiosk = playlist.webKiosk)
+            } else PlayerUi.Playing(items, playlist.mounting, sound = playlist.sound, webKiosk = playlist.webKiosk)
         }
     }
 

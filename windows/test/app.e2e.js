@@ -157,11 +157,25 @@ async function main() {
     await new Promise((r) => setTimeout(r, 500));
     assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
 
-    step('staff: 5 taps in the corner, a wrong PIN, the right PIN, Quit');
+    step('staff: 5 taps in the corner, a wrong PIN, the right PIN, the staff menu');
     for (let i = 0; i < 5; i++) await win.mouse.click(20, 20);
     await win.waitForSelector('text=Staff PIN');
     for (const k of ['1', '1', '1', '1', 'OK']) await win.click(`.keypad button:text-is("${k}")`);
     await win.waitForSelector('text=That PIN isn’t right');
+    for (const k of ['2', '4', '6', '8', 'OK']) await win.click(`.keypad button:text-is("${k}")`);
+    await win.waitForSelector('text=Quit Kiosk Browser');
+
+    step('set to Video Kiosk on the dashboard: no invitation to touch, and a touch does nothing');
+    await call('PATCH', `/api/devices/${device.id}`, { token: boss, json: { screen_mode: 'video' } });
+    await win.click('text=Check for new content now');
+    await until(async () => !(await win.isVisible('.touch-hint')), 10000, 'the touch hint to go');
+    await win.mouse.click(600, 400);
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.deepEqual(await urls(), []);
+
+    step('staff again, then Quit');
+    for (let i = 0; i < 5; i++) await win.mouse.click(20, 20);
+    await win.waitForSelector('text=Staff PIN');
     for (const k of ['2', '4', '6', '8', 'OK']) await win.click(`.keypad button:text-is("${k}")`);
     await win.waitForSelector('text=Quit Kiosk Browser');
     const closed = new Promise((r) => app.process().once('exit', r));

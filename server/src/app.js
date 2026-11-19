@@ -877,6 +877,9 @@ function createApp({
   // Landscape screens play landscape playlists; a screen turned on its side plays portrait ones.
   const shapeOf = (deviceOrientation) => (deviceOrientation === 'landscape' ? 'landscape' : 'portrait');
   const uprightOf = (device) => Boolean(device.upright) && device.orientation !== 'landscape';
+  // Video Kiosk or Web Kiosk (0.12.0); a screen without a choice keeps its kind's default.
+  const SCREEN_MODES = ['video', 'web'];
+  const screenModeOf = (device) => (SCREEN_MODES.includes(device.screen_mode) ? device.screen_mode : (device.kind === 'browser' ? 'web' : 'video'));
   const SHAPE_SQL = `(CASE WHEN devices.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END)`;
   const AUTO_NAMES = { landscape: 'Landscape', portrait: 'Portrait' };
 
@@ -1137,7 +1140,13 @@ function createApp({
       site: d.site,
       kind: d.kind === 'browser' ? 'browser' : 'tv',
       // A Kiosk Browser's settings, without the PIN itself.
-      browser: d.kind === 'browser' ? (({ pin, ...rest }) => ({ ...rest, has_pin: Boolean(pin) }))(browserSettings(d)) : null,
+      // Web Kiosk settings, for every screen (an Android screen can be a Web Kiosk too, 0.12.0).
+      browser: (({ pin, ...rest }) => ({ ...rest, has_pin: Boolean(pin) }))(browserSettings(d)),
+      screen_mode: screenModeOf(d),
+      // Web Kiosk needs Kiosk Player 0.12.0 or newer on an Android screen.
+      can_web_kiosk: d.kind === 'browser' || versionAtLeast(d.app_version, '0.12.0'),
+      touchscreen: d.touchscreen == null ? null : Boolean(d.touchscreen),
+      webview_version: d.webview_version ?? null, // null = not reported; '' = no web viewer
       relay: owner ? { id: owner.id, name: owner.name, status: owner.status } : null,
       location_id: loc ? loc.id : null,
       hours_summary: summarizeHours(hoursOf(loc)),
@@ -1246,6 +1255,10 @@ function createApp({
       if (typeof body.flipped !== 'boolean') return { error: 'flipped must be true or false' };
       out.flipped = body.flipped && (out.orientation ?? 'landscape') === 'landscape' ? 1 : 0;
     }
+    if (body.screen_mode !== undefined) {
+      if (body.screen_mode !== null && !SCREEN_MODES.includes(body.screen_mode)) return { error: 'screen_mode must be video or web' };
+      out.screen_mode = body.screen_mode;
+    }
     if (body.playlist_id !== undefined) {
       if (body.playlist_id !== null && !findPlaylist(body.playlist_id)) return { error: 'Unknown playlist' };
       out.playlist_id = body.playlist_id;
@@ -1322,6 +1335,8 @@ function createApp({
       pairing_code: d.pairing_code,
       last_seen: d.last_seen,
       mounting: d.requested_mounting || null,
+      app_version: d.app_version || null,
+      can_web_kiosk: d.kind === 'browser' || versionAtLeast(d.app_version, '0.12.0'),
     })));
   });
 
@@ -1866,7 +1881,10 @@ function createApp({
         } : null,
       },
       // A Windows Kiosk Browser's page and rules (null for TVs).
-      browser: device.kind === 'browser' ? browserSettings(device) : null,
+      // Video Kiosk or Web Kiosk, and the web page's settings (also the staff PIN, for a
+      // Video Kiosk's corner taps). Apps from before 0.12.0 ignore both and play signage.
+      mode: screenModeOf(device),
+      browser: browserSettings(device),
     };
   }
 
@@ -1967,6 +1985,15 @@ function createApp({
     if (Number.isInteger(body.version_code) && body.version_code > 0) {
       sets.push('version_code = ?');
       params.push(body.version_code);
+    }
+    // 0.12.0: whether it has a touchscreen and a web viewer (for Web Kiosk).
+    if (typeof body.touchscreen === 'boolean') {
+      sets.push('touchscreen = ?');
+      params.push(body.touchscreen ? 1 : 0);
+    }
+    if (typeof body.webview_version === 'string') {
+      sets.push('webview_version = ?');
+      params.push(body.webview_version.trim().slice(0, 40));
     }
     if (typeof body.can_install_apps === 'boolean') {
       sets.push('can_install_apps = ?');

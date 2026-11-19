@@ -89,10 +89,12 @@ test('a Kiosk Browser pairs like a TV and gets its web page, idle time, allowed 
   assert.equal(after.browser.url, 'https://shop.example.com/new');
   assert.equal(after.browser.pin, null);
 
-  // TVs are unchanged: no browser settings.
+  // A TV is a Video Kiosk unless set otherwise (0.12.0): no web page yet. The Windows PC is a Web Kiosk.
   await call('POST', '/api/devices/claim', { token: boss, json: { code: tv.pairing_code, name: 'Cafe wall', location: 'Lobby' } });
   const tvList = await (await call('GET', '/api/player/playlist', { token: tv.token })).json();
-  assert.equal(tvList.browser, null);
+  assert.equal(tvList.mode, 'video');
+  assert.equal(tvList.browser.url, null);
+  assert.equal(after.mode, 'web');
   const devices = await (await call('GET', '/api/devices', { token: boss })).json();
-  assert.deepEqual(devices.map((d) => [d.name, d.kind, d.browser && d.browser.has_pin]).sort(), [['Cafe wall', 'tv', null], ['Front desk', 'browser', false]]);
+  assert.deepEqual(devices.map((d) => [d.name, d.kind, d.screen_mode, d.browser.has_pin]).sort(), [['Cafe wall', 'tv', 'video', false], ['Front desk', 'browser', 'web', false]]);
 });

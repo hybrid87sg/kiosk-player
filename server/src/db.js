@@ -167,6 +167,13 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'kiosk_allowed_hosts', 'TEXT'); // JSON: other websites customers may open
   addColumnIfMissing(db, 'devices', 'kiosk_pin_hash', 'TEXT'); // staff PIN, as sha256(salt:pin)
   addColumnIfMissing(db, 'devices', 'kiosk_pin_salt', 'TEXT');
+  // 0.12.0: what the screen does: 'video' (Video Kiosk: plays its playlist, touches ignored) or
+  // 'web' (Web Kiosk: plays its playlist, a touch opens the web page). Empty = the kind's own
+  // default: Video Kiosk for an Android screen, Web Kiosk for a Windows Kiosk Browser.
+  addColumnIfMissing(db, 'devices', 'screen_mode', 'TEXT');
+  // 0.12.0: what an Android screen says about itself, for Web Kiosk warnings on the dashboard.
+  addColumnIfMissing(db, 'devices', 'touchscreen', 'INTEGER'); // 1 = has a touchscreen
+  addColumnIfMissing(db, 'devices', 'webview_version', 'TEXT'); // e.g. "128.0.6613.146"; '' = none
   // 0.11.0: what the TV app says about itself, for app updates from the dashboard.
   addColumnIfMissing(db, 'devices', 'android_sdk', 'INTEGER'); // e.g. 30 = Android 11
   addColumnIfMissing(db, 'devices', 'version_code', 'INTEGER'); // the TV app's build number

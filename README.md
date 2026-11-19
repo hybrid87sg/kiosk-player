@@ -479,6 +479,36 @@ To protect the internet address, each visitor gets 10 Google sign-in attempts a 
 is told to run only Kiosk's own code and Google's sign-in button. Signed-in sessions are stored scrambled
 (like passwords), so a copy of a Home Assistant backup can't be used to sign in.
 
+### Video Kiosk or Web Kiosk: what a screen does (0.12.0)
+
+Every screen is one of two kinds, chosen under **Screens → Edit → What this screen does**:
+
+| | While nobody touches it | When someone touches it |
+|---|---|---|
+| **Video Kiosk** | Plays its playlist | Nothing |
+| **Web Kiosk** | Plays its playlist, with *Touch the screen to start* | Opens **your web page** (a shop, a menu, a check-in form). After the time you set untouched, or **Start over**, everything they did is wiped and the playlist comes back |
+
+Android screens start as **Video Kiosks**; Windows PCs (Kiosk Browser, below) start as **Web Kiosks**.
+Both can be either. A Web Kiosk's settings: the **web address**, **back to the playlist after**
+(seconds untouched), **other websites customers may open**, and a **staff PIN**. Customers stay on
+your website (and the ones you list); downloads, pop-up windows, choosing files, the camera,
+microphone and location are refused.
+
+**An Android screen as a Web Kiosk** needs:
+
+- **Kiosk Player 0.12.0 or newer** on it. Update it from the dashboard (**Update app** on its card) or
+  install `KioskPlayer-for-TV-<version>.apk` by hand. The choice is greyed out until it has it.
+- **A touchscreen**, such as a touch signage stand. The screen reports whether it has one; the
+  dashboard warns if it doesn't.
+- **A working web viewer** (*Android System WebView*). Most screens have one; cheap TV boxes sometimes
+  have an old one. The dashboard shows a warning if it's missing or old; update it from the Play Store.
+- For a tall touch stand, set **How the screen is mounted** to **Portrait, already upright**.
+
+**Staff on an Android screen:** tap the **top-left corner 5 times quickly**, then type the staff PIN,
+to open Kiosk Player's settings (and from there, Android). This also works on a Video Kiosk with a
+touchscreen once a PIN is set; without a PIN, a Video Kiosk ignores touches completely. A TV remote's
+**OK** button still opens settings as before.
+
 ### Windows web kiosk: Kiosk Browser (optional)
 
 A Windows PC with a touch screen can be a **web kiosk**: while nobody uses it, it plays its playlist
@@ -496,7 +526,7 @@ signage comes back for the next person.
 2. It opens full screen. Tap **Find the Kiosk server** (or type the Home Assistant's address, e.g.
    `192.168.1.20`). At another site, choose that site's relay.
 3. It shows a code. On the Kiosk web page: **Screens → New screens waiting → Add** (it's listed as
-   *Windows kiosk*). Give it a name and location as for a TV, then the **Web kiosk** part:
+   *Windows kiosk*). Give it a name and location as for a TV, then the **Web Kiosk** part:
    - **Web address**: the page customers start on, e.g. `https://shop.example.com/start`
    - **Back to the playlist after**: seconds untouched (90 is a good start)
    - **Other websites customers may open**: e.g. a payment page on another site; one per line
@@ -589,6 +619,9 @@ same way, connect with Tailscale, and sign in.
 | Public address: "… isn't linked to a Kiosk user" | On **Users**, press **Link Google** for that person and enter exactly that Google account. |
 | Public address: Google says "access blocked" or "app not verified" | In Google Cloud's consent screen, add that account as a test user, or **Publish app**. |
 | Kiosk Browser: "Windows protected your PC" when installing | It isn't signed with a paid certificate. Click **More info → Run anyway**. |
+| Web Kiosk choice greyed out for an Android screen | Its Kiosk Player is older than 0.12.0. Press **Update app** on its card (or install the new APK by hand), then try again. |
+| Android Web Kiosk: "This screen can't show web pages" | Android System WebView is missing or switched off. Install or update it from the Play Store, or turn it on under Settings → Apps. |
+| Android Web Kiosk: touching does nothing | The screen has no touchscreen (the dashboard says so), or it's set to **Video Kiosk**. |
 | Kiosk Browser: "That page isn't available on this kiosk" | The link goes to another website. Add that site under **Other websites customers may open** (Screens → Edit). |
 | Kiosk Browser: "No web address yet" | Screens → Edit that kiosk → **Web address**. |
 | Kiosk Browser: no on-screen keyboard | Windows *Settings → Time & language → Typing → Touch keyboard*: show it **Always**. |

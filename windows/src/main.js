@@ -78,6 +78,7 @@ function sendState() {
   if (s.phase === 'ready') {
     out.items = s.items.map((item) => ({ id: item.id, type: item.type, filename: item.filename, duration: item.duration_seconds, src: pathToFileURL(item.file).toString() }));
     out.browser = s.browser ? { url: s.browser.url, has_pin: Boolean(s.browser.pin) } : null;
+    out.mode = s.mode;
   }
   win.webContents.send('state', out);
 }
@@ -104,7 +105,7 @@ function layoutView() {
 
 function startSession() {
   const s = current();
-  if (view || !s || !s.browser || !s.browser.url || !isOpenNow()) return;
+  if (view || !s || s.mode === 'video' || !s.browser || !s.browser.url || !isOpenNow()) return;
   view = new WebContentsView({
     webPreferences: {
       partition: 'kiosk-web',
@@ -282,8 +283,8 @@ app.whenReady().then(() => {
     log,
   });
   controller.events.on('state', () => {
-    // Settings changed so the current page isn't allowed any more: back to signage.
-    if (view && !allowed(view.webContents.getURL())) endSession();
+    // Settings changed so the current page isn't allowed any more (or it's a Video Kiosk now): back to signage.
+    if (view && (current()?.mode === 'video' || !allowed(view.webContents.getURL()))) endSession();
     sendState();
   });
   guardWebSession();

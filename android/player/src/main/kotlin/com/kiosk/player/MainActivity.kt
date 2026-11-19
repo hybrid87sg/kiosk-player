@@ -2,6 +2,8 @@ package com.kiosk.player
 
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,6 +34,18 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         setContent { PlayerApp(vm) }
+    }
+
+    // Every touch and key press, before the screen's parts get it: a Web Kiosk's idle
+    // countdown and the staff corner taps (see KioskInput).
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        KioskInput.touched(ev, resources.displayMetrics.density)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        KioskInput.active()
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onStart() {

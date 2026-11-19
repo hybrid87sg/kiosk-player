@@ -321,9 +321,31 @@ data class PlayerPlaylist(
     val sound: Boolean = true,
     /** Asked for on the dashboard: Reset sync, an app update (0.11.0). */
     val actions: PlayerActions = PlayerActions(),
+    /** "video" (Video Kiosk: touches do nothing) or "web" (Web Kiosk: a touch opens the web page), 0.12.0. */
+    val mode: String = "video",
+    /** The Web Kiosk's page and rules, and the staff PIN (also for a Video Kiosk's corner taps). */
+    val browser: WebKioskSettings? = null,
 ) {
+    /** The Web Kiosk settings, when this screen is a Web Kiosk with a web address. */
+    val webKiosk: WebKioskSettings? get() = browser?.takeIf { mode == "web" && !it.url.isNullOrBlank() }
     val mounting: Mounting get() = mountingOf(orientation, flipped)
 }
+
+/** A Web Kiosk's page and rules (0.12.0), the same settings the Windows Kiosk Browser uses. */
+@Serializable
+data class WebKioskSettings(
+    val url: String? = null,
+    /** Back to the playlist after this long untouched. */
+    @SerialName("idle_seconds") val idleSeconds: Int = 90,
+    /** Other websites customers may open ("*.example.com" covers its subdomains). */
+    @SerialName("allowed_hosts") val allowedHosts: List<String> = emptyList(),
+    /** The staff PIN as a salted hash, never the PIN itself. Null: no PIN set. */
+    val pin: PinHash? = null,
+)
+
+/** sha256 of "salt:pin", in hex. */
+@Serializable
+data class PinHash(val salt: String = "", val sha256: String = "")
 
 /** What the dashboard asked this TV to do. */
 @Serializable
@@ -361,6 +383,9 @@ data class DeviceReport(
     val androidSdk: Int? = null,
     val versionCode: Int? = null,
     val canInstallApps: Boolean? = null,
+    /** 0.12.0: has a touchscreen; the web viewer's version ("" = none). For Web Kiosk warnings. */
+    val touchscreen: Boolean? = null,
+    val webviewVersion: String? = null,
     val resync: JobReport? = null,
     val update: JobReport? = null,
 )
