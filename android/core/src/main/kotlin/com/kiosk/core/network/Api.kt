@@ -164,6 +164,7 @@ internal data class HeartbeatBody(
     @SerialName("can_install_apps") val canInstallApps: Boolean? = null,
     val touchscreen: Boolean? = null,
     @SerialName("webview_version") val webviewVersion: String? = null,
+    @SerialName("rotation_sensor") val rotationSensor: Boolean? = null,
     val resync: JobReport? = null,
     val update: JobReport? = null,
 )

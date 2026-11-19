@@ -876,11 +876,21 @@ function createApp({
 
   // Landscape screens play landscape playlists; a screen turned on its side plays portrait ones.
   const shapeOf = (deviceOrientation) => (deviceOrientation === 'landscape' ? 'landscape' : 'portrait');
-  const uprightOf = (device) => Boolean(device.upright) && device.orientation !== 'landscape';
+  const uprightOf = (device) => Boolean(device.upright) && device.orientation !== 'landscape' && !device.follow_device;
+  // "Automatic: follow this screen" (0.12.1): the shape the screen last reported (null = not reported).
+  const reportedShape = (device) => {
+    const caps = deviceCaps(device);
+    if (!caps || !(caps.display_width > 0) || !(caps.display_height > 0)) return null;
+    return caps.display_width >= caps.display_height ? 'landscape' : 'portrait';
+  };
+  const screenShapeOf = (device) => (device.follow_device && reportedShape(device)) || shapeOf(device.orientation);
   // Video Kiosk or Web Kiosk (0.12.0); a screen without a choice keeps its kind's default.
   const SCREEN_MODES = ['video', 'web'];
   const screenModeOf = (device) => (SCREEN_MODES.includes(device.screen_mode) ? device.screen_mode : (device.kind === 'browser' ? 'web' : 'video'));
-  const SHAPE_SQL = `(CASE WHEN devices.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END)`;
+  const SHAPE_SQL = `(CASE
+    WHEN devices.follow_device = 1 AND json_extract(devices.decoder_caps, '$.display_width') > 0
+      THEN (CASE WHEN json_extract(devices.decoder_caps, '$.display_width') >= json_extract(devices.decoder_caps, '$.display_height') THEN 'landscape' ELSE 'portrait' END)
+    WHEN devices.orientation = 'landscape' THEN 'landscape' ELSE 'portrait' END)`;
   const AUTO_NAMES = { landscape: 'Landscape', portrait: 'Portrait' };
 
   // Every location has two automatic playlists, Landscape and Portrait. They are made the
@@ -906,7 +916,7 @@ function createApp({
     const pinned = device.playlist_id ? findPlaylist(device.playlist_id) : null;
     if (pinned) return pinned;
     const loc = locationOf(device);
-    return loc ? autoPlaylist(loc.id, shapeOf(device.orientation)) : null;
+    return loc ? autoPlaylist(loc.id, screenShapeOf(device)) : null;
   }
 
   // Playlists used to be one flat list picked per screen (before 0.5.0), then belonged
@@ -1124,7 +1134,13 @@ function createApp({
       flipped: Boolean(d.flipped) && d.orientation === 'landscape',
       can_flip: versionAtLeast(d.app_version, '0.5.0'), // older TV apps can't turn the picture upside down
       // A portrait display whose picture is already upright: nothing is turned (0.11.2).
-      upright: Boolean(d.upright) && d.orientation !== 'landscape',
+      upright: Boolean(d.upright) && d.orientation !== 'landscape' && !d.follow_device,
+      // "Automatic: follow this screen" (0.12.1), and what the screen says about itself.
+      follow_device: Boolean(d.follow_device),
+      can_follow_device: d.kind !== 'browser' && versionAtLeast(d.app_version, '0.12.1') && reportedShape(d) != null,
+      screen_shape: screenShapeOf(d),
+      reported_shape: reportedShape(d),
+      rotation_sensor: d.rotation_sensor == null ? null : Boolean(d.rotation_sensor),
       // null = "Automatic": the screen follows its location's Landscape or Portrait playlist.
       playlist_id: d.playlist_id,
       playlist_name: playlist ? playlist.name : null, // null: it has no location yet, so nothing to play
@@ -1247,6 +1263,10 @@ function createApp({
       if (body.orientation !== 'landscape') out.flipped = 0; // only a landscape screen can be upside down
       if (body.orientation === 'landscape') out.upright = 0; // only a portrait screen can be "already upright"
     }
+    if (body.follow_device !== undefined) {
+      if (typeof body.follow_device !== 'boolean') return { error: 'follow_device must be true or false' };
+      out.follow_device = body.follow_device ? 1 : 0;
+    }
     if (body.upright !== undefined) {
       if (typeof body.upright !== 'boolean') return { error: 'upright must be true or false' };
       out.upright = body.upright && (out.orientation ?? 'portrait_right') !== 'landscape' ? 1 : 0;
@@ -1337,6 +1357,8 @@ function createApp({
       mounting: d.requested_mounting || null,
       app_version: d.app_version || null,
       can_web_kiosk: d.kind === 'browser' || versionAtLeast(d.app_version, '0.12.0'),
+      can_follow_device: d.kind !== 'browser' && versionAtLeast(d.app_version, '0.12.1') && reportedShape(d) != null,
+      reported_shape: reportedShape(d),
     })));
   });
 
@@ -1859,8 +1881,10 @@ function createApp({
       // The TV turns its picture by this. A portrait display that is already upright is told
       // "landscape" (turn nothing): TV apps of every version then show it as it is, while the
       // server still picks its Portrait playlist.
-      orientation: uprightOf(device) ? 'landscape' : device.orientation,
-      flipped: Boolean(device.flipped) && device.orientation === 'landscape',
+      // Following the screen (0.12.1): Android turns it, the app turns nothing.
+      orientation: uprightOf(device) || device.follow_device ? 'landscape' : device.orientation,
+      flipped: Boolean(device.flipped) && device.orientation === 'landscape' && !device.follow_device,
+      follow_device: Boolean(device.follow_device),
       playlist_name: playlist ? playlist.name : null,
       items: playing,
       upcoming: ahead,
@@ -1990,6 +2014,10 @@ function createApp({
     if (typeof body.touchscreen === 'boolean') {
       sets.push('touchscreen = ?');
       params.push(body.touchscreen ? 1 : 0);
+    }
+    if (typeof body.rotation_sensor === 'boolean') {
+      sets.push('rotation_sensor = ?');
+      params.push(body.rotation_sensor ? 1 : 0);
     }
     if (typeof body.webview_version === 'string') {
       sets.push('webview_version = ?');
@@ -2208,7 +2236,7 @@ function createApp({
 
     // A relay's own screens only. Another relay's screen is 404, as if it didn't exist.
     const RELAY_PLAYER_FIELDS = [
-      'id', 'name', 'location', 'location_id', 'orientation', 'flipped', 'upright', 'online', 'last_seen', 'current_media_id',
+      'id', 'name', 'location', 'location_id', 'orientation', 'flipped', 'upright', 'follow_device', 'online', 'last_seen', 'current_media_id',
       'current_filename', 'playlist_id', 'playlist_name', 'playlist_auto', 'playing_playlist_id', 'app_version', 'model',
       'free_bytes', 'open_now', 'after_hours', 'hours_summary', 'playback_error', 'last_restart', 'download',
     ];

@@ -32,7 +32,9 @@ import com.kiosk.core.player.RemotePlayerRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -153,6 +155,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             // For the dashboard's Web Kiosk warnings (0.12.0).
             touchscreen = runCatching { app.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) }.getOrNull(),
             webviewVersion = runCatching { WebView.getCurrentWebViewPackage()?.versionName ?: "" }.getOrDefault(""),
+            rotationSensor = runCatching { app.packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_ACCELEROMETER) }.getOrNull(),
             resync = resyncReport,
             update = settings.updateReport,
         )
@@ -178,6 +181,33 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The staff PIN set on the dashboard (5 quick taps in the top-left corner ask for it), 0.12.0. */
     val staffPin: PinHash? get() = settings.cachedPlaylist?.browser?.pin
+
+    /**
+     * "Automatic: follow this screen" (0.12.1): the activity lets Android turn the screen
+     * (rotation sensor or Android's own setting) instead of keeping it landscape.
+     */
+    private val _followDevice = MutableStateFlow(settings.cachedPlaylist?.followDevice == true)
+    val followDevice: StateFlow<Boolean> = _followDevice
+
+    /** Wakes the main loop early (the screen was turned, so its playlist may change). */
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Android turned the screen: tell the server its new size straight away, then ask for the
+     * playlist again, so a screen that follows itself switches between Landscape and Portrait.
+     */
+    fun screenTurned() {
+        viewModelScope.launch {
+            try {
+                reportStatus?.invoke()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The next check-in reports it.
+            }
+            wake.trySend(Unit)
+        }
+    }
 
     /** True when this screen is a Web Kiosk. */
     val isWebKiosk: Boolean get() = settings.cachedPlaylist?.webKiosk != null
@@ -378,7 +408,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
             // Working hours (from the last playlist, so they hold even while offline).
             wait = minOf(wait, applyHours(settings.cachedPlaylist?.hours) { settings.cachedPlaylist?.let { show(it, sync) } })
-            delay(wait)
+            withTimeoutOrNull(wait) { wake.receive() } // or sooner, when the screen is turned
         }
     }
 
@@ -549,6 +579,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private fun show(playlist: PlayerPlaylist, sync: ContentSync) {
         // Stay dark after hours (the loop refreshes every minute, also at night).
         if (_ui.value is PlayerUi.Closed && !OpeningHours.isOpen(playlist.hours, ZonedDateTime.now())) return
+        _followDevice.value = playlist.followDevice
         useMounting(playlist.mounting)
         val items = playlist.items.filter { sync.isReady(it) }.map {
             PlayItem(it.id, it.filename, it.type, sync.fileFor(it), it.durationSeconds ?: 10, it.orientation)

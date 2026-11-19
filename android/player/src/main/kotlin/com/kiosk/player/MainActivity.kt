@@ -1,5 +1,7 @@
 package com.kiosk.player
 
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
@@ -8,6 +10,10 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -34,12 +40,33 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         setContent { PlayerApp(vm) }
+        // "Automatic: follow this screen" (0.12.1): Android turns the screen (its rotation sensor,
+        // or its own display setting); otherwise landscape, as the manifest says.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.followDevice.collect { follow ->
+                    requestedOrientation = if (follow) ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+                    else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                }
+            }
+        }
     }
+
+    // The screen was turned (the activity handles orientation changes itself, see the manifest).
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (newConfig.orientation != lastOrientation) {
+            lastOrientation = newConfig.orientation
+            vm.screenTurned()
+        }
+    }
+
+    private var lastOrientation = Configuration.ORIENTATION_UNDEFINED
 
     // Every touch and key press, before the screen's parts get it: a Web Kiosk's idle
     // countdown and the staff corner taps (see KioskInput).
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        KioskInput.touched(ev, resources.displayMetrics.density)
+        KioskInput.touched(ev, resources.displayMetrics.density, window.decorView.width.toFloat(), window.decorView.height.toFloat())
         return super.dispatchTouchEvent(ev)
     }
 

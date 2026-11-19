@@ -77,7 +77,7 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
             timeZone = timeZone, afterHours = afterHours, decoders = decoders, playbackError = playbackError,
             lastRestartReason = lastRestart?.first, lastRestartAt = lastRestart?.second,
             androidSdk = report?.androidSdk, versionCode = report?.versionCode, canInstallApps = report?.canInstallApps,
-            touchscreen = report?.touchscreen, webviewVersion = report?.webviewVersion,
+            touchscreen = report?.touchscreen, webviewVersion = report?.webviewVersion, rotationSensor = report?.rotationSensor,
             resync = report?.resync, update = report?.update,
         ))
     }.version

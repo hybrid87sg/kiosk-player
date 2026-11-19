@@ -174,6 +174,10 @@ function openDatabase(dataDir) {
   // 0.12.0: what an Android screen says about itself, for Web Kiosk warnings on the dashboard.
   addColumnIfMissing(db, 'devices', 'touchscreen', 'INTEGER'); // 1 = has a touchscreen
   addColumnIfMissing(db, 'devices', 'webview_version', 'TEXT'); // e.g. "128.0.6613.146"; '' = none
+  // 0.12.1: "Automatic: follow this screen". The TV app lets Android turn it (rotation sensor or
+  // Android's own setting) and the playlist's shape follows the screen size it reports.
+  addColumnIfMissing(db, 'devices', 'follow_device', 'INTEGER'); // 1 = follow the screen
+  addColumnIfMissing(db, 'devices', 'rotation_sensor', 'INTEGER'); // 1 = the screen has a rotation sensor
   // 0.11.0: what the TV app says about itself, for app updates from the dashboard.
   addColumnIfMissing(db, 'devices', 'android_sdk', 'INTEGER'); // e.g. 30 = Android 11
   addColumnIfMissing(db, 'devices', 'version_code', 'INTEGER'); // the TV app's build number

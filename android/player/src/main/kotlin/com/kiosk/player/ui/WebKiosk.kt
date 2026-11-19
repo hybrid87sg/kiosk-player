@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.view.KeyEvent
+import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
@@ -29,10 +30,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.kiosk.core.model.Mounting
 import com.kiosk.core.model.PinHash
 import com.kiosk.core.model.WebKioskSettings
 import com.kiosk.core.player.WebKioskRules
@@ -91,12 +94,22 @@ fun TouchToStart(onStart: () -> Unit) {
     }
 }
 
-/** The customer's web page, with Back and Start over underneath. [onEnd] goes back to the playlist. */
+/**
+ * The customer's web page, with Back and Start over underneath. [onEnd] goes back to the playlist.
+ * [mounting]: how the app turns its picture. The page is turned by Android itself (see
+ * [TurnedWebHost]) so taps land where they look; the bar and messages are turned by Compose.
+ */
 @Composable
-fun WebKioskSession(settings: WebKioskSettings, onEnd: () -> Unit) {
+fun WebKioskSession(settings: WebKioskSettings, mounting: Mounting, onEnd: () -> Unit) {
     val start = settings.url ?: return
     var notice by remember { mutableStateOf<String?>(null) }
     var web by remember { mutableStateOf<KioskWebView?>(null) }
+    val density = LocalDensity.current
+    val degrees = mounting.rotationDegrees
+    val barPx = with(density) { BAR_HEIGHT.roundToPx() }
+    // The on-screen keyboard pushes the page up; only when nothing is turned (Android draws the
+    // keyboard along the screen's own bottom, which on a turned screen is a side).
+    val keyboardPx = if (degrees == 0) WindowInsets.ime.getBottom(density) else 0
 
     // Back to the playlist after the idle time with nobody touching or typing anywhere.
     LaunchedEffect(settings.idleSeconds) {
@@ -118,10 +131,10 @@ fun WebKioskSession(settings: WebKioskSettings, onEnd: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Column(Modifier.fillMaxSize().imePadding()) {
-            AndroidView(
-                factory = { context ->
-                    createKioskWebView(
+        AndroidView(
+            factory = { context ->
+                TurnedWebHost(context).apply {
+                    val page: View = createKioskWebView(
                         context, settings,
                         onRefused = { notice = it },
                         onGone = onEnd,
@@ -132,46 +145,61 @@ fun WebKioskSession(settings: WebKioskSettings, onEnd: () -> Unit) {
                             textSize = 22f
                             setPadding(48, 48, 48, 48)
                         }
-                },
-                onRelease = { view ->
-                    if (view is WebView) {
-                        wipeWebData(view.context, view)
-                        runCatching { view.destroy() }
-                    }
-                },
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-            )
-            Row(
-                Modifier.fillMaxWidth().height(76.dp).background(Color(0xFF221E19)).padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                TvButton("‹ Back", {
-                    KioskInput.active()
-                    web?.let { if (it.canGoBack()) it.goBack() }
-                }, small = true)
-                TvButton("Start over", {
-                    KioskInput.active()
-                    web?.let { view ->
-                        wipeWebData(view.context, view)
-                        view.startFresh(start)
-                    }
-                }, primary = true, small = true)
+                    addView(page)
+                }
+            },
+            update = { host ->
+                host.degrees = degrees
+                host.bottomPx = barPx + keyboardPx
+            },
+            onRelease = { host ->
+                (host.getChildAt(0) as? WebView)?.let { view ->
+                    wipeWebData(view.context, view)
+                    host.removeView(view)
+                    runCatching { view.destroy() }
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        // The bar and messages, turned with the rest of the app's picture. Nothing here takes
+        // taps over the page, so they reach it.
+        MountedScreen(mounting) {
+            Column(Modifier.fillMaxSize().padding(bottom = with(density) { keyboardPx.toDp() })) {
                 Spacer(Modifier.weight(1f))
-                Text("Untouched for ${settings.idleSeconds} seconds: back to the start", fontSize = 15.sp, color = Muted)
+                Row(
+                    Modifier.fillMaxWidth().height(BAR_HEIGHT).background(Color(0xFF221E19)).padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    TvButton("‹ Back", {
+                        KioskInput.active()
+                        web?.let { if (it.canGoBack()) it.goBack() }
+                    }, small = true)
+                    TvButton("Start over", {
+                        KioskInput.active()
+                        web?.let { view ->
+                            wipeWebData(view.context, view)
+                            view.startFresh(start)
+                        }
+                    }, primary = true, small = true)
+                    Spacer(Modifier.weight(1f))
+                    Text("Untouched for ${settings.idleSeconds} seconds: back to the start", fontSize = 15.sp, color = Muted)
+                }
             }
-        }
-        notice?.let {
-            Box(Modifier.fillMaxSize().padding(bottom = 96.dp), contentAlignment = Alignment.BottomCenter) {
-                Text(
-                    it, fontSize = 20.sp, color = Cream,
-                    modifier = Modifier.background(Color(0xFF332D26), RoundedCornerShape(8.dp))
-                        .border(1.dp, Line, RoundedCornerShape(8.dp)).padding(horizontal = 22.dp, vertical = 14.dp),
-                )
+            notice?.let {
+                Box(Modifier.fillMaxSize().padding(bottom = BAR_HEIGHT + 20.dp), contentAlignment = Alignment.BottomCenter) {
+                    Text(
+                        it, fontSize = 20.sp, color = Cream,
+                        modifier = Modifier.background(Color(0xFF332D26), RoundedCornerShape(8.dp))
+                            .border(1.dp, Line, RoundedCornerShape(8.dp)).padding(horizontal = 22.dp, vertical = 14.dp),
+                    )
+                }
             }
         }
     }
 }
+
+private val BAR_HEIGHT = 76.dp
 
 /** A web viewer that also counts typing on the on-screen keyboard (in any frame) as activity. */
 class KioskWebView(context: Context) : WebView(context) {
