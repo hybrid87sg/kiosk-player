@@ -144,16 +144,25 @@ const MOUNTINGS = {
   portrait_left: { label: 'Portrait, turned left', shape: 'portrait' },
   landscape_flipped: { label: 'Landscape, upside down', shape: 'landscape' },
   portrait_upright: { label: 'Portrait, already upright', shape: 'portrait', hint: 'Tall signage displays, e.g. Rockchip' },
+  // 0.12.1: Android turns the screen (its rotation sensor or its own setting); the playlist follows its shape.
+  follow: { label: 'Automatic: follow this screen', shape: 'landscape' },
 };
 // The server keeps "upside down" and "already upright" as flags beside the orientation, so older apps still work.
 const mountingOf = (d) => {
+  if (d && d.follow_device) return 'follow';
   if (d && d.upright && d.orientation !== 'landscape') return 'portrait_upright';
   return d && d.flipped && d.orientation === 'landscape' ? 'landscape_flipped' : (d && d.orientation) || 'landscape';
 };
 const mountingBody = (key) => {
-  if (key === 'landscape_flipped') return { orientation: 'landscape', flipped: true, upright: false };
-  if (key === 'portrait_upright') return { orientation: 'portrait_right', flipped: false, upright: true };
-  return { orientation: key, flipped: false, upright: false };
+  if (key === 'follow') return { orientation: 'landscape', flipped: false, upright: false, follow_device: true };
+  if (key === 'landscape_flipped') return { orientation: 'landscape', flipped: true, upright: false, follow_device: false };
+  if (key === 'portrait_upright') return { orientation: 'portrait_right', flipped: false, upright: true, follow_device: false };
+  return { orientation: key, flipped: false, upright: false, follow_device: false };
+};
+/** How a screen is mounted, in words: "Automatic: follow this screen (now Portrait)" for a screen that follows itself. */
+const mountLabel = (d) => {
+  const key = mountingOf(d);
+  return key === 'follow' ? `Automatic (now ${SHAPES[d.screen_shape] || 'unknown'})` : (MOUNTINGS[key] || MOUNTINGS.landscape).label;
 };
 const playlistLabel = (p) => (p.auto ? `${p.name} (automatic)` : p.name);
 // Where "back" goes from a playlist: people who manage screens see playlists under Locations.
@@ -169,7 +178,7 @@ function mountIcon(key, size = 24) {
   const portrait = MOUNTINGS[key].shape === 'portrait';
   const w = portrait ? Math.round(size * 0.62) : size;
   const h = portrait ? size : Math.round(size * 0.62);
-  const edge = { landscape: 'top', landscape_flipped: 'bottom', portrait_right: 'right', portrait_left: 'left', portrait_upright: 'top' }[key];
+  const edge = { landscape: 'top', landscape_flipped: 'bottom', portrait_right: 'right', portrait_left: 'left', portrait_upright: 'top', follow: 'top' }[key];
   return el('span', {
     class: 'mount-icon', 'aria-hidden': 'true',
     style: `width:${w}px;height:${h}px;border-${edge}-width:5px`,
@@ -575,7 +584,7 @@ function waitingCard(waiting, manySites, playlists, devices, redraw) {
             el('strong', {}, pretty(w.pairing_code)), ' on its screen')),
         el('button', {
           class: 'btn primary small',
-          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, mounting: w.mounting, canWeb: w.can_web_kiosk, playlists, devices, onDone: redraw }),
+          onclick: () => screenForm({ code: w.pairing_code, kind: w.kind, site: w.site, mounting: w.mounting, canWeb: w.can_web_kiosk, canFollow: w.can_follow_device, reported: w.reported_shape, playlists, devices, onDone: redraw }),
         }, 'Add')))),
   );
 }
@@ -595,7 +604,7 @@ function webKioskWarning(d, { turned = true } = {}) {
 }
 
 function screenCard(d, playlists, devices, redraw) {
-  const mount = MOUNTINGS[mountingOf(d)] || MOUNTINGS.landscape;
+  const mount = { label: mountLabel(d), shape: d.screen_shape || (MOUNTINGS[mountingOf(d)] || MOUNTINGS.landscape).shape };
   return el('div', { class: 'card', style: 'display:flex;flex-direction:column;gap:8px' },
     el('div', { class: 'row', style: 'justify-content:space-between' },
       el('strong', { style: 'font-size:17px' }, d.name || 'Unnamed'),
@@ -744,7 +753,8 @@ function addScreenDialog(playlists, devices, onDone) {
 }
 
 /** Name, location, how the screen is mounted and its playlist. New (code) or existing (device). */
-async function screenForm({ code, device, kind = device?.kind, site = null, mounting: asked = null, canWeb = device ? device.can_web_kiosk !== false : true, playlists, devices, onDone }) {
+async function screenForm({ code, device, kind = device?.kind, site = null, mounting: asked = null, canWeb = device ? device.can_web_kiosk !== false : true,
+  canFollow = device ? Boolean(device.can_follow_device) : false, reported = device ? device.reported_shape : null, playlists, devices, onDone }) {
   // Every location, to choose from (or add a new one). A screen has to be in one:
   // that is where its playlist and its working hours come from.
   const data = await attempt(() => api('GET', 'api/locations'));
@@ -772,7 +782,7 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
     const warning = el('div', { class: 'note', hidden: true });
     const updateWarning = () => {
       const chosen = playlists.find((p) => p.id === playlistId);
-      const screenShape = MOUNTINGS[mounting].shape;
+      const screenShape = mounting === 'follow' ? (reported || device?.screen_shape || 'landscape') : MOUNTINGS[mounting].shape;
       warning.hidden = !chosen || chosen.orientation === screenShape;
       if (chosen) warning.textContent = `${chosen.name} is made for ${chosen.orientation} screens, but this screen is ${screenShape}. Its files will play with black bars.`;
       const where = chosenLocation();
@@ -784,13 +794,22 @@ async function screenForm({ code, device, kind = device?.kind, site = null, moun
     let redrawMode = () => {}; // set below, once the Web Kiosk part exists
     // Turning the picture upside down needs Kiosk Player 0.5.0 or newer on the TV.
     const cantFlip = Boolean(device) && device.can_flip === false;
+    // Following the screen needs Kiosk Player 0.12.1 or newer that has reported its screen (0.12.1).
+    const followNote = () => {
+      if (kind === 'browser') return 'Windows screens are turned in Windows itself (Settings → System → Display).';
+      if (!canFollow) return 'Needs Kiosk Player 0.12.1 or newer on this screen, and the screen to have checked in.';
+      const sensor = device?.rotation_sensor === true ? 'has a rotation sensor, so turning it switches the playlist'
+        : device?.rotation_sensor === false ? 'no rotation sensor: follows Android’s own display setting' : 'follows Android’s rotation';
+      return `Now ${SHAPES[reported] || 'unknown'} · ${sensor}. Kiosk Player turns nothing itself.`;
+    };
     const mountChoices = el('div', { class: 'choices' }, Object.entries(MOUNTINGS).map(([key, m]) => {
-      const off = key === 'landscape_flipped' && cantFlip && mounting !== key;
+      const off = (key === 'landscape_flipped' && cantFlip && mounting !== key) || (key === 'follow' && !canFollow && mounting !== key);
+      const hint = key === 'follow' ? followNote() : (m.hint && kind !== 'browser' ? m.hint : null);
       return el('label', { class: `choice${off ? ' disabled' : ''}` },
         el('input', { type: 'radio', name: 'mounting', value: key, checked: mounting === key, disabled: off, onchange: () => { mounting = key; updateWarning(); redrawMode(); } }),
         el('span', {}, mountIcon(key, 26), ' ', m.label,
-          m.hint && kind !== 'browser' ? [el('br'), el('span', { class: 'meta' }, m.hint)] : null,
-          off ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.5.0 or newer; this TV has ${device.app_version || 'an older version'}.`)] : null));
+          hint ? [el('br'), el('span', { class: 'meta' }, hint)] : null,
+          off && key === 'landscape_flipped' ? [el('br'), el('span', { class: 'meta' }, `Needs Kiosk Player 0.5.0 or newer; this TV has ${device.app_version || 'an older version'}.`)] : null));
     }));
     const autoMeta = el('span', { class: 'meta' });
     // Automatic first. Then any playlist can be chosen for just this screen (an override): the
@@ -960,7 +979,7 @@ async function pageLocations(page) {
 
 /** One screen as a row on the Locations page: its name, how it is mounted, what it plays, and whether it is on. */
 function screenRow(d, playlists, devices, redraw) {
-  const mount = MOUNTINGS[mountingOf(d)] || MOUNTINGS.landscape;
+  const mount = { label: mountLabel(d) };
   return el('div', { class: 'list-row' },
     el('div', { class: 'grow' }, el('div', { class: 'name' }, d.name || 'Unnamed'),
       el('div', { class: 'meta' }, `${mount.label} · plays ${d.playlist_name || 'nothing yet'}`)),

@@ -325,6 +325,8 @@ data class PlayerPlaylist(
     val mode: String = "video",
     /** The Web Kiosk's page and rules, and the staff PIN (also for a Video Kiosk's corner taps). */
     val browser: WebKioskSettings? = null,
+    /** "Automatic: follow this screen" (0.12.1): let Android turn the screen; the app turns nothing. */
+    @SerialName("follow_device") val followDevice: Boolean = false,
 ) {
     /** The Web Kiosk settings, when this screen is a Web Kiosk with a web address. */
     val webKiosk: WebKioskSettings? get() = browser?.takeIf { mode == "web" && !it.url.isNullOrBlank() }
@@ -386,6 +388,8 @@ data class DeviceReport(
     /** 0.12.0: has a touchscreen; the web viewer's version ("" = none). For Web Kiosk warnings. */
     val touchscreen: Boolean? = null,
     val webviewVersion: String? = null,
+    /** 0.12.1: has a rotation sensor (turning it can switch between landscape and portrait). */
+    val rotationSensor: Boolean? = null,
     val resync: JobReport? = null,
     val update: JobReport? = null,
 )
