@@ -234,7 +234,8 @@ test('0.13.0: Restart, See screen, and updating itself from the server', async (
   await call('POST', `/api/devices/${claimed.id}/restart`, { token: boss, json: { kind: 'app' } });
   assert.equal(await until(() => seen.restart[0]), 'app');
   controller.stop();
-  const again = createController({ store: createStore(dataDir), dataDir, appVersion: '0.13.0', loopMs: 200, retryMs: 200 });
+  // (A real restart is a new run of the app: it started after the request.)
+  const again = createController({ store: createStore(dataDir), dataDir, appVersion: '0.13.0', loopMs: 200, retryMs: 200, startedAt: Date.now() + 1 });
   t.after(() => again.stop());
   const restartedAgain = [];
   again.events.on('restart', (k) => restartedAgain.push(k));

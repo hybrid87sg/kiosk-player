@@ -267,6 +267,17 @@ What's on it:
 - **Screens:** every TV at a glance (online or offline, what's playing, download progress, free storage,
   app and Android version), updated every 10 seconds and grouped by location, with each location's working
   hours. New TVs appear under **New screens waiting**; click **Add**. **Add by code** is there too.
+  On every screen's card (0.13.0, for Spongebob and Patrick):
+  - **See screen** shows a picture of exactly what the screen shows right now, taken when you press it.
+    The screen gets the request at its next check-in, so the picture takes up to a minute. Only the latest
+    picture of each screen is kept, and only people who manage screens can see it.
+  - **Restart** → **Restart app** closes Kiosk Player (or Kiosk Browser) and opens it again: it fixes most
+    stuck screens and takes a few seconds. **Restart device** restarts the whole TV box or PC. Windows PCs
+    can always do it. Android only allows it when Kiosk Player is the box's *device owner* (see
+    [Restart device on Android](#restart-device-on-android)), so on most boxes it's greyed out. A restart
+    the screen doesn't pick up within 10 minutes (it was off) is dropped, so it never restarts by surprise later.
+  - Both need the 0.13.0 apps on the screen; older ones show the buttons greyed out.
+
   For Spongebob only:
   - **Reset sync** makes the TV download every file in its playlist again, from scratch. It keeps playing
     what it has meanwhile, then switches to the fresh copy and deletes the old files. (Without room for
@@ -275,6 +286,12 @@ What's on it:
     screen that can take it. On Android 12 and newer the TV installs it by itself (after the first time);
     on older TVs someone presses **Install** on the TV. The card shows each step. A TV with an app from
     before 0.11.0 needs 0.11.0 installed by hand once.
+  - **Windows PCs update themselves** (0.13.0): a PC with an older Kiosk Browser downloads the new one from
+    your Kiosk server and installs it **outside working hours** (a location that's always open: between 3
+    and 5 in the morning), so no customer sees it. **Update app** on its card does it now instead, as soon as
+    nobody is using the kiosk. The PCs only talk to your Kiosk server; the server fetches the installer
+    once from the GitHub release of its own version (a few minutes after a release, the Windows installer
+    is built last).
 - **Locations:** one block per location, with its **playlists**, its **working hours** and its screens.
   Every location is also listed in the side menu; open one to rename it or **move a screen here**.
   **+ Add location** makes a new one.
@@ -530,6 +547,11 @@ signage comes back for the next person.
 
 **Install it (once per PC)**
 
+> **Upgrading a PC from 0.12.x or older:** first uninstall the old one (*Settings → Apps → Installed apps →
+> Kiosk Browser → Uninstall*), then install 0.13.0 as below. It stays paired and keeps its files. This is the
+> last time: from 0.13.0 on, the PC updates itself (see **Screens** above). 0.13.0 installs just for the
+> Windows user that runs it, so updates never need an administrator to click "Yes".
+
 1. Download `KioskBrowser-Setup-<version>.exe` from the latest release
    (<https://github.com/hybrid87sg/kiosk-player/releases>) and run it. Windows warns **"Windows
    protected your PC"** because the app isn't signed with a paid certificate: click **More info → Run
@@ -561,6 +583,19 @@ or *Quit*. The PIN keeps curious customers out; it isn't strong security, so don
   screen awake during working hours).
 - **Windows Update**: set *Active hours* to your opening hours, so it doesn't restart while open.
 - **Rotation**: for a portrait screen, set it in *Settings → System → Display → Display orientation*.
+
+### Restart device on Android
+
+Android lets an app restart the whole TV box only if the app is the box's **device owner**. This is
+optional: **Restart app** works without it. To set it up (once, with a computer and a USB cable or
+network adb; the box must have **no Google account** signed in):
+
+```
+adb shell dpm set-device-owner com.kiosk.player/.ScreenOffAdmin
+```
+
+After that, **Restart device** on the screen's card works for that box. To undo it, uninstall Kiosk Player
+or reset the box.
 
 ### Adding other people
 
@@ -640,6 +675,9 @@ same way, connect with Tailscale, and sign in.
 | HACS: "Repository not found" for kiosk-player-ha | Type it exactly: `https://github.com/hybrid87sg/kiosk-player-ha`, category **Integration**. |
 | Phone: "This is the relay for …" | Sign in with the **main** Home Assistant's address; relays only serve their TVs. |
 | Pairing screen sideways on a portrait TV | Press **Turn picture** (with the remote) until the text is upright. |
+| **See screen** says the screen didn't send a picture | It's off, offline, or its app is older than 0.13.0. A screen asleep after hours sends a black picture or says it's in standby. |
+| **Restart app** says Kiosk Player couldn't reopen itself | On the TV, in Kiosk Player's **Settings**, switch on **Come back to the front automatically** (it asks for *Display over other apps*), or make Kiosk Player the home screen. |
+| A Windows PC doesn't update itself | It needs Kiosk Browser 0.13.0 or newer, installed by hand once. Its card says what it's waiting for; right after a release the server may still be fetching the installer (it tries again every 30 minutes). |
 | **Update app** fails | The card says why. *Install unknown apps*: allow it in Kiosk Player's **Settings** on the TV. *Cancelled on the TV*: someone pressed Cancel, or nobody pressed **Install** in time; press **Update app** again. |
 | TV doesn't come back after Home, or doesn't start after a power cut | Give Kiosk Player the **Display over other apps** permission (Part 6, step 2), and check **Settings → Come back to the front** is on. |
 | Screen card says **Closed by itself … and reopened** | The reason is shown with it. *Free memory* or *ran out of memory*: the box is short of memory, so close other apps on it or use smaller videos. *Force-stopped*: a cleaner app on the box closed it; switch that off, or make Kiosk Player the home screen (Part 6, step 2). *Crashed*: send us the text. |

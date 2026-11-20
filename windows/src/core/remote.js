@@ -16,7 +16,10 @@ const path = require('node:path');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
-function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetch }) {
+// When this run of the app started: a restart is only "done" if the app started after it was asked.
+const STARTED_AT = Date.now();
+
+function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetch, startedAt = STARTED_AT }) {
   const updateDir = path.join(dataDir, 'updates');
   let restartReport = null;
   let updateReport = null;
@@ -78,9 +81,12 @@ function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetc
         store.set('restartDoneId', null);
         restartReport = null;
       } else if (store.get('restartDoneId') === r.id) {
-        restartReport = { id: r.id, step: 'done' };
+        const askedAt = store.get('restartAskedAt') || 0;
+        if (startedAt > askedAt) restartReport = { id: r.id, step: 'done' };
+        else if (Date.now() - askedAt > 2 * 60_000) restartReport = { id: r.id, step: 'failed', error: 'It didn’t restart.' };
       } else {
         store.set('restartDoneId', r.id);
+        store.set('restartAskedAt', Date.now());
         log(`Restart (${r.kind}) asked for on the dashboard`);
         events.emit('restart', r.kind === 'device' ? 'device' : 'app');
       }

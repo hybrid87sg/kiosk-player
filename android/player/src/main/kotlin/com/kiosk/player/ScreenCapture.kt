@@ -87,7 +87,7 @@ object ScreenCapture {
     private suspend fun copy(target: Bitmap, request: (PixelCopy.OnPixelCopyFinishedListener) -> Unit) {
         val result = suspendCancellableCoroutine { cont ->
             try {
-                request { code -> if (cont.isActive) cont.resume(code) }
+                request(PixelCopy.OnPixelCopyFinishedListener { code -> if (cont.isActive) cont.resume(code) })
             } catch (e: IllegalArgumentException) {
                 if (cont.isActive) cont.resume(PixelCopy.ERROR_SOURCE_INVALID)
             }

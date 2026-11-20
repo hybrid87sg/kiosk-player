@@ -24,6 +24,10 @@ import kotlin.system.exitProcess
 object RemoteRestart {
     private const val TAG = "KioskRestart"
     private const val REOPEN_AFTER_MS = 2_000L
+    /** When this run of the app started: a restart is only "done" if it started after the request. */
+    private val startedAt = System.currentTimeMillis()
+    /** A request that couldn't be carried out, reported until the server has heard. */
+    @Volatile private var failed: JobReport? = null
 
     fun canRebootDevice(context: Context): Boolean = runCatching {
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -42,29 +46,35 @@ object RemoteRestart {
             settings.restartDoneId = null
             return null
         }
-        if (settings.restartDoneId == request.id) return JobReport(request.id, "done")
+        failed?.takeIf { it.id == request.id }?.let { return it }
+        if (settings.restartDoneId == request.id) {
+            if (startedAt > settings.restartAskedAt) return JobReport(request.id, "done")
+            // Still the same run, well after it was asked: it didn't restart.
+            if (System.currentTimeMillis() - settings.restartAskedAt > 2 * 60_000L) {
+                return JobReport(request.id, "failed", error = "It didn't restart.").also { failed = it }
+            }
+            return null
+        }
         val problem = when {
             request.kind == "device" && !canRebootDevice(context) ->
                 "Android doesn't let Kiosk Player restart this box (it isn't the box's device owner)."
             request.kind != "device" && !canReopen(context) ->
-                "Kiosk Player couldn't reopen itself: allow it to display over other apps (Settings → Keep in front), or make it the home screen."
+                "Kiosk Player couldn't reopen itself: in its Settings, switch on “Come back to the front automatically”, or make it the home screen."
             else -> null
         }
-        if (problem != null) {
-            settings.restartDoneId = request.id
-            return JobReport(request.id, "failed", error = problem)
-        }
+        if (problem != null) return JobReport(request.id, "failed", error = problem).also { failed = it }
         settings.restartDoneId = request.id
+        settings.restartAskedAt = System.currentTimeMillis()
         if (request.kind == "device") {
             Log.i(TAG, "Restarting the device, as asked on the dashboard")
-            val failed = runCatching {
+            val error = runCatching {
                 val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
                 dpm.reboot(AfterHours.admin(context))
             }.exceptionOrNull()
-            return failed?.let { JobReport(request.id, "failed", error = "The device didn't restart (${it.javaClass.simpleName}).") }
+            return error?.let { JobReport(request.id, "failed", error = "The device didn't restart (${it.javaClass.simpleName}).") }
+                ?.also { failed = it }
         }
         Log.i(TAG, "Restarting the app, as asked on the dashboard")
-        settings.restartAskedAt = System.currentTimeMillis()
         Watchdog.arm(context.applicationContext, REOPEN_AFTER_MS)
         // An ordinary exit, so it isn't reported as "closed by itself" afterwards.
         exitProcess(0)

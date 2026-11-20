@@ -19,7 +19,7 @@ const { createRemote } = require('./remote');
 const LOOP_MS = 60_000;
 const RETRY_MS = 15_000;
 
-function createController({ store, dataDir, appVersion, model = null, fetchImpl = fetch, loopMs = LOOP_MS, retryMs = RETRY_MS, now = () => Date.now(), log = () => {} }) {
+function createController({ store, dataDir, appVersion, model = null, fetchImpl = fetch, loopMs = LOOP_MS, retryMs = RETRY_MS, now = () => Date.now(), log = () => {}, startedAt }) {
   const events = new EventEmitter();
   let state = { phase: 'setup' };
   let api = null;
@@ -29,7 +29,7 @@ function createController({ store, dataDir, appVersion, model = null, fetchImpl 
   let runId = 0;
   const report = { currentMediaId: null, playbackError: null };
   // Restart, See screen and updates from the dashboard (0.13.0).
-  const remote = createRemote({ store, dataDir, events, log, fetchImpl });
+  const remote = createRemote({ store, dataDir, events, log, fetchImpl, ...(startedAt ? { startedAt } : {}) });
 
   const heartbeatBody = () => ({
     app_version: appVersion,
