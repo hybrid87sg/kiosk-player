@@ -212,8 +212,9 @@ test('0.13.0: Restart, See screen, and updating itself from the server', async (
   const device = async () => (await (await call('GET', '/api/devices', { token: boss })).json()).find((d) => d.id === claimed.id);
 
   // It says it can restart the whole PC only on Windows.
-  await until(async () => (await device()).app_version === '0.13.0');
-  assert.equal((await device()).can_restart_device, process.platform === 'win32');
+  // (Registering already gives its version; whether it can restart comes with its first check-in.)
+  await until(async () => (await device()).last_seen);
+  await until(async () => (await device()).can_restart_device === (process.platform === 'win32'));
 
   // The server offers its newer installer for tonight: downloaded and checked, waiting for closing time.
   const ready = await until(() => seen.ready[0]);
