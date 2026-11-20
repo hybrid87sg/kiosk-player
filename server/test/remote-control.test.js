@@ -159,6 +159,13 @@ test('Windows PCs update from this server: overnight by themselves, or now from 
   assert.equal(refused.status, 409);
   assert.match(refused.body.error, /by hand once/);
 
+  // The Mac test build says it's a Mac: it's never given the Windows installer.
+  const mac = await addScreen({ kind: 'browser', app_version: '0.13.0' }, 'Test Mac');
+  await call('POST', '/api/player/heartbeat', { token: mac.token, json: { app_version: '0.13.0', platform: 'darwin' } });
+  assert.equal((await call('GET', '/api/player/playlist', { token: mac.token })).body.actions.update, null);
+  assert.equal((await view(mac.id)).app.update_available, false);
+  assert.match((await call('POST', `/api/devices/${mac.id}/update`, { token: boss })).body.error, /Mac test build/);
+
   // "Update app" on the dashboard: now instead of tonight.
   const now = await call('POST', `/api/devices/${pc.id}/update`, { token: boss });
   assert.equal(now.status, 200);

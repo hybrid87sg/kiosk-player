@@ -200,7 +200,8 @@ test('0.13.0: Restart, See screen, and updating itself from the server', async (
   const { call, boss } = srv;
   const dataDir = tmp(t, 'kb-pc-');
   const store = createStore(dataDir);
-  const controller = createController({ store, dataDir, appVersion: '0.13.0', model: 'Test PC', loopMs: 200, retryMs: 200 });
+  // (Acts as Windows wherever the test runs: only Windows installs updates.)
+  const controller = createController({ store, dataDir, appVersion: '0.13.0', model: 'Test PC', loopMs: 200, retryMs: 200, platform: 'win32' });
   t.after(() => controller.stop());
   const seen = { restart: [], screenshot: [], ready: [] };
   controller.events.on('restart', (k) => seen.restart.push(k));
@@ -214,7 +215,7 @@ test('0.13.0: Restart, See screen, and updating itself from the server', async (
   // It says it can restart the whole PC only on Windows.
   // (Registering already gives its version; whether it can restart comes with its first check-in.)
   await until(async () => (await device()).last_seen);
-  await until(async () => (await device()).can_restart_device === (process.platform === 'win32'));
+  await until(async () => (await device()).can_restart_device === true);
 
   // The server offers its newer installer for tonight: downloaded and checked, waiting for closing time.
   const ready = await until(() => seen.ready[0]);
@@ -236,7 +237,7 @@ test('0.13.0: Restart, See screen, and updating itself from the server', async (
   assert.equal(await until(() => seen.restart[0]), 'app');
   controller.stop();
   // (A real restart is a new run of the app: it started after the request.)
-  const again = createController({ store: createStore(dataDir), dataDir, appVersion: '0.13.0', loopMs: 200, retryMs: 200, startedAt: Date.now() + 1 });
+  const again = createController({ store: createStore(dataDir), dataDir, appVersion: '0.13.0', loopMs: 200, retryMs: 200, startedAt: Date.now() + 1, platform: 'win32' });
   t.after(() => again.stop());
   const restartedAgain = [];
   again.events.on('restart', (k) => restartedAgain.push(k));
@@ -253,7 +254,7 @@ test('an installer that doesn’t match its fingerprint is thrown away', async (
   const store = createStore(dataDir);
   const body = Buffer.from('not the real installer');
   const fetchImpl = async () => new Response(body, { status: 200 });
-  const remote = createRemote({ store, dataDir, events, fetchImpl });
+  const remote = createRemote({ store, dataDir, events, fetchImpl, platform: 'win32' });
   const update = { id: 'u1', version: '0.13.5', size: body.length, sha256: 'a'.repeat(64), url: '/api/player/windows-app.exe', when: 'now' };
   await remote.handle({ update }, { api: { token: 't' }, baseUrl: 'http://x' });
   assert.equal(remote.ready, null);

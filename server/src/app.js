@@ -1238,7 +1238,7 @@ function createApp({
         version_code: null,
         can_install_apps: null,
         latest,
-        update_available: Boolean(latest && versionAtLeast(d.app_version, '0.13.0') && versionNumber(d.app_version) < versionNumber(latest.version)),
+        update_available: Boolean(latest && !notWindows(d) && versionAtLeast(d.app_version, '0.13.0') && versionNumber(d.app_version) < versionNumber(latest.version)),
         update: jobView(d.update_id, d.update_state, d.update_at),
         update_when: d.update_id ? d.update_when || 'now' : null,
       };
@@ -1330,7 +1330,11 @@ function createApp({
 
   // ----- Windows PCs updating themselves (0.13.0) -----
 
+  // A Kiosk Browser that isn't on Windows (the Mac test build). Older ones don't say: Windows.
+  const notWindows = (d) => Boolean(d.platform) && d.platform !== 'win32';
+
   function cannotUpdateWindows(d) {
+    if (notWindows(d)) return 'Updates from here are for Windows PCs. This is the Mac test build: download a new one from GitHub.';
     if (!versionAtLeast(d.app_version, '0.13.0')) {
       return `${d.name || 'This PC'} has an older Kiosk Browser. Install 0.13.0 or newer on it by hand once (uninstall the old one first); later updates come from here.`;
     }
@@ -1362,7 +1366,7 @@ function createApp({
   // Overnight updates: a PC with an older Kiosk Browser (0.13.0 or newer, which knows how)
   // is given an update to install by itself outside working hours.
   function offerWindowsUpdate(device) {
-    if (device.kind !== 'browser' || !windowsApp || device.update_id) return;
+    if (device.kind !== 'browser' || !windowsApp || device.update_id || notWindows(device)) return;
     if (!windowsApp.ready) { windowsApp.fetch(); return; }
     if (!cannotUpdateWindows(device)) startUpdate(device, 'closed');
   }
@@ -2242,6 +2246,10 @@ function createApp({
     if (typeof body.can_install_apps === 'boolean') {
       sets.push('can_install_apps = ?');
       params.push(body.can_install_apps ? 1 : 0);
+    }
+    if (typeof body.platform === 'string' && /^[a-z0-9]{1,20}$/.test(body.platform)) {
+      sets.push('platform = ?');
+      params.push(body.platform);
     }
     if (typeof body.can_reboot === 'boolean') {
       sets.push('can_reboot = ?');

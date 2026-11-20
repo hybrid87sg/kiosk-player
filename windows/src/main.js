@@ -345,7 +345,7 @@ app.whenReady().then(() => {
     store: createStore(dataDir),
     dataDir,
     appVersion: app.getVersion(),
-    model: `Windows · ${os.hostname()}`,
+    model: `${process.platform === 'darwin' ? 'Mac (test build)' : 'Windows'} · ${os.hostname()}`,
     log,
   });
   controller.events.on('state', () => {
@@ -374,7 +374,8 @@ app.whenReady().then(() => {
   setInterval(checkHours, 30_000);
 
   // Start with Windows, so a power cut or restart comes back to the kiosk by itself.
-  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true });
+  // (Not the Mac test build: it's for trying things out, not a kiosk Mac.)
+  if (app.isPackaged && process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: true });
 });
 
 app.on('second-instance', () => { if (win) { win.restore(); win.focus(); } });

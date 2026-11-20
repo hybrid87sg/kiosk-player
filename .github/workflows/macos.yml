@@ -1,0 +1,70 @@
+# Kiosk Browser for Mac: a TEST build, for trying the kiosk on a real Mac.
+# It's the same app as the Windows Kiosk Browser (src/), built for macOS as a .zip
+# (Apple Silicon "arm64" and Intel "x64"). It isn't signed with an Apple certificate,
+# so macOS asks once before opening it (see README: "Mac test build").
+# The "Release" workflow uses this to add the Mac zips to a release.
+name: Kiosk Browser for Mac (test build)
+
+on:
+  push:
+    paths:
+      - "windows/**"
+      - "shared/**"
+      - ".github/workflows/macos.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ""
+
+permissions:
+  contents: write # only used by a release, to attach the zips
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the server (the tests run it)
+        working-directory: server
+        run: npm ci
+      - name: Install the app
+        working-directory: windows
+        run: npm ci
+      - name: Core tests, on a Mac
+        working-directory: windows
+        timeout-minutes: 5
+        run: npm test
+      - name: Build the Mac app (Apple Silicon and Intel)
+        working-directory: windows
+        timeout-minutes: 15
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false" # no Apple certificate: signed "ad hoc" only
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then npm run dist:mac -- "-c.extraMetadata.version=${RELEASE_TAG#v}"; else npm run dist:mac; fi
+          ls -la dist/*.zip
+      - name: The app opens and its signature holds together
+        working-directory: windows
+        run: |
+          unzip -q -o dist/*-arm64.zip -d /tmp/kb
+          codesign --verify --deep --strict "/tmp/kb/Kiosk Browser.app"
+          echo "Signed ad hoc, intact"
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true # a full artifact store must not stop the build
+        with:
+          name: KioskBrowser-mac-test
+          path: windows/dist/*.zip
+          retention-days: 14
+      - name: Attach it to the release
+        if: inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          fail_on_unmatched_files: true
+          files: windows/dist/*.zip

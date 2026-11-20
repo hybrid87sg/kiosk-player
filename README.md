@@ -584,6 +584,23 @@ or *Quit*. The PIN keeps curious customers out; it isn't strong security, so don
 - **Windows Update**: set *Active hours* to your opening hours, so it doesn't restart while open.
 - **Rotation**: for a portrait screen, set it in *Settings → System → Display → Display orientation*.
 
+### Mac test build of Kiosk Browser
+
+To try the kiosk on a real Mac (pairing, signage, the web page, **See screen**, **Restart app**), each
+release also has **`KioskBrowser-mac-test-<version>-arm64.zip`** (Macs with Apple Silicon: M1 and newer) and
+**`-x64.zip`** (older Intel Macs). It's the same app as on Windows, as a test build:
+
+1. Download the zip for your Mac and double-click it. Drag **Kiosk Browser** into **Applications**.
+2. Open it. macOS says it can't check the developer, because the app isn't signed with a paid Apple
+   certificate. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to
+   Kiosk Browser (once).
+3. Pair it like a Windows PC. It's listed as **Mac (test build)** on the dashboard.
+
+Differences from Windows: it doesn't start by itself when the Mac starts, it doesn't update itself (download
+the new zip), and **Restart device** stays greyed out. The first **See screen** asks for permission: allow
+Kiosk Browser under *Privacy & Security → Screen & System Audio Recording*, then press **See screen** again.
+It covers the whole screen; leave with the staff corner and PIN (**Quit**), or press **⌘Q**.
+
 ### Restart device on Android
 
 Android lets an app restart the whole TV box only if the app is the box's **device owner**. This is

@@ -19,7 +19,7 @@ const { pipeline } = require('node:stream/promises');
 // When this run of the app started: a restart is only "done" if the app started after it was asked.
 const STARTED_AT = Date.now();
 
-function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetch, startedAt = STARTED_AT }) {
+function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetch, startedAt = STARTED_AT, platform = process.platform }) {
   const updateDir = path.join(dataDir, 'updates');
   let restartReport = null;
   let updateReport = null;
@@ -97,8 +97,8 @@ function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetc
         events.emit('screenshot', actions.screenshot);
       }
 
-      // Update.
-      const u = actions.update;
+      // Update. Only a Windows PC installs the Windows installer (the Mac test build doesn't).
+      const u = platform === 'win32' ? actions.update : null;
       if (!u || !u.id || !u.url || !u.sha256 || !(u.size > 0)) {
         ready = null;
         updateReport = null;
@@ -147,7 +147,8 @@ function createRemote({ store, dataDir, events, log = () => {}, fetchImpl = fetc
     /** Added to each heartbeat. */
     reports() {
       return {
-        can_reboot: process.platform === 'win32',
+        can_reboot: platform === 'win32',
+        platform, // 'win32', or 'darwin' for the Mac test build
         ...(restartReport ? { restart: restartReport } : {}),
         ...(updateReport ? { update: updateReport } : {}),
       };

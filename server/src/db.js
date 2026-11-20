@@ -236,6 +236,7 @@ function openDatabase(dataDir) {
   addColumnIfMissing(db, 'devices', 'shot_at', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'shot_taken_at', 'INTEGER');
   addColumnIfMissing(db, 'devices', 'update_when', 'TEXT'); // Windows: 'now', or 'closed' (overnight, by itself)
+  addColumnIfMissing(db, 'devices', 'platform', 'TEXT'); // a Kiosk Browser's system: 'win32', or 'darwin' (Mac test build)
 
   // ---------- Relays: the Home Assistants at other sites (added in 0.7.0) ----------
   // All new tables, so existing data is untouched. SCHEMA_VERSION must stay as it is:
