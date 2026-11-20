@@ -36,6 +36,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -143,6 +145,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Reset sync in progress (or just finished), reported with each heartbeat. */
     @Volatile private var resyncReport: JobReport? = null
+
+    /** A dashboard Restart, reported once the app is running again (0.13.0). */
+    @Volatile private var restartReport: JobReport? = null
+
+    /** See screen (0.13.0): ids of pictures the dashboard asked for; MainActivity takes them. */
+    private val _screenshotRequests = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val screenshotRequests: SharedFlow<String> = _screenshotRequests
+    private var lastScreenshotId: String? = null
+    private var sendScreenshotTo: (suspend (String, ByteArray?, String?) -> Unit)? = null
+
+    /** MainActivity's picture (JPEG bytes), or why it couldn't take one. */
+    fun screenshotTaken(id: String, jpeg: ByteArray?, error: String?) {
+        val send = sendScreenshotTo ?: return
+        viewModelScope.launch {
+            try {
+                send(id, jpeg, error)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("KioskPlayer", "Couldn't send the screenshot", e)
+            }
+        }
+    }
     private var updateJob: Job? = null
 
     /** What the app says about itself and its Reset sync / app update, in each heartbeat. */
@@ -158,6 +183,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             rotationSensor = runCatching { app.packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_ACCELEROMETER) }.getOrNull(),
             resync = resyncReport,
             update = settings.updateReport,
+            canReboot = RemoteRestart.canRebootDevice(app),
+            restart = restartReport,
         )
     }
 
@@ -311,6 +338,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun runServer(url: String) {
         val repo = RemotePlayerRepository(url, settings.token)
+        sendScreenshotTo = { id, jpeg, error -> repo.sendScreenshot(id, jpeg, error) }
         val sync = ContentSync(repo.httpClient, repo.baseUrl, mediaDir)
         val caps = deviceCapabilities()
         reportStatus = {
@@ -354,6 +382,15 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 // Asked for on the dashboard (0.11.0).
                 playlist.actions.update?.let { startUpdate(it, repo) }
                 playlist.actions.resync?.let { resync(it, playlist, sync) } ?: run { resyncReport = null }
+                // Restart and See screen (0.13.0). A new Restart closes the app here and the
+                // Watchdog reopens it; afterwards this reports "done".
+                restartReport = RemoteRestart.handle(getApplication(), playlist.actions.restart, settings)
+                playlist.actions.screenshot?.let { id ->
+                    if (id != lastScreenshotId) {
+                        lastScreenshotId = id
+                        _screenshotRequests.tryEmit(id)
+                    }
+                }
                 val latestCaps = deviceCapabilities()
                 repo.heartbeat(
                     currentMediaId, sync.freeBytes(), BuildConfig.VERSION_NAME,

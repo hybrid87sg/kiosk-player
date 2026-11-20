@@ -1648,6 +1648,42 @@ test('App updates reach TVs behind a relay: the app file comes through whole', a
   assert.equal((await fetch(`${relay}/api/player/app.apk`)).status, 401);
 });
 
+test('0.13.0 behind a relay: the Windows installer comes through whole, and so does a screenshot', async (t) => {
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-winapp-'));
+  t.after(() => fs.rmSync(appDir, { recursive: true, force: true }));
+  const exe = crypto.randomBytes(400_000);
+  fs.writeFileSync(path.join(appDir, 'setup.exe'), exe);
+  const ready = { version: '0.13.1', size: exe.length, sha256: crypto.createHash('sha256').update(exe).digest('hex'), file: path.join(appDir, 'setup.exe') };
+  const windowsApp = { version: '0.13.1', ready, problem: null, fetch: async () => ready };
+  const { call, signIn, base } = await startServer(t, { siteName: 'Head office', windowsApp });
+  const boss = await signIn(BOSS);
+  const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiosk-relay-'));
+  const relayApp = createRelay({ mainUrl: base, siteName: 'Orchard branch', dataDir: relayDir, log: () => {}, pruneIntervalMs: 0 });
+  const relayServer = await new Promise((resolve) => { const s = relayApp.listen(0, () => resolve(s)); });
+  t.after(async () => {
+    await new Promise((resolve) => relayServer.close(resolve));
+    fs.rmSync(relayDir, { recursive: true, force: true });
+  });
+  const relay = `http://127.0.0.1:${relayServer.address().port}`;
+  const pc = await (await fetch(`${relay}/api/player/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'browser', app_version: '0.13.0' }) })).json();
+  const added = await (await call('POST', '/api/devices/claim', { token: boss, json: { code: pc.pairing_code, location: 'Lobby', name: 'Branch PC' } })).json();
+  const auth = { authorization: `Bearer ${pc.token}` };
+  const got = await fetch(`${relay}/api/player/windows-app.exe`, { headers: auth });
+  assert.equal(got.status, 200);
+  assert.deepEqual(Buffer.from(await got.arrayBuffer()), exe);
+
+  // A picture of about 1 MB, through the relay.
+  await call('POST', `/api/devices/${added.id}/screenshot`, { token: boss });
+  const list = await (await fetch(`${relay}/api/player/playlist`, { headers: auth })).json();
+  const picture = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(1_000_000)]);
+  const sent = await fetch(`${relay}/api/player/screenshot/${list.actions.screenshot}`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ jpeg: picture.toString('base64') }),
+  });
+  assert.equal(sent.status, 200);
+  const back = await call('GET', `/api/devices/${added.id}/screenshot.jpg`, { token: boss });
+  assert.deepEqual(Buffer.from(await back.arrayBuffer()), picture);
+});
+
 test('a TV waiting to be added says how its picture is turned, for the Add dialog', async (t) => {
   const { call, signIn } = await startServer(t);
   const boss = await signIn(BOSS);

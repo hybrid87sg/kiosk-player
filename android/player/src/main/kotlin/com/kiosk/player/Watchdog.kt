@@ -46,8 +46,14 @@ object Watchdog {
     /** One check: open the player if it should be on screen and isn't. */
     fun check(context: Context) {
         arm(context)
-        if (KeepInFront.onScreen || !KeepInFront.shouldReturn(context)) return
         val now = System.currentTimeMillis()
+        // Closed for a Restart from the dashboard (0.13.0): open it again straight away.
+        if (!KeepInFront.onScreen && now - PlayerSettings(context).restartAskedAt < 60_000L) {
+            PlayerSettings(context).restartAskedAt = 0L
+            runCatching { KeepInFront.bringBack(context) }
+            return
+        }
+        if (KeepInFront.onScreen || !KeepInFront.shouldReturn(context)) return
         // Someone just left the app: give them the usual 30 seconds (KeepInFront handles that).
         if (now - KeepInFront.leftAt < KeepInFront.RETURN_AFTER_MS) return
         // Asleep after hours: the opening-time alarm (AfterHours) wakes it and opens the player.

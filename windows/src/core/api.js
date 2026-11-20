@@ -55,6 +55,8 @@ function createApi({ baseUrl, token = null, fetchImpl = fetch, timeoutMs = 15_00
     status: () => call('GET', '/api/player/status'),
     playlist: () => call('GET', '/api/player/playlist'),
     heartbeat: (info) => call('POST', '/api/player/heartbeat', info),
+    // See screen (0.13.0): { jpeg: base64 } or { error }.
+    screenshot: (id, body) => call('POST', `/api/player/screenshot/${encodeURIComponent(id)}`, body),
   };
 }
 

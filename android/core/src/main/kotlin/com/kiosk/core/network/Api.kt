@@ -79,6 +79,8 @@ internal interface PlayerApi {
     @GET("api/player/status") suspend fun status(@retrofit2.http.Query("mounting") mounting: String? = null): PlayerStatus
     @GET("api/player/playlist") suspend fun playlist(): PlayerPlaylist
     @POST("api/player/heartbeat") suspend fun heartbeat(@Body body: HeartbeatBody): HeartbeatReply
+    /** See screen (0.13.0): the picture as a base64 JPEG, or why there isn't one. */
+    @POST("api/player/screenshot/{id}") suspend fun screenshot(@Path("id") id: String, @Body body: ScreenshotBody): OkReply
 }
 
 // ---------- Request and reply bodies ----------
@@ -165,8 +167,13 @@ internal data class HeartbeatBody(
     val touchscreen: Boolean? = null,
     @SerialName("webview_version") val webviewVersion: String? = null,
     @SerialName("rotation_sensor") val rotationSensor: Boolean? = null,
+    @SerialName("can_reboot") val canReboot: Boolean? = null,
     val resync: JobReport? = null,
     val update: JobReport? = null,
+    val restart: JobReport? = null,
 )
+
+/** Exactly one of [jpeg] (base64) or [error]. */
+@Serializable internal data class ScreenshotBody(val jpeg: String? = null, val error: String? = null)
 
 @Serializable internal data class HeartbeatReply(val ok: Boolean = true, val version: String? = null)

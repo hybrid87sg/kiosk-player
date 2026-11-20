@@ -82,6 +82,7 @@ jobs:
             | `KioskAdmin-for-phone-${{ inputs.version }}.apk` | Your Android phone | Kiosk Admin app |
             | `KioskPlayer-for-TV-${{ inputs.version }}.apk` | Each Android TV box | Kiosk Player app |
             | `KioskBrowser-Setup-${{ inputs.version }}.exe` | A Windows PC with a touch screen | Kiosk Browser: signage when idle, your web page on touch |
+            | `KioskBrowser-mac-test-${{ inputs.version }}-arm64.zip` (Apple Silicon) / `-x64.zip` (Intel) | A Mac, for testing | Kiosk Browser as a test build: not signed by Apple, doesn't update itself |
             | `kiosk_server-addon-${{ inputs.version }}.zip` | Home Assistant | The server, as an add-on, for installing by hand. The easy way is the add-on repository: https://github.com/hybrid87sg/kiosk-addons |
 
             Both apps have a **Demo mode** with sample data, so they can be tried
@@ -94,5 +95,12 @@ jobs:
   windows:
     needs: [publish]
     uses: ./.github/workflows/windows.yml
+    with:
+      release_tag: v${{ inputs.version }}
+
+  # The Mac test build of Kiosk Browser (for trying it on a real Mac), added too.
+  macos:
+    needs: [publish]
+    uses: ./.github/workflows/macos.yml
     with:
       release_tag: v${{ inputs.version }}

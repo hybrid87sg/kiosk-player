@@ -225,6 +225,18 @@ function openDatabase(dataDir) {
   `);
   // 0.11.0: 1 when a playback copy was made without sound (Settings → Sound off).
   addColumnIfMissing(db, 'renditions', 'silent', 'INTEGER');
+  // 0.13.0: Restart and See screen from the dashboard, and Windows apps updating themselves.
+  addColumnIfMissing(db, 'devices', 'reboot_id', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'reboot_kind', 'TEXT'); // 'app' or 'device'
+  addColumnIfMissing(db, 'devices', 'reboot_state', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'reboot_at', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'can_reboot', 'INTEGER'); // the screen says it can restart the whole device
+  addColumnIfMissing(db, 'devices', 'shot_id', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'shot_state', 'TEXT');
+  addColumnIfMissing(db, 'devices', 'shot_at', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'shot_taken_at', 'INTEGER');
+  addColumnIfMissing(db, 'devices', 'update_when', 'TEXT'); // Windows: 'now', or 'closed' (overnight, by itself)
+  addColumnIfMissing(db, 'devices', 'platform', 'TEXT'); // a Kiosk Browser's system: 'win32', or 'darwin' (Mac test build)
 
   // ---------- Relays: the Home Assistants at other sites (added in 0.7.0) ----------
   // All new tables, so existing data is untouched. SCHEMA_VERSION must stay as it is:

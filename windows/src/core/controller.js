@@ -14,11 +14,12 @@ const path = require('node:path');
 const { createApi, ApiError, normaliseServerUrl } = require('./api');
 const { createSync, DownloadError } = require('./sync');
 const { isOpenAt } = require('./hours');
+const { createRemote } = require('./remote');
 
 const LOOP_MS = 60_000;
 const RETRY_MS = 15_000;
 
-function createController({ store, dataDir, appVersion, model = null, fetchImpl = fetch, loopMs = LOOP_MS, retryMs = RETRY_MS, now = () => Date.now(), log = () => {} }) {
+function createController({ store, dataDir, appVersion, model = null, fetchImpl = fetch, loopMs = LOOP_MS, retryMs = RETRY_MS, now = () => Date.now(), log = () => {}, startedAt, platform }) {
   const events = new EventEmitter();
   let state = { phase: 'setup' };
   let api = null;
@@ -27,6 +28,19 @@ function createController({ store, dataDir, appVersion, model = null, fetchImpl 
   let wake = null; // resolves the current wait early (e.g. "check now")
   let runId = 0;
   const report = { currentMediaId: null, playbackError: null };
+  // Restart, See screen and updates from the dashboard (0.13.0).
+  const remote = createRemote({ store, dataDir, events, log, fetchImpl, ...(startedAt ? { startedAt } : {}), ...(platform ? { platform } : {}) });
+
+  const heartbeatBody = () => ({
+    app_version: appVersion,
+    current_media_id: report.currentMediaId,
+    free_bytes: sync ? sync.freeBytes() : null,
+    time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    after_hours: 'black',
+    playback_error: report.playbackError || '',
+    ...(report.download ? { download_done: report.download[0], download_total: report.download[1] } : {}),
+    ...remote.reports(),
+  });
 
   const set = (next) => {
     state = next;
@@ -132,15 +146,8 @@ function createController({ store, dataDir, appVersion, model = null, fetchImpl 
           version = playlist.version;
         }
         showReady(playlist);
-        await api.heartbeat({
-          app_version: appVersion,
-          current_media_id: report.currentMediaId,
-          free_bytes: sync.freeBytes(),
-          time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          after_hours: 'black',
-          playback_error: report.playbackError || '',
-          ...(report.download ? { download_done: report.download[0], download_total: report.download[1] } : {}),
-        }).catch(() => {});
+        await remote.handle(playlist.actions || {}, { api, baseUrl: store.get('serverUrl') });
+        await api.heartbeat(heartbeatBody()).catch(() => {});
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           // Removed on the dashboard: forget everything and show a new code.
@@ -180,6 +187,16 @@ function createController({ store, dataDir, appVersion, model = null, fetchImpl 
       wake && wake();
       set({ phase: 'setup' });
     },
+    /** Restart, See screen and updates (0.13.0). Its events come through [events]. */
+    remote,
+    /** Sends a See screen picture (JPEG bytes), or why there isn't one. */
+    async sendScreenshot(id, jpeg, error = null) {
+      if (!api) return;
+      await api.screenshot(id, jpeg ? { jpeg: Buffer.from(jpeg).toString('base64') } : { error: String(error || 'The kiosk couldn’t take a picture.').slice(0, 300) })
+        .catch((err) => log(`Screenshot not sent: ${err.message}`));
+    },
+    /** Checks in straight away (e.g. "installing" before the app closes for an update). */
+    reportNow: () => (api && api.token ? api.heartbeat(heartbeatBody()).catch(() => {}) : Promise.resolve()),
     /** What is on screen, for the next heartbeat. */
     playing(mediaId, error = null) {
       report.currentMediaId = mediaId;

@@ -1,7 +1,7 @@
 {
   "name": "kiosk-browser",
   "productName": "Kiosk Browser",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Kiosk Signage for Windows: plays a screen's playlist while idle, and shows a web page customers can use on touch.",
   "main": "src/main.js",
   "private": true,
@@ -10,6 +10,7 @@
     "start": "electron .",
     "test": "node --test --test-timeout=120000 test/*.test.js",
     "dist": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac zip --arm64 --x64 --publish never",
     "e2e": "node test/app.e2e.js"
   },
   "devDependencies": {
@@ -35,10 +36,16 @@
       ],
       "icon": "build/icon.ico"
     },
+    "mac": {
+      "target": ["zip"],
+      "category": "public.app-category.business",
+      "icon": "build/icon.png",
+      "identity": "-",
+      "artifactName": "KioskBrowser-mac-test-${version}-${arch}.${ext}"
+    },
     "nsis": {
-      "oneClick": false,
-      "perMachine": true,
-      "allowToChangeInstallationDirectory": false,
+      "oneClick": true,
+      "perMachine": false,
       "createDesktopShortcut": true,
       "runAfterFinish": true,
       "shortcutName": "Kiosk Browser"

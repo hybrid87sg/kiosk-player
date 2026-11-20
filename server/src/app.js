@@ -67,6 +67,13 @@ function mediaKind(name, mimeType) {
 
 // Wider than tall is landscape, taller than wide is portrait. Unknown size
 // (Drive hasn't finished processing a new video) means "still checking".
+// A version like "0.13.2" as one number (13002) for comparing; unknown counts as 0.
+function versionNumber(version) {
+  const [major, minor, patch] = String(version || '').split('.').map((n) => parseInt(n, 10));
+  if ([major, minor].some(Number.isNaN)) return 0;
+  return (major * 1000 + minor) * 1000 + (Number.isNaN(patch) || patch === undefined ? 0 : patch);
+}
+
 // True if an app version like "0.5.1" is at least "0.5.0". Unknown versions count as older.
 function versionAtLeast(version, wanted) {
   const parts = (v) => String(v || '').split('.').map((n) => parseInt(n, 10));
@@ -102,6 +109,8 @@ function createApp({
   transcode = null,
   // The folder with the TV app to send to screens (player-app.js); null = no updates from here.
   playerAppDir = null,
+  // The Windows Kiosk Browser installer for PCs updating themselves (windows-app.js); null = none.
+  windowsApp = null,
   log = console.log,
 }) {
   const db = openDatabase(dataDir);
@@ -248,7 +257,10 @@ function createApp({
   const requireAnyUser = auth.requireRole(db, auth.ROLES);
 
   const app = express();
-  app.use(express.json());
+  // A screen's screenshot (0.13.0) is a picture in JSON, bigger than anything else sent here.
+  const bigJson = express.json({ limit: '4mb' });
+  const json = express.json();
+  app.use((req, res, next) => (req.path.startsWith('/api/player/screenshot/') ? bigJson : json)(req, res, next));
 
   // Every TV request (and file download) says which relay, if any, it came through.
   //  - A paired relay add-on sends its credential in X-Kiosk-Relay-Auth: the site is that relay's.
@@ -1177,6 +1189,12 @@ function createApp({
       // Reset sync and the TV app (0.11.0).
       resync: resyncView(d),
       app: appView(d),
+      // Restart and See screen (0.13.0).
+      restart: rebootView(d),
+      can_restart: versionAtLeast(d.app_version, '0.13.0'),
+      can_restart_device: versionAtLeast(d.app_version, '0.13.0') && Boolean(d.can_reboot),
+      screenshot: screenshotView(d),
+      can_screenshot: versionAtLeast(d.app_version, '0.13.0'),
       // Set while the TV is downloading new files, e.g. { done: 1, total: 3 }.
       download: d.download_total ? { done: d.download_done || 0, total: d.download_total } : null,
     };
@@ -1194,7 +1212,7 @@ function createApp({
   // A finished or failed one stays on the card this long.
   const JOB_SHOWN_MS = 30 * 60 * 1000;
 
-  function jobView(id, stateText, at) {
+  function jobView(id, stateText, at, staleMs = JOB_STALE_MS, staleError = 'The screen didn’t answer. Is it switched on and online?') {
     if (!at) return null;
     const state = readJob(stateText) || { step: 'waiting' };
     const now = Date.now();
@@ -1202,8 +1220,8 @@ function createApp({
       return now - (state.at || at) < JOB_SHOWN_MS ? { ...state, requested_at: at } : null;
     }
     if (!id) return null;
-    if (now - (state.at || at) > JOB_STALE_MS) {
-      return { step: 'failed', error: 'The screen didn’t answer. Is it switched on and online?', requested_at: at };
+    if (now - (state.at || at) > staleMs) {
+      return { step: 'failed', error: staleError, requested_at: at };
     }
     return { ...state, requested_at: at };
   }
@@ -1211,6 +1229,20 @@ function createApp({
   const resyncView = (d) => jobView(d.resync_id, d.resync_state, d.resync_at);
 
   function appView(d) {
+    if (d.kind === 'browser') {
+      // A Windows PC (0.13.0): its version against the installer that goes with this server.
+      const ready = windowsApp && windowsApp.ready;
+      const latest = ready ? { version: ready.version, version_code: null } : null;
+      return {
+        android_sdk: null,
+        version_code: null,
+        can_install_apps: null,
+        latest,
+        update_available: Boolean(latest && !notWindows(d) && versionAtLeast(d.app_version, '0.13.0') && versionNumber(d.app_version) < versionNumber(latest.version)),
+        update: jobView(d.update_id, d.update_state, d.update_at),
+        update_when: d.update_id ? d.update_when || 'now' : null,
+      };
+    }
     const latest = playerApp ? { version: playerApp.version, version_code: playerApp.version_code } : null;
     return {
       android_sdk: d.android_sdk ?? null,
@@ -1232,12 +1264,111 @@ function createApp({
     return null;
   }
   function cannotUpdate(d) {
-    if (d.kind === 'browser') return 'App updates are for TVs.';
+    if (d.kind === 'browser') return cannotUpdateWindows(d);
     if (!playerApp) return 'This server has no TV app to send. It comes with the Home Assistant add-on.';
     if (d.version_code == null) return `${d.name || 'This screen'} has an older Kiosk Player. Install 0.11.0 or newer on it by hand once; later updates come from here.`;
     if (d.version_code >= playerApp.version_code) return `${d.name || 'This screen'} already has the newest app.`;
     if (d.can_install_apps === 0) return `On the TV, allow Kiosk Player under Settings → Apps → Special app access → Install unknown apps first.`;
     return null;
+  }
+
+  // ----- Restart and See screen (0.13.0) -----
+
+  // A restart the screen hasn't picked up in 10 minutes is dropped, so a screen that was
+  // off doesn't restart by surprise hours later. A screenshot waits 3 minutes.
+  const REBOOT_STALE_MS = 10 * 60 * 1000;
+  const SHOT_STALE_MS = 3 * 60 * 1000;
+  const SHOT_MAX_BYTES = 3 * 1024 * 1024;
+  const screenshotDir = path.join(dataDir, 'screenshots');
+  const screenshotFile = (deviceId) => path.join(screenshotDir, `${Number(deviceId) || 0}.jpg`);
+
+  function rebootView(d) {
+    const job = jobView(d.reboot_id, d.reboot_state, d.reboot_at, REBOOT_STALE_MS,
+      'The screen didn’t answer within 10 minutes, so it won’t restart later by surprise. Is it switched on and online?');
+    return job ? { ...job, kind: d.reboot_kind || 'app' } : null;
+  }
+
+  function screenshotView(d) {
+    const job = jobView(d.shot_id, d.shot_state, d.shot_at, SHOT_STALE_MS,
+      'The screen didn’t send a picture. Is it switched on and online?');
+    return {
+      taken_at: d.shot_taken_at || null, // the latest picture, if there is one
+      job,
+    };
+  }
+
+  // Jobs nobody picked up in time are cleared, so they aren't sent later.
+  function dropStaleJobs(d) {
+    const now = Date.now();
+    const pending = (id, stateText, at) => id && !['done', 'failed'].includes((readJob(stateText) || {}).step) ? now - ((readJob(stateText) || {}).at || at || 0) : 0;
+    if (pending(d.reboot_id, d.reboot_state, d.reboot_at) > REBOOT_STALE_MS) {
+      db.prepare(`UPDATE devices SET reboot_id = NULL, reboot_state = ? WHERE id = ?`)
+        .run(JSON.stringify({ step: 'failed', at: now, error: 'The screen didn’t answer within 10 minutes, so it won’t restart later by surprise.' }), d.id);
+    }
+    if (pending(d.shot_id, d.shot_state, d.shot_at) > SHOT_STALE_MS) {
+      db.prepare(`UPDATE devices SET shot_id = NULL, shot_state = ? WHERE id = ?`)
+        .run(JSON.stringify({ step: 'failed', at: now, error: 'The screen didn’t send a picture. Is it switched on and online?' }), d.id);
+    }
+  }
+
+  function cannotRestart(d, kind) {
+    const app = d.kind === 'browser' ? 'Kiosk Browser' : 'Kiosk Player';
+    if (!versionAtLeast(d.app_version, '0.13.0')) return `${d.name || 'This screen'} has an older ${app}. Restart needs ${app} 0.13.0 or newer.`;
+    if (kind === 'device' && !d.can_reboot) {
+      return d.kind === 'browser'
+        ? 'Windows didn’t allow Kiosk Browser to restart this PC.'
+        : 'Android only lets an app restart the whole device on some boxes, and this isn’t one of them. Use Restart app, or unplug it.';
+    }
+    return null;
+  }
+
+  function cannotScreenshot(d) {
+    const app = d.kind === 'browser' ? 'Kiosk Browser' : 'Kiosk Player';
+    if (!versionAtLeast(d.app_version, '0.13.0')) return `${d.name || 'This screen'} has an older ${app}. See screen needs ${app} 0.13.0 or newer.`;
+    return null;
+  }
+
+  // ----- Windows PCs updating themselves (0.13.0) -----
+
+  // A Kiosk Browser that isn't on Windows (the Mac test build). Older ones don't say: Windows.
+  const notWindows = (d) => Boolean(d.platform) && d.platform !== 'win32';
+
+  function cannotUpdateWindows(d) {
+    if (notWindows(d)) return 'Updates from here are for Windows PCs. This is the Mac test build: download a new one from GitHub.';
+    if (!versionAtLeast(d.app_version, '0.13.0')) {
+      return `${d.name || 'This PC'} has an older Kiosk Browser. Install 0.13.0 or newer on it by hand once (uninstall the old one first); later updates come from here.`;
+    }
+    if (!windowsApp) return 'This server has no Windows installer to send.';
+    if (!windowsApp.ready) {
+      windowsApp.fetch({ force: true });
+      return windowsApp.problem
+        ? `The server couldn’t get the Windows installer yet: ${windowsApp.problem} It tries again by itself.`
+        : 'The server is fetching the Windows installer. Try again in a few minutes.';
+    }
+    if (versionNumber(d.app_version) >= versionNumber(windowsApp.ready.version)) return `${d.name || 'This PC'} already has the newest Kiosk Browser.`;
+    return null;
+  }
+
+  function windowsUpdateAction(device) {
+    const ready = windowsApp && windowsApp.ready;
+    if (!device.update_id || !ready) return null;
+    return {
+      id: device.update_id,
+      version: ready.version,
+      version_code: null,
+      size: ready.size,
+      sha256: ready.sha256,
+      url: '/api/player/windows-app.exe',
+      when: device.update_when === 'closed' ? 'closed' : 'now', // 'closed': outside working hours
+    };
+  }
+
+  // Overnight updates: a PC with an older Kiosk Browser (0.13.0 or newer, which knows how)
+  // is given an update to install by itself outside working hours.
+  function offerWindowsUpdate(device) {
+    if (device.kind !== 'browser' || !windowsApp || device.update_id || notWindows(device)) return;
+    if (!windowsApp.ready) { windowsApp.fetch(); return; }
+    if (!cannotUpdateWindows(device)) startUpdate(device, 'closed');
   }
 
   // Checks name / location / orientation / playlist_id from the admin app.
@@ -1401,8 +1532,41 @@ function createApp({
     const owner = relays.ownerOf(Number(req.params.id) || 0);
     const result = db.prepare(`DELETE FROM devices WHERE id = ?`).run(req.params.id);
     if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
+    fs.rmSync(screenshotFile(req.params.id), { force: true });
     if (owner && relayHub) relayHub.relayChanged(owner.id);
     res.json({ ok: true });
+  });
+
+  // Restart (0.13.0): the app, or the whole device where it can.
+  app.post('/api/devices/:id/restart', requireDevices, (req, res) => {
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Not found' });
+    const kind = (req.body || {}).kind === 'device' ? 'device' : 'app';
+    const problem = cannotRestart(device, kind);
+    if (problem) return res.status(409).json({ error: problem });
+    db.prepare(`UPDATE devices SET reboot_id = ?, reboot_kind = ?, reboot_state = ?, reboot_at = ? WHERE id = ?`)
+      .run(newJobId(), kind, JSON.stringify({ step: 'waiting', at: Date.now() }), Date.now(), device.id);
+    res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
+  });
+
+  // See screen (0.13.0): ask the screen for a picture of what it shows.
+  app.post('/api/devices/:id/screenshot', requireDevices, (req, res) => {
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Not found' });
+    const problem = cannotScreenshot(device);
+    if (problem) return res.status(409).json({ error: problem });
+    db.prepare(`UPDATE devices SET shot_id = ?, shot_state = ?, shot_at = ? WHERE id = ?`)
+      .run(newJobId(), JSON.stringify({ step: 'waiting', at: Date.now() }), Date.now(), device.id);
+    res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
+  });
+
+  // The latest picture. Only people who manage screens see it.
+  app.get('/api/devices/:id/screenshot.jpg', requireDevices, (req, res) => {
+    const device = db.prepare(`SELECT id FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
+    const file = device && screenshotFile(device.id);
+    if (!file || !fs.existsSync(file)) return res.status(404).json({ error: 'No picture yet' });
+    res.set('Cache-Control', 'no-store');
+    res.sendFile(file, { headers: { 'Content-Type': 'image/jpeg' } });
   });
 
   // Reset sync (Spongebob): the TV downloads every file again from scratch, playing
@@ -1418,17 +1582,20 @@ function createApp({
   });
 
   // App update (Spongebob): the TV downloads the app that came with this server and installs it.
-  function startUpdate(device) {
-    db.prepare(`UPDATE devices SET update_id = ?, update_target = ?, update_state = ?, update_at = ? WHERE id = ?`)
-      .run(newJobId(), playerApp.version_code, JSON.stringify({ step: 'waiting', at: Date.now() }), Date.now(), device.id);
+  // [when] for a Windows PC: 'now' (as soon as nobody is using it) or 'closed' (outside working hours).
+  function startUpdate(device, when = 'now') {
+    const target = device.kind === 'browser' ? versionNumber(windowsApp.ready.version) : playerApp.version_code;
+    db.prepare(`UPDATE devices SET update_id = ?, update_target = ?, update_state = ?, update_at = ?, update_when = ? WHERE id = ?`)
+      .run(newJobId(), target, JSON.stringify({ step: 'waiting', at: Date.now() }), Date.now(), device.kind === 'browser' ? when : null, device.id);
   }
 
   app.post('/api/devices/:id/update', requireUsers, (req, res) => {
     const device = db.prepare(`SELECT * FROM devices WHERE id = ? AND claimed = 1`).get(req.params.id);
     if (!device) return res.status(404).json({ error: 'Not found' });
-    const problem = cannotUpdate(device);
+    // A PC already waiting to update overnight can be told to do it now instead.
+    const problem = device.update_id && device.update_when === 'closed' ? null : cannotUpdate(device);
     if (problem) return res.status(409).json({ error: problem });
-    startUpdate(device);
+    startUpdate(device, 'now');
     res.json(deviceView(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(device.id)));
   });
 
@@ -1895,7 +2062,10 @@ function createApp({
       // Asked for on the dashboard (0.11.0). The TV reports progress in its heartbeat.
       actions: {
         resync: device.resync_id || null,
-        update: device.update_id && playerApp ? {
+        // Restart and See screen (0.13.0); older apps ignore them.
+        restart: device.reboot_id ? { id: device.reboot_id, kind: device.reboot_kind || 'app' } : null,
+        screenshot: device.shot_id || null,
+        update: device.kind === 'browser' ? windowsUpdateAction(device) : device.update_id && playerApp ? {
           id: device.update_id,
           version: playerApp.version,
           version_code: playerApp.version_code,
@@ -1928,7 +2098,14 @@ function createApp({
 
   app.get('/api/player/playlist', auth.requireDevice(db), (req, res) => {
     expireDue();
-    const playlist = playerPlaylist(req.device);
+    dropStaleJobs(req.device);
+    offerWindowsUpdate(db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.device.id));
+    const device = db.prepare(`SELECT * FROM devices WHERE id = ?`).get(req.device.id);
+    // The screen is being told to restart now: the dashboard says "Restarting".
+    if (device.reboot_id && (readJob(device.reboot_state) || {}).step === 'waiting') {
+      db.prepare(`UPDATE devices SET reboot_state = ? WHERE id = ?`).run(JSON.stringify({ step: 'restarting', at: Date.now() }), device.id);
+    }
+    const playlist = playerPlaylist(device);
     // The TV now has what its relay asked for: those commands are acknowledged.
     acknowledgeCommands(req.device.id);
     res.json(playlist);
@@ -1938,6 +2115,37 @@ function createApp({
   app.get('/api/player/app.apk', auth.requireDevice(db), (req, res) => {
     if (!playerApp) return res.status(404).json({ error: 'No TV app here' });
     res.sendFile(playerApp.file, { headers: { 'Content-Type': 'application/vnd.android.package-archive' } });
+  });
+
+  // The Windows installer that goes with this server, for a PC updating itself (0.13.0).
+  app.get('/api/player/windows-app.exe', auth.requireDevice(db), (req, res) => {
+    const ready = windowsApp && windowsApp.ready;
+    if (!ready) return res.status(404).json({ error: 'No Windows installer here yet' });
+    res.sendFile(ready.file, { headers: { 'Content-Type': 'application/octet-stream' } });
+  });
+
+  // A screen's picture of what it shows (0.13.0), or why it couldn't take one.
+  app.post('/api/player/screenshot/:id', auth.requireDevice(db), (req, res) => {
+    const device = req.device;
+    if (!device.shot_id || req.params.id !== device.shot_id) return res.status(409).json({ error: 'Nobody asked for that picture (any more).' });
+    const body = req.body || {};
+    const now = Date.now();
+    if (typeof body.error === 'string' && body.error) {
+      db.prepare(`UPDATE devices SET shot_id = NULL, shot_state = ? WHERE id = ?`)
+        .run(JSON.stringify({ step: 'failed', at: now, error: body.error.slice(0, 300) }), device.id);
+      return res.json({ ok: true });
+    }
+    const bytes = typeof body.jpeg === 'string' ? Buffer.from(body.jpeg, 'base64') : null;
+    if (!bytes || bytes.length < 4 || bytes.length > SHOT_MAX_BYTES || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+      return res.status(400).json({ error: 'Send the picture as a JPEG in base64 ("jpeg").' });
+    }
+    fs.mkdirSync(screenshotDir, { recursive: true });
+    const file = screenshotFile(device.id);
+    fs.writeFileSync(`${file}.part`, bytes);
+    fs.renameSync(`${file}.part`, file);
+    db.prepare(`UPDATE devices SET shot_id = NULL, shot_state = ?, shot_taken_at = ? WHERE id = ?`)
+      .run(JSON.stringify({ step: 'done', at: now }), now, device.id);
+    res.json({ ok: true });
   });
 
   // What the TV says about a Reset sync or an app update it's working on.
@@ -1963,8 +2171,20 @@ function createApp({
       params.push(JSON.stringify(state));
       if (u.step === 'failed') sets.push('update_id = NULL');
     }
+    // A Restart asked for on the dashboard (0.13.0): the app says so after it started again.
+    const b = body.restart;
+    if (b && typeof b === 'object' && device.reboot_id && b.id === device.reboot_id && ['done', 'failed'].includes(b.step)) {
+      const state = { step: b.step, at: now };
+      if (typeof b.error === 'string' && b.error) state.error = b.error.slice(0, 300);
+      sets.push('reboot_id = NULL', 'reboot_state = ?');
+      params.push(JSON.stringify(state));
+    }
     // The new app doesn't know the request: reaching the build number is what finishes it.
-    if (device.update_id && Number.isInteger(body.version_code) && body.version_code >= (device.update_target || 0)) {
+    // A Windows PC has no build number: its version, as a number, is compared instead.
+    const reached = device.kind === 'browser'
+      ? typeof body.app_version === 'string' && versionAtLeast(body.app_version, '0.0.1') && versionNumber(body.app_version) >= (device.update_target || 0)
+      : Number.isInteger(body.version_code) && body.version_code >= (device.update_target || 0);
+    if (device.update_id && reached) {
       sets.push('update_id = NULL', 'update_state = ?');
       params.push(JSON.stringify({ step: 'done', at: now, version: body.app_version || null }));
     }
@@ -2026,6 +2246,14 @@ function createApp({
     if (typeof body.can_install_apps === 'boolean') {
       sets.push('can_install_apps = ?');
       params.push(body.can_install_apps ? 1 : 0);
+    }
+    if (typeof body.platform === 'string' && /^[a-z0-9]{1,20}$/.test(body.platform)) {
+      sets.push('platform = ?');
+      params.push(body.platform);
+    }
+    if (typeof body.can_reboot === 'boolean') {
+      sets.push('can_reboot = ?');
+      params.push(body.can_reboot ? 1 : 0);
     }
     noteJobReports(req.device, body, sets, params);
     if (typeof body.last_restart_reason === 'string' && body.last_restart_reason.trim()

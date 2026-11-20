@@ -27,14 +27,14 @@ const tmp = (t, name) => {
   return dir;
 };
 
-async function startServer(t) {
+async function startServer(t, extra = {}) {
   const google = createFakeGoogle();
   const picture = crypto.randomBytes(150 * 1024);
   google.addFile('welcome.png', 'image/png', picture, { width: 1920, height: 1080 });
   const serverDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-'));
   const app = createApp({
     dataDir: serverDir, google, firstAdmin: { username: 'boss', password: PASSWORD }, siteName: 'Main Centre',
-    syncIntervalMs: 0, monitorIntervalMs: 0, log: () => {},
+    syncIntervalMs: 0, monitorIntervalMs: 0, log: () => {}, ...extra,
   });
   let server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
   const port = server.address().port;
@@ -185,4 +185,79 @@ test('pairs, downloads its playlist, gets its web page, checks in, and keeps goi
   await call('DELETE', `/api/devices/${claimed.id}`, { token: boss });
   await until(() => controller.state.phase === 'pairing' && controller.state.code && controller.state.code !== pairing.code);
   assert.deepEqual(fs.readdirSync(path.join(dataDir, 'media')), []);
+});
+
+test('0.13.0: Restart, See screen, and updating itself from the server', async (t) => {
+  // The installer that goes with the server (normally fetched from GitHub by the server).
+  const exeDir = tmp(t, 'kb-exe-');
+  const exe = crypto.randomBytes(200 * 1024);
+  fs.writeFileSync(path.join(exeDir, 'setup.exe'), exe);
+  const windowsApp = {
+    version: '0.13.5', problem: null, fetch: async () => null,
+    ready: { version: '0.13.5', size: exe.length, sha256: crypto.createHash('sha256').update(exe).digest('hex'), file: path.join(exeDir, 'setup.exe') },
+  };
+  const srv = await startServer(t, { windowsApp });
+  const { call, boss } = srv;
+  const dataDir = tmp(t, 'kb-pc-');
+  const store = createStore(dataDir);
+  // (Acts as Windows wherever the test runs: only Windows installs updates.)
+  const controller = createController({ store, dataDir, appVersion: '0.13.0', model: 'Test PC', loopMs: 200, retryMs: 200, platform: 'win32' });
+  t.after(() => controller.stop());
+  const seen = { restart: [], screenshot: [], ready: [] };
+  controller.events.on('restart', (k) => seen.restart.push(k));
+  controller.events.on('screenshot', (id) => seen.screenshot.push(id));
+  controller.events.on('update-ready', (r) => seen.ready.push(r));
+  await controller.connect(srv.url);
+  const pairing = await until(() => controller.state.phase === 'pairing' && controller.state.code && controller.state);
+  const claimed = await (await call('POST', '/api/devices/claim', { token: boss, json: { code: pairing.code, name: 'Front desk', location: 'Lobby' } })).json();
+  const device = async () => (await (await call('GET', '/api/devices', { token: boss })).json()).find((d) => d.id === claimed.id);
+
+  // It says it can restart the whole PC only on Windows.
+  // (Registering already gives its version; whether it can restart comes with its first check-in.)
+  await until(async () => (await device()).last_seen);
+  await until(async () => (await device()).can_restart_device === true);
+
+  // The server offers its newer installer for tonight: downloaded and checked, waiting for closing time.
+  const ready = await until(() => seen.ready[0]);
+  assert.equal(ready.when, 'closed');
+  assert.ok(fs.readFileSync(ready.file).equals(exe));
+  await until(async () => (await device()).app.update?.step === 'waiting_for_install');
+  // "Update app" on the dashboard: now instead.
+  await call('POST', `/api/devices/${claimed.id}/update`, { token: boss });
+  await until(() => controller.remote.ready && controller.remote.ready.when === 'now');
+
+  // See screen: the window takes the picture, the controller sends it.
+  await call('POST', `/api/devices/${claimed.id}/screenshot`, { token: boss });
+  const shot = await until(() => seen.screenshot[0]);
+  await controller.sendScreenshot(shot, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]));
+  assert.equal((await device()).screenshot.job.step, 'done');
+
+  // Restart: asked once; after starting again (same saved data) it reports "done".
+  await call('POST', `/api/devices/${claimed.id}/restart`, { token: boss, json: { kind: 'app' } });
+  assert.equal(await until(() => seen.restart[0]), 'app');
+  controller.stop();
+  // (A real restart is a new run of the app: it started after the request.)
+  const again = createController({ store: createStore(dataDir), dataDir, appVersion: '0.13.0', loopMs: 200, retryMs: 200, startedAt: Date.now() + 1, platform: 'win32' });
+  t.after(() => again.stop());
+  const restartedAgain = [];
+  again.events.on('restart', (k) => restartedAgain.push(k));
+  again.start();
+  await until(async () => (await device()).restart?.step === 'done');
+  assert.deepEqual(restartedAgain, [], 'not restarted twice');
+});
+
+test('an installer that doesn’t match its fingerprint is thrown away', async (t) => {
+  const { createRemote } = require('../src/core/remote');
+  const { EventEmitter } = require('node:events');
+  const dataDir = tmp(t, 'kb-upd-');
+  const events = new EventEmitter();
+  const store = createStore(dataDir);
+  const body = Buffer.from('not the real installer');
+  const fetchImpl = async () => new Response(body, { status: 200 });
+  const remote = createRemote({ store, dataDir, events, fetchImpl, platform: 'win32' });
+  const update = { id: 'u1', version: '0.13.5', size: body.length, sha256: 'a'.repeat(64), url: '/api/player/windows-app.exe', when: 'now' };
+  await remote.handle({ update }, { api: { token: 't' }, baseUrl: 'http://x' });
+  assert.equal(remote.ready, null);
+  assert.equal(remote.reports().update.step, 'failed');
+  assert.deepEqual(fs.readdirSync(path.join(dataDir, 'updates')), []);
 });

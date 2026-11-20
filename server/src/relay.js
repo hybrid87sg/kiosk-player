@@ -204,7 +204,10 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
   }
 
   const app = express();
-  app.use(express.json());
+  // A screen's screenshot (0.13.0) is a picture in JSON, bigger than anything else.
+  const bigJson = express.json({ limit: '4mb' });
+  const json = express.json();
+  app.use((req, res, next) => (req.path.startsWith('/api/player/screenshot/') ? bigJson : json)(req, res, next));
 
   const publicDir = path.join(__dirname, '..', 'public');
   app.get('/', (req, res) => res.sendFile(path.join(publicDir, 'relay.html')));
@@ -272,20 +275,24 @@ function createRelay({ mainUrl, siteName, dataDir, pairingCode = '', log = conso
     });
   }
 
-  // The TV app, for a screen updating itself (0.11.0): streamed from the main server
-  // as it comes, since it's a binary file, not JSON like the rest.
-  app.get('/api/player/app.apk', async (req, res) => {
+  // The TV app (0.11.0) and the Windows installer (0.13.0), for a screen updating itself:
+  // streamed from the main server as they come, since they're binary files, not JSON like the rest.
+  const APP_FILES = {
+    '/api/player/app.apk': 'application/vnd.android.package-archive',
+    '/api/player/windows-app.exe': 'application/octet-stream',
+  };
+  app.get(Object.keys(APP_FILES), async (req, res) => {
     remember(req);
     let reply;
     try {
       const headers = { ...siteHeaders() };
       if (req.get('authorization')) headers.authorization = req.get('authorization');
-      reply = await fetch(`${main}/api/player/app.apk`, { headers, signal: AbortSignal.timeout(10 * 60_000) });
+      reply = await fetch(`${main}${req.path}`, { headers, signal: AbortSignal.timeout(15 * 60_000) });
     } catch (err) {
       return res.status(502).json({ error: `Can't reach the main Kiosk server (${main})` });
     }
     if (!reply.ok || !reply.body) return res.status(reply.status).type('application/json').send(await reply.text());
-    res.status(200).type('application/vnd.android.package-archive');
+    res.status(200).type(APP_FILES[req.path]);
     const length = reply.headers.get('content-length');
     if (length) res.set('Content-Length', length);
     try {

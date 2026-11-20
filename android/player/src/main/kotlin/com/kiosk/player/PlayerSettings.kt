@@ -111,6 +111,16 @@ class PlayerSettings(context: Context) {
         get() = prefs.getString("resync_done_id", null)
         set(value) = prefs.edit().putString("resync_done_id", value).apply()
 
+    /** The dashboard Restart this app last carried out, so it isn't done twice (0.13.0). */
+    var restartDoneId: String?
+        get() = prefs.getString("restart_done_id", null)
+        set(value) = prefs.edit().putString("restart_done_id", value).commit().let { }
+
+    /** When the app last closed itself for a dashboard Restart: the Watchdog reopens it then. */
+    var restartAskedAt: Long
+        get() = prefs.getLong("restart_asked_at", 0L)
+        set(value) = prefs.edit().putLong("restart_asked_at", value).commit().let { }
+
     fun clear() = prefs.edit().clear().apply()
 
     companion object {

@@ -25,6 +25,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { createWindowsApp } = require('./windows-app');
 const { createApp, createIngressServer, createPublicServer } = require('./app');
 const { createPublicAccess } = require('./public-access');
 const { transcodeOptIn } = require('./transcode');
@@ -173,6 +174,8 @@ const app = createApp({
     : null,
   // The TV app that came with the add-on (player/), for updating screens from the dashboard.
   playerAppDir: process.env.KIOSK_PLAYER_APP_DIR || path.join(__dirname, '..', 'player'),
+  // The Windows Kiosk Browser installer of this version, fetched once from its GitHub release (0.13.0).
+  windowsApp: createWindowsApp({ dir: path.join(settings.dataDir, 'windows-app'), version: require('../package.json').version, log: console.log }),
   transcode: {
     enabled: settings.transcodeVideos,
     hevc4k: settings.transcode4kHevc,
