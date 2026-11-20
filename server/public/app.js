@@ -69,6 +69,8 @@ const ICONS = {
   resync: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>',
+  power: '<path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/>',
 };
 
 /** An icon from the fixed set above (our own markup, never server text). */
@@ -635,8 +637,21 @@ function screenCard(d, playlists, devices, redraw) {
     isSpongebob() ? appUpdateHint(d) : null,
     jobBox('Reset sync', d.resync, resyncText),
     jobBox(`App update${d.app && d.app.latest ? ` to ${d.app.latest.version}` : ''}`, d.app && d.app.update, (job) => updateText(job, d)),
+    jobBox(d.restart && d.restart.kind === 'device' ? (d.kind === 'browser' ? 'Restart PC' : 'Restart device') : 'Restart app', d.restart, (job) => restartText(job, d)),
     el('div', { class: 'row' },
       el('button', { class: 'btn text small', onclick: () => screenForm({ device: d, site: d.site, playlists, devices, onDone: redraw }) }, 'Edit'),
+      el('button', {
+        class: 'btn text small',
+        title: d.can_screenshot ? 'See what this screen shows right now' : `Needs ${d.kind === 'browser' ? 'Kiosk Browser' : 'Kiosk Player'} 0.13.0 or newer`,
+        disabled: !d.can_screenshot,
+        onclick: () => screenshotDialog(d),
+      }, icon('camera', 16), 'See screen'),
+      el('button', {
+        class: 'btn text small',
+        title: d.can_restart ? '' : `Needs ${d.kind === 'browser' ? 'Kiosk Browser' : 'Kiosk Player'} 0.13.0 or newer`,
+        disabled: !d.can_restart || jobRunning(d.restart),
+        onclick: () => restartDialog(d, redraw),
+      }, icon('power', 16), 'Restart'),
       isSpongebob() && d.kind !== 'browser' ? el('button', {
         class: 'btn text small',
         disabled: jobRunning(d.resync),
@@ -644,7 +659,9 @@ function screenCard(d, playlists, devices, redraw) {
       }, icon('resync', 16), 'Reset sync') : null,
       isSpongebob() && d.app && d.app.update_available ? el('button', {
         class: 'btn text small',
-        disabled: jobRunning(d.app.update) || d.app.can_install_apps === false,
+        // A Windows PC waiting to update tonight can be told to do it now.
+        disabled: (jobRunning(d.app.update) && !(d.app.update_when === 'closed' && ['waiting', 'waiting_for_install'].includes(d.app.update.step)))
+          || d.app.can_install_apps === false,
         onclick: () => attempt(async () => {
           await api('POST', `api/devices/${d.id}/update`);
           toast(`${d.name} gets the new app at its next check-in`);
@@ -692,6 +709,21 @@ function resyncText(job) {
 
 function updateText(job, d) {
   const version = d.app && d.app.latest ? d.app.latest.version : 'the new app';
+  if (d.kind === 'browser') {
+    const tonight = d.app.update_when === 'closed';
+    switch (job.step) {
+      case 'waiting': return tonight
+        ? 'Updates by itself outside working hours (overnight). Press Update app to do it now.'
+        : 'Waiting for the PC. It checks in about once a minute.';
+      case 'downloading': return `Downloading Kiosk Browser ${version}…`;
+      case 'waiting_for_install': return tonight
+        ? 'Downloaded. Installs by itself outside working hours (overnight). Press Update app to do it now.'
+        : 'Downloaded. Installs as soon as nobody is using the kiosk.';
+      case 'installing': return 'Installing. The kiosk closes for about a minute and reopens by itself.';
+      case 'done': return `Updated to ${job.version || version}.`;
+      default: return job.error || 'The update didn’t work.';
+    }
+  }
   switch (job.step) {
     case 'waiting': return 'Waiting for the screen. It checks in about once a minute.';
     case 'downloading': return `Downloading Kiosk Player ${version}…`;
@@ -705,7 +737,15 @@ function updateText(job, d) {
 /** Whether this screen's app can be updated from here, and how. */
 function appUpdateHint(d) {
   const app = d.app;
-  if (!app || !app.latest || d.kind === 'browser' || jobRunning(app.update)) return null;
+  if (d.kind === 'browser') {
+    // Windows PCs (0.13.0): older ones are updated by hand once, newer ones by themselves.
+    if (d.app_version && !versionAtLeast(d.app_version, '0.13.0')) {
+      return el('div', { class: 'meta' }, 'Install Kiosk Browser 0.13.0 or newer on this PC by hand once (uninstall the old one first); after that it updates itself overnight.');
+    }
+    if (!app || !app.latest || !app.update_available || jobRunning(app.update)) return null;
+    return el('div', { class: 'meta' }, `Update available: ${d.app_version} → ${app.latest.version} (installs by itself overnight)`);
+  }
+  if (!app || !app.latest || jobRunning(app.update)) return null;
   if (app.version_code == null) {
     return d.app_version ? el('div', { class: 'meta' }, `Install Kiosk Player ${app.latest.version} on this TV by hand once; after that, updates come from here.`) : null;
   }
@@ -726,6 +766,116 @@ function resyncDialog(d, onDone) {
       toast(`${d.name} starts at its next check-in`);
       onDone();
     }));
+}
+
+// ---------- Restart and See screen (0.13.0) ----------
+
+const versionAtLeast = (version, wanted) => {
+  const parts = (v) => String(v || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const [a, b] = [parts(version), parts(wanted)];
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  return true;
+};
+
+function restartText(job, d) {
+  const what = d.kind === 'browser' ? 'PC' : 'screen';
+  switch (job.step) {
+    case 'waiting': return `Waiting for the ${what}. It checks in about once a minute.`;
+    case 'restarting': return job.kind === 'device'
+      ? `Restarting the whole ${d.kind === 'browser' ? 'PC' : 'device'}. It takes a minute or two to come back.`
+      : 'Restarting the app. It’s back in a few seconds.';
+    case 'done': return `Back up ${timeAgo(job.at)}.`;
+    default: return job.error || 'It didn’t restart.';
+  }
+}
+
+function restartDialog(d, onDone) {
+  const isPc = d.kind === 'browser';
+  const start = (kind) => attempt(async () => {
+    await api('POST', `api/devices/${d.id}/restart`, { kind });
+    toast(`${d.name} restarts at its next check-in (within a minute)`);
+    onDone();
+  });
+  openDialog((dialog) => el('div', { class: 'dialog-body' },
+    el('h2', {}, `Restart ${d.name}?`),
+    el('p', { class: 'sub' }, `The ${isPc ? 'PC' : 'screen'} gets the request at its next check-in, within about a minute. Anyone using it is interrupted.`),
+    el('div', { class: 'list' },
+      el('div', { class: 'list-row' },
+        el('div', {}, el('strong', {}, 'Restart app'),
+          el('div', { class: 'meta' }, `Closes ${isPc ? 'Kiosk Browser' : 'Kiosk Player'} and opens it again. Fixes most frozen or stuck screens. Back in a few seconds.`)),
+        el('button', { class: 'btn primary small', style: 'white-space:nowrap', onclick: () => { dialog.close(); start('app'); } }, 'Restart app')),
+      el('div', { class: 'list-row' },
+        el('div', {}, el('strong', {}, isPc ? 'Restart PC' : 'Restart device'),
+          el('div', { class: 'meta' }, d.can_restart_device
+            ? `Restarts the whole ${isPc ? 'PC' : 'device'}, like switching it off and on. Takes a minute or two.`
+            : isPc
+              ? 'Not available: Windows didn’t allow Kiosk Browser to restart this PC.'
+              : 'Not available on this screen: Android only lets apps restart the whole device on some boxes. Unplug it instead.')),
+        el('button', { class: 'btn text small', style: 'white-space:nowrap', disabled: !d.can_restart_device, onclick: () => { dialog.close(); start('device'); } },
+          isPc ? 'Restart PC' : 'Restart device'))),
+    el('div', { class: 'dialog-actions' }, el('button', { class: 'btn text', onclick: () => dialog.close() }, 'Cancel'))));
+}
+
+/** The screen's latest picture, as a blob URL (the picture needs sign-in, so it's fetched, not linked). */
+async function screenshotUrl(d) {
+  const res = await fetch(`api/devices/${d.id}/screenshot.jpg?t=${Date.now()}`, { headers: { Authorization: `Bearer ${token()}` } });
+  if (!res.ok) return null;
+  return URL.createObjectURL(await res.blob());
+}
+
+/** Asks the screen for a fresh picture and shows it when it arrives (the last one meanwhile). */
+function screenshotDialog(d) {
+  let stopped = false;
+  let shown = null;
+  const img = el('img', { alt: `What ${d.name} shows`, style: 'display:none;width:100%;max-height:70vh;object-fit:contain;background:#000;border-radius:8px' });
+  const status = el('div', { class: 'meta', role: 'status' }, 'Asking the screen for a picture…');
+  const retake = el('button', { class: 'btn text', disabled: true, onclick: () => ask() }, icon('camera', 16), 'Take another');
+  const show = async (label) => {
+    const url = await screenshotUrl(d);
+    if (!url || stopped) return;
+    if (shown) URL.revokeObjectURL(shown);
+    shown = url;
+    img.src = url;
+    img.style.display = 'block';
+    if (label) status.textContent = label;
+  };
+  async function ask() {
+    retake.disabled = true;
+    const started = await attempt(() => api('POST', `api/devices/${d.id}/screenshot`));
+    if (!started) { retake.disabled = false; status.textContent = 'Couldn’t ask the screen.'; return; }
+    status.textContent = img.style.display === 'block'
+      ? 'This is the earlier picture. Asking the screen for a new one; it checks in about once a minute…'
+      : 'Asking the screen for a picture. It checks in about once a minute…';
+    img.style.opacity = '0.45';
+    while (!stopped) {
+      await new Promise((r) => setTimeout(r, 3000));
+      if (stopped) return;
+      const fresh = (await attempt(() => api('GET', 'api/devices'))) || [];
+      const now = fresh.find((x) => x.id === d.id);
+      const job = now && now.screenshot && now.screenshot.job;
+      if (!job || job.step === 'done') {
+        img.style.opacity = '1';
+        await show(`Taken ${new Date(now.screenshot.taken_at).toLocaleTimeString()}`);
+        break;
+      }
+      if (job.step === 'failed') {
+        img.style.opacity = '1';
+        status.textContent = job.error || 'The screen couldn’t take a picture.';
+        break;
+      }
+    }
+    retake.disabled = false;
+  }
+  const dialog = openDialog((dlg) => el('div', { class: 'dialog-body' },
+    el('h2', {}, d.name),
+    img,
+    status,
+    el('div', { class: 'dialog-actions' }, retake, el('button', { class: 'btn primary', onclick: () => dlg.close() }, 'Close'))));
+  dialog.classList.add('wide');
+  dialog.addEventListener('close', () => { stopped = true; if (shown) URL.revokeObjectURL(shown); });
+  // The last picture while the new one comes, marked as earlier.
+  if (d.screenshot && d.screenshot.taken_at) show(null);
+  ask();
 }
 
 function addScreenDialog(playlists, devices, onDone) {

@@ -210,6 +210,7 @@ dialog {
   border: 1px solid var(--border); border-radius: 8px; padding: 0; width: min(560px, calc(100vw - 32px));
   background: var(--card); color: var(--ink); box-shadow: var(--shadow);
 }
+dialog.wide { width: min(960px, calc(100vw - 32px)); }
 dialog::backdrop { background: var(--backdrop); }
 dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
