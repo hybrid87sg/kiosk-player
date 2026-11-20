@@ -53,6 +53,19 @@ jobs:
         # (KioskBrowser-Setup-0.11.3.exe for v0.11.3), so every file in a release matches it.
         run: |
           if [ -n "$RELEASE_TAG" ]; then npm run dist -- "-c.extraMetadata.version=${RELEASE_TAG#v}"; else npm run dist; fi
+      - name: The installer installs silently for this Windows user, and again over itself (how updates install)
+        working-directory: windows
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist/*.exe | Select-Object -First 1).FullName
+          foreach ($round in 1, 2) {
+            $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Round ${round}: the installer ended with $($p.ExitCode)" }
+            $app = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'Kiosk Browser.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $app) { throw "Round ${round}: Kiosk Browser.exe isn't under $env:LOCALAPPDATA\Programs (a per-user install)" }
+            Write-Output "Round ${round}: installed at $($app.FullName)"
+          }
       - uses: actions/upload-artifact@v4
         continue-on-error: true # a full artifact store must not stop the build
         with:

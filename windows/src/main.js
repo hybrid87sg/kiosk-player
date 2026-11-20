@@ -11,7 +11,8 @@
 // links, pop-ups, downloads, and requests for the camera, location etc. are refused.
 // Staff leave it by tapping the top-left corner 5 times quickly and typing the PIN.
 
-const { app, BrowserWindow, WebContentsView, ipcMain, session, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, powerSaveBlocker, desktopCapturer, screen } = require('electron');
+const { spawn } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -57,6 +58,7 @@ let quitting = false;
 let leftUntil = 0;
 let sleepBlocker = null;
 let lastOpen = true;
+let installing = false;
 
 const webSession = () => session.fromPartition('kiosk-web'); // in memory only, wiped after each customer
 
@@ -156,6 +158,7 @@ function blocked() {
 
 async function endSession() {
   clearTimeout(idleTimer);
+  setTimeout(maybeInstall, 1000); // an update waiting for the customer to finish
   if (!view) return;
   const old = view;
   view = null;
@@ -271,6 +274,69 @@ function listen() {
   });
 }
 
+// ---------- from the dashboard: Restart, See screen, updates (0.13.0) ----------
+
+function restart(kind) {
+  if (kind === 'device') {
+    log('Restarting this PC, as asked on the dashboard');
+    try {
+      spawn('shutdown', ['/r', '/t', '5', '/c', 'Kiosk Browser: restart asked for on the Kiosk dashboard'], { detached: true, stdio: 'ignore' }).unref();
+    } catch (err) {
+      log('Could not restart the PC:', err.message);
+    }
+    return;
+  }
+  log('Restarting Kiosk Browser, as asked on the dashboard');
+  quitting = true;
+  app.relaunch();
+  app.exit(0);
+}
+
+/** A picture of the whole screen, as people see it: signage, web page and bar. */
+async function screenshot(id) {
+  try {
+    const primary = screen.getPrimaryDisplay();
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 1280 } });
+    const source = sources.find((s) => String(s.display_id) === String(primary.id)) || sources[0];
+    if (!source || source.thumbnail.isEmpty()) throw new Error('Windows didn’t give a picture of the screen.');
+    await controller.sendScreenshot(id, source.thumbnail.toJPEG(75));
+  } catch (err) {
+    await controller.sendScreenshot(id, null, err.message);
+  }
+}
+
+/**
+ * Installs a downloaded update when it suits: as soon as nobody is using the kiosk ("now"),
+ * or outside working hours ("closed", overnight). A location that's always open updates
+ * between 3 and 5 in the morning.
+ */
+function maybeInstall() {
+  const ready = controller && controller.remote.ready;
+  if (!ready || view || installing) return;
+  if (ready.when === 'closed') {
+    const s = current();
+    const alwaysOpen = !s || !s.hours;
+    const hour = new Date().getHours();
+    if (isOpenNow() && !(alwaysOpen && hour >= 3 && hour < 5)) return;
+  }
+  if (!app.isPackaged) { log(`Update ${ready.version} is ready (not installed: not running from an installation)`); return; }
+  installing = true;
+  log(`Installing Kiosk Browser ${ready.version}`);
+  controller.remote.installing();
+  controller.reportNow().finally(() => {
+    try {
+      // Silent, for this Windows user only (no "allow changes" box), and open the app again after.
+      const child = spawn(ready.file, ['/S', '--force-run', '--updated'], { detached: true, stdio: 'ignore' });
+      child.on('error', (err) => { installing = false; controller.remote.installFailed(`The installer didn’t start: ${err.message}`); });
+      child.unref();
+      setTimeout(() => { if (installing) { quitting = true; app.exit(0); } }, 1500);
+    } catch (err) {
+      installing = false;
+      controller.remote.installFailed(`The installer didn’t start: ${err.message}`);
+    }
+  });
+}
+
 // ---------- start ----------
 
 app.whenReady().then(() => {
@@ -287,6 +353,9 @@ app.whenReady().then(() => {
     if (view && (current()?.mode === 'video' || !allowed(view.webContents.getURL()))) endSession();
     sendState();
   });
+  controller.events.on('restart', restart);
+  controller.events.on('screenshot', (id) => { screenshot(id); });
+  controller.events.on('update-ready', () => maybeInstall());
   guardWebSession();
   listen();
   createWindow();
@@ -299,6 +368,7 @@ app.whenReady().then(() => {
     if (open && !sleepBlocker) sleepBlocker = powerSaveBlocker.start('prevent-display-sleep');
     if (!open && sleepBlocker !== null) { powerSaveBlocker.stop(sleepBlocker); sleepBlocker = null; }
     if (open !== lastOpen) { lastOpen = open; sendState(); }
+    maybeInstall();
   };
   checkHours();
   setInterval(checkHours, 30_000);

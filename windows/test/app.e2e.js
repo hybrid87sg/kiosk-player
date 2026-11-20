@@ -152,6 +152,18 @@ async function main() {
       return d.online && d.app_version && d.current_media_id === media.id && d.kind === 'browser';
     }, 70000, 'a check-in');
 
+    step('See screen (0.13.0): the dashboard gets a picture of the whole screen');
+    await call('POST', `/api/devices/${device.id}/screenshot`, { token: boss });
+    await app.evaluate(({ ipcMain }) => ipcMain.emit('staff-action', {}, 'reload')); // check in now
+    const shot = await until(async () => {
+      const d = (await call('GET', '/api/devices', { token: boss })).find((x) => x.id === device.id);
+      const job = d.screenshot && d.screenshot.job;
+      return job && ['done', 'failed'].includes(job.step) && job;
+    }, 70000, 'the picture');
+    assert.equal(shot.step, 'done', shot.error);
+    const picture = Buffer.from(await (await fetch(`${base}/api/devices/${device.id}/screenshot.jpg`, { headers: { authorization: `Bearer ${boss}` } })).arrayBuffer());
+    assert.ok(picture.length > 2000 && picture[0] === 0xff && picture[1] === 0xd8, 'a real JPEG');
+
     step('closing the window (Alt+F4) is refused');
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
     await new Promise((r) => setTimeout(r, 500));

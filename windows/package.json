@@ -36,9 +36,8 @@
       "icon": "build/icon.ico"
     },
     "nsis": {
-      "oneClick": false,
-      "perMachine": true,
-      "allowToChangeInstallationDirectory": false,
+      "oneClick": true,
+      "perMachine": false,
       "createDesktopShortcut": true,
       "runAfterFinish": true,
       "shortcutName": "Kiosk Browser"
