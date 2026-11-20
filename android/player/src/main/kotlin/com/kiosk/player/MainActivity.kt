@@ -4,6 +4,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -48,6 +49,18 @@ class MainActivity : ComponentActivity() {
                     requestedOrientation = if (follow) ActivityInfo.SCREEN_ORIENTATION_FULL_USER
                     else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 }
+            }
+        }
+        // See screen (0.13.0): a picture of this window, for the dashboard.
+        lifecycleScope.launch {
+            vm.screenshotRequests.collect { id ->
+                val result = runCatching { ScreenCapture.take(this@MainActivity, KioskInput.turnDegrees) }
+                result.onSuccess { Log.i("KioskPlayer", "Screenshot taken (${ScreenCapture.describe(it)})") }
+                vm.screenshotTaken(
+                    id,
+                    result.getOrNull(),
+                    result.exceptionOrNull()?.let { (it as? ScreenCapture.Problem)?.message ?: "The screen couldn't take a picture (${it.javaClass.simpleName})." },
+                )
             }
         }
     }

@@ -9,6 +9,7 @@ import com.kiosk.core.model.ServerConfig
 import com.kiosk.core.network.AppVersionBody
 import com.kiosk.core.network.HeartbeatBody
 import com.kiosk.core.network.PlayerApi
+import com.kiosk.core.network.ScreenshotBody
 import com.kiosk.core.network.ServerConnection
 import com.kiosk.core.network.apiCall
 import okhttp3.OkHttpClient
@@ -40,6 +41,9 @@ interface PlayerRepository {
         lastRestart: Pair<String, Long>? = null,
         report: DeviceReport? = null,
     ): String?
+
+    /** See screen (0.13.0): sends the picture ([jpeg] bytes) or, if there isn't one, [error]. */
+    suspend fun sendScreenshot(id: String, jpeg: ByteArray?, error: String? = null)
 }
 
 /** The real server. [token] is the TV's saved secret, null before registering. */
@@ -78,7 +82,16 @@ class RemotePlayerRepository(serverUrl: String, @Volatile var token: String?) : 
             lastRestartReason = lastRestart?.first, lastRestartAt = lastRestart?.second,
             androidSdk = report?.androidSdk, versionCode = report?.versionCode, canInstallApps = report?.canInstallApps,
             touchscreen = report?.touchscreen, webviewVersion = report?.webviewVersion, rotationSensor = report?.rotationSensor,
-            resync = report?.resync, update = report?.update,
+            canReboot = report?.canReboot, resync = report?.resync, update = report?.update, restart = report?.restart,
         ))
     }.version
+
+    override suspend fun sendScreenshot(id: String, jpeg: ByteArray?, error: String?) {
+        apiCall {
+            api.screenshot(id, ScreenshotBody(
+                jpeg = jpeg?.let { java.util.Base64.getEncoder().encodeToString(it) },
+                error = if (jpeg == null) (error ?: "The screen couldn't take a picture.").take(300) else null,
+            ))
+        }
+    }
 }

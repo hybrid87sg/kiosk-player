@@ -356,6 +356,17 @@ data class PlayerActions(
     val resync: String? = null,
     /** Install the app that came with the server. */
     val update: AppUpdate? = null,
+    /** Restart the app, or the whole device (0.13.0). Reported back after starting again. */
+    val restart: RestartRequest? = null,
+    /** See screen (0.13.0): take a picture of what's on screen and send it with this id. */
+    val screenshot: String? = null,
+)
+
+@Serializable
+data class RestartRequest(
+    val id: String,
+    /** "app" or "device". */
+    val kind: String = "app",
 )
 
 @Serializable
@@ -390,8 +401,12 @@ data class DeviceReport(
     val webviewVersion: String? = null,
     /** 0.12.1: has a rotation sensor (turning it can switch between landscape and portrait). */
     val rotationSensor: Boolean? = null,
+    /** 0.13.0: this box lets the app restart the whole device (Restart device on the dashboard). */
+    val canReboot: Boolean? = null,
     val resync: JobReport? = null,
     val update: JobReport? = null,
+    /** 0.13.0: a dashboard Restart, reported once the app is running again ("done" or "failed"). */
+    val restart: JobReport? = null,
 )
 
 /** Opening and closing time on one day, e.g. "08:00" and "18:00". */
