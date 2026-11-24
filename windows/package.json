@@ -1,7 +1,7 @@
 {
   "name": "kiosk-browser",
   "productName": "Kiosk Browser",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Kiosk Signage for Windows: plays a screen's playlist while idle, and shows a web page customers can use on touch.",
   "main": "src/main.js",
   "private": true,

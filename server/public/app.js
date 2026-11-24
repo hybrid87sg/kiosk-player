@@ -62,6 +62,7 @@ const ICONS = {
   collapse: '<path d="M15 18l-6-6 6-6"/>',
   expand: '<path d="M9 18l6-6-6-6"/>',
   bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
   relay: '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 11l10-5M7 13l10 5"/>',
   volume: '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
   'volume-off': '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/>',
@@ -1237,17 +1238,51 @@ function hoursDialog(loc, onSaved) {
       const open = el('input', { type: 'checkbox', checked: Boolean(entry), 'aria-label': `Open on ${label}` });
       const from = el('input', { type: 'time', class: 'date-input', value: entry?.open || '08:00', 'aria-label': `${label} opening time` });
       const to = el('input', { type: 'time', class: 'date-input', value: entry?.close || '18:00', 'aria-label': `${label} closing time` });
-      const sync = () => { from.disabled = !open.checked; to.disabled = !open.checked; };
+      // Copy to all days: this day's times on every day, every day open (0.13.1).
+      const copy = el('button', {
+        type: 'button', class: 'btn text small copy-all', 'aria-label': `Copy ${label}’s hours to all days`,
+        onclick: () => copyToAll(key),
+        title: `Copy ${label}’s hours to all days`,
+      }, icon('copy', 15), el('span', { class: 'label' }, 'Copy to all'));
+      const sync = () => { from.disabled = !open.checked; to.disabled = !open.checked; copy.disabled = !open.checked; };
       open.addEventListener('change', sync);
       sync();
-      return { key, open, from, to, row: el('div', { class: 'hours-row' }, el('label', { class: 'row', style: 'gap:8px;font-weight:600' }, open, label), from, el('span', { class: 'meta' }, 'to'), to) };
+      return { key, label, open, from, to, row: el('div', { class: 'hours-row' }, el('label', { class: 'row', style: 'gap:8px;font-weight:600;flex-wrap:nowrap;white-space:nowrap' }, open, label), from, el('span', { class: 'meta to' }, 'to'), to, copy) };
     });
-    const preset = (days, from, to) => rows.forEach((r) => {
+    // What the rows held before the last copy, for Undo.
+    const note = el('div', { class: 'note hours-note', role: 'status', hidden: true });
+    let before = null;
+    const snapshot = () => rows.map((r) => ({ open: r.open.checked, from: r.from.value, to: r.to.value }));
+    const restore = (saved) => rows.forEach((r, i) => {
+      r.open.checked = saved[i].open;
+      r.from.value = saved[i].from;
+      r.to.value = saved[i].to;
+      r.open.dispatchEvent(new Event('change'));
+    });
+    const hideNote = () => { note.hidden = true; before = null; };
+    function copyToAll(key) {
+      const source = rows.find((r) => r.key === key);
+      if (!source.open.checked) return;
+      before = snapshot();
+      rows.forEach((r) => {
+        r.open.checked = true;
+        r.from.value = source.from.value;
+        r.to.value = source.to.value;
+        r.open.dispatchEvent(new Event('change'));
+      });
+      fill(note,
+        el('span', {}, `${source.label}’s hours (${source.from.value}–${source.to.value}) copied to every day. Untick any day the store is closed.`),
+        el('button', { type: 'button', class: 'btn text small', onclick: () => { if (before) restore(before); hideNote(); } }, 'Undo'));
+      note.hidden = false;
+    }
+    // Changing anything by hand after a copy: the Undo no longer applies.
+    for (const r of rows) for (const input of [r.open, r.from, r.to]) input.addEventListener('input', hideNote);
+    const preset = (days, from, to) => { hideNote(); rows.forEach((r) => {
       r.open.checked = days.includes(r.key);
       r.from.value = from;
       r.to.value = to;
       r.open.dispatchEvent(new Event('change'));
-    });
+    }); };
     const save = async (hours) => {
       const saved = await attempt(() => api('PATCH', `api/locations/${loc.id}`, { hours }));
       if (!saved) return;
@@ -1268,6 +1303,7 @@ function hoursDialog(loc, onSaved) {
       el('button', { type: 'button', class: 'btn small', onclick: () => preset(['mon', 'tue', 'wed', 'thu', 'fri'], '09:00', '18:00') }, 'Mon–Fri 9–6'),
       el('button', { type: 'button', class: 'btn small', onclick: () => preset(DAYS.map(([k]) => k), '10:00', '22:00') }, 'Every day 10–10')),
     el('div', { class: 'hours-grid' }, rows.map((r) => r.row)),
+    note,
     el('div', { class: 'dialog-actions' },
       el('button', { type: 'button', class: 'btn text', onclick: () => dialog.close() }, 'Cancel'),
       el('button', { type: 'button', class: 'btn', onclick: () => save(null) }, 'Always on'),

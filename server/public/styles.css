@@ -273,9 +273,21 @@ dialog form, .dialog-body { padding: 24px; display: flex; flex-direction: column
 .group-head { gap: 12px; }
 .hours-link { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--primary); text-decoration: none; }
 .hours-grid { display: flex; flex-direction: column; gap: 8px; }
-.hours-row { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto auto; gap: 8px; align-items: center; }
+.hours-row { display: grid; grid-template-columns: minmax(110px, 1fr) auto auto auto auto; gap: 8px; align-items: center; }
+.hours-row .copy-all { justify-self: end; padding: 0 8px; gap: 6px; }
+.hours-row .copy-all:disabled { opacity: 0.35; }
+.hours-note { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.hours-note[hidden] { display: none; }
 .hours-row input[type=time]:disabled { opacity: 0.4; }
-@media (max-width: 480px) { .hours-row { grid-template-columns: 1fr auto auto auto; font-size: 14px; } .hours-row .date-input { max-width: 96px; } }
+.hours-row .copy-all { white-space: nowrap; }
+@media (max-width: 480px) {
+  .hours-row { grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px; font-size: 14px; }
+  .hours-row .date-input { max-width: 92px; padding: 0 4px; }
+  .hours-row .to { display: none; }
+  .hours-row .copy-all { padding: 0 4px; }
+  .hours-row .copy-all .label { display: none; }
+  .hours-row > label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
 .brand .label { white-space: nowrap; }
 .nav:not(.collapsed) .brand { font-size: 17px; gap: 8px; padding-right: 0; }
 .meta.row.nowrap { flex-wrap: nowrap; align-items: flex-start; }

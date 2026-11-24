@@ -331,6 +331,10 @@ times per day, days it's closed, or **Always on**. A closing time earlier than t
 midnight (e.g. 18:00 to 02:00). Each TV uses its own clock, so it keeps to the hours even if the internet
 drops.
 
+**Same hours every day:** set one day's times, then press **Copy to all** on that day. Every day gets those
+hours and is ticked as open; untick the days the store is closed, then **Save hours**. **Undo** puts the days
+back as they were before the copy.
+
 Outside working hours the screens show **black**, and where possible go into **standby**:
 
 | Your screen | What to do |
